@@ -4,20 +4,18 @@
 // PURPOSE: Standard JSON-RPC 2.0 API for wallets, explorers, indexers
 //
 // METHODS:
-// - aeth_sendRawTransaction
-// - aeth_getBlockByNumber
-// - aeth_getTransactionReceipt
-// - aeth_getBalance
-// - aeth_getStateRoot
-// - aeth_getValidatorSet
-// - aeth_getJob
+// - aeth_sendRawTransaction: Submit signed transaction
+// - aeth_getBlockByNumber: Get block by slot number
+// - aeth_getBlockByHash: Get block by hash
+// - aeth_getTransactionReceipt: Get transaction receipt
+// - aeth_getStateRoot: Get state root (Merkle root)
+// - aeth_getAccount: Get account state
+// - aeth_getSlotNumber: Get current slot
+// - aeth_getFinalizedSlot: Get last finalized slot
 //
 // ENDPOINT: http://localhost:8545
 // ============================================================================
 
 pub mod server;
-pub mod methods;
-pub mod types;
 
-pub use server::JsonRpcServer;
-
+pub use server::{JsonRpcServer, JsonRpcRequest, JsonRpcResponse, JsonRpcError, RpcBackend};
