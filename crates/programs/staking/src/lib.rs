@@ -27,4 +27,4 @@
 
 pub mod state;
 
-pub use state::{StakingState, Validator, Delegation, Unbonding};
+pub use state::{Delegation, StakingState, Unbonding, Validator};

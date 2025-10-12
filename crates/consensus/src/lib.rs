@@ -1,19 +1,10 @@
 // ============================================================================
-// AETHER CONSENSUS - VRF-PoS + HotStuff BFT
+// AETHER CONSENSUS - Simplified consensus implementation
 // ============================================================================
-// PURPOSE: Leader election via VRF, block finality via BLS-aggregated votes
-//
-// Current: Simplified round-robin consensus for initial implementation
-// TODO: Full VRF-PoS + HotStuff implementation
+// PURPOSE: Provide a lightweight round-robin consensus used by the initial
+// node prototype while the full VRF/HotStuff pipeline is being developed.
 // ============================================================================
 
 pub mod simple;
-pub mod slashing;
-pub mod vrf_pos;
-pub mod hotstuff;
 
 pub use simple::SimpleConsensus;
-pub use slashing::{detect_double_sign, verify_slash_proof, SlashProof, SlashType, Vote as SlashingVote};
-pub use vrf_pos::VrfPosConsensus;
-pub use hotstuff::{HotStuffConsensus, Vote as HotStuffVote, AggregatedVote, Phase};
-

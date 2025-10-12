@@ -34,4 +34,4 @@
 
 pub mod attestation;
 
-pub use attestation::{TeeType, AttestationReport, TeeVerifier};
+pub use attestation::{AttestationReport, TeeType, TeeVerifier};

@@ -25,7 +25,7 @@ impl H256 {
 
 impl fmt::Debug for H256 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.0))
+        write!(f, "0x{}", hex::encode(self.0))
     }
 }
 
@@ -55,7 +55,7 @@ impl H160 {
 
 impl fmt::Debug for H160 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "0x{}", hex::encode(&self.0))
+        write!(f, "0x{}", hex::encode(self.0))
     }
 }
 
@@ -97,7 +97,7 @@ impl PublicKey {
         let hash = Sha256::digest(&self.0);
         let mut addr = [0u8; 20];
         addr.copy_from_slice(&hash[..20]);
-        Address(addr)
+        H160(addr)
     }
 }
 
@@ -117,4 +117,3 @@ pub fn slot_to_epoch(slot: Slot, epoch_slots: u64) -> Epoch {
 pub fn epoch_start_slot(epoch: Epoch, epoch_slots: u64) -> Slot {
     epoch * epoch_slots
 }
-

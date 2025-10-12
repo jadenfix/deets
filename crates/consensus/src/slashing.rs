@@ -65,14 +65,9 @@ pub fn verify_slash_proof(proof: &SlashProof) -> anyhow::Result<()> {
     }
 }
 
-pub fn calculate_slash_amount(
-    stake: u128,
-    proof_type: &SlashType,
-) -> u128 {
+pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
     match proof_type {
-        SlashType::DoubleSign => {
-            (stake * 5) / 100
-        }
+        SlashType::DoubleSign => (stake * 5) / 100,
         SlashType::Downtime { missing_slots } => {
             let leak_rate = 1u128;
             let leak = leak_rate * (*missing_slots as u128);
@@ -141,15 +136,11 @@ mod tests {
     fn test_calculate_slash_amount() {
         let stake = 1_000_000u128;
 
-        let double_sign_slash =
-            calculate_slash_amount(stake, &SlashType::DoubleSign);
+        let double_sign_slash = calculate_slash_amount(stake, &SlashType::DoubleSign);
         assert_eq!(double_sign_slash, 50_000);
 
-        let downtime_slash = calculate_slash_amount(
-            stake,
-            &SlashType::Downtime { missing_slots: 200 },
-        );
+        let downtime_slash =
+            calculate_slash_amount(stake, &SlashType::Downtime { missing_slots: 200 });
         assert_eq!(downtime_slash, 200);
     }
 }
-

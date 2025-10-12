@@ -1,12 +1,12 @@
-use aether-types::{Block, Transaction, H256, Slot, ValidatorInfo, PublicKey, VrfProof};
-use aether-ledger::Ledger;
-use aether-mempool::Mempool;
-use aether-consensus::SimpleConsensus;
-use aether-state-storage::Storage;
-use aether-crypto-primitives::Keypair;
-use anyhow::{Result, Context};
+use aether_consensus::SimpleConsensus;
+use aether_crypto_primitives::Keypair;
+use aether_ledger::Ledger;
+use aether_mempool::Mempool;
+use aether_state_storage::Storage;
+use aether_types::{Block, PublicKey, Slot, Transaction, ValidatorInfo, VrfProof, H256};
+use anyhow::{Context, Result};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tokio::time;
 
 pub struct Node {
@@ -45,17 +45,17 @@ impl Node {
 
     pub async fn run(&mut self) -> Result<()> {
         self.running = true;
-        
+
         println!("Node starting...");
         println!("Validator: {}", self.validator_key.is_some());
         println!("Starting slot: {}", self.consensus.current_slot());
 
         while self.running {
             self.process_slot().await?;
-            
+
             // Wait for slot duration (500ms)
             time::sleep(Duration::from_millis(500)).await;
-            
+
             self.consensus.advance_slot();
         }
 
@@ -64,10 +64,10 @@ impl Node {
 
     async fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
-        
+
         if let Some(ref keypair) = self.validator_key {
             let pubkey = PublicKey::from_bytes(keypair.public_key());
-            
+
             if self.consensus.is_leader(slot, &pubkey) {
                 println!("Slot {}: I am leader, producing block", slot);
                 self.produce_block(slot)?;
@@ -85,7 +85,7 @@ impl Node {
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
         // Get transactions from mempool
         let transactions = self.mempool.get_transactions(1000, 5_000_000);
-        
+
         if transactions.is_empty() {
             println!("  No transactions to include");
             return Ok(());
@@ -99,17 +99,18 @@ impl Node {
             .iter()
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
             .count();
-        
-        println!("  {} successful, {} failed", 
-            successful, 
+
+        println!(
+            "  {} successful, {} failed",
+            successful,
             receipts.len() - successful
         );
 
         // Create block
         let state_root = self.ledger.state_root();
         let proposer = self.validator_key.as_ref().unwrap().to_address();
-        
-        let block = Block::new(
+
+        let _block = Block::new(
             slot,
             H256::zero(), // parent hash - would track in production
             aether_types::Address::from_slice(&proposer).unwrap(),
@@ -131,7 +132,7 @@ impl Node {
 
     fn check_finality(&mut self) {
         let current_slot = self.consensus.current_slot();
-        
+
         // Check last few slots for finality
         for slot in self.consensus.finalized_slot()..current_slot {
             if self.consensus.check_finality(slot) {
@@ -152,4 +153,3 @@ impl Node {
         self.mempool.len()
     }
 }
-

@@ -26,24 +26,24 @@
 // - AMM: AIC/SWR trading pair
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
 use aether_types::Address;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AicTokenState {
     /// Total supply
     pub total_supply: u128,
-    
+
     /// Total burned
     pub total_burned: u128,
-    
+
     /// Balances
     pub balances: HashMap<Address, u128>,
-    
+
     /// Allowances (owner -> spender -> amount)
     pub allowances: HashMap<Address, HashMap<Address, u128>>,
-    
+
     /// Mint authority
     pub mint_authority: Address,
 }
@@ -66,29 +66,24 @@ impl AicTokenState {
         }
 
         let balance = self.balances.entry(to).or_insert(0);
-        *balance = balance.checked_add(amount)
-            .ok_or("overflow")?;
-        
-        self.total_supply = self.total_supply.checked_add(amount)
-            .ok_or("overflow")?;
+        *balance = balance.checked_add(amount).ok_or("overflow")?;
+
+        self.total_supply = self.total_supply.checked_add(amount).ok_or("overflow")?;
 
         Ok(())
     }
 
     /// Burn tokens (destroy permanently)
     pub fn burn(&mut self, from: Address, amount: u128) -> Result<(), String> {
-        let balance = self.balances.get_mut(&from)
-            .ok_or("insufficient balance")?;
-        
+        let balance = self.balances.get_mut(&from).ok_or("insufficient balance")?;
+
         if *balance < amount {
             return Err("insufficient balance".to_string());
         }
 
         *balance -= amount;
-        self.total_supply = self.total_supply.checked_sub(amount)
-            .ok_or("underflow")?;
-        self.total_burned = self.total_burned.checked_add(amount)
-            .ok_or("overflow")?;
+        self.total_supply = self.total_supply.checked_sub(amount).ok_or("underflow")?;
+        self.total_burned = self.total_burned.checked_add(amount).ok_or("overflow")?;
 
         Ok(())
     }
@@ -99,24 +94,27 @@ impl AicTokenState {
             return Err("cannot transfer to self".to_string());
         }
 
-        let from_balance = self.balances.get_mut(&from)
-            .ok_or("insufficient balance")?;
-        
+        let from_balance = self.balances.get_mut(&from).ok_or("insufficient balance")?;
+
         if *from_balance < amount {
             return Err("insufficient balance".to_string());
         }
 
         *from_balance -= amount;
-        
+
         let to_balance = self.balances.entry(to).or_insert(0);
-        *to_balance = to_balance.checked_add(amount)
-            .ok_or("overflow")?;
+        *to_balance = to_balance.checked_add(amount).ok_or("overflow")?;
 
         Ok(())
     }
 
     /// Approve spending
-    pub fn approve(&mut self, owner: Address, spender: Address, amount: u128) -> Result<(), String> {
+    pub fn approve(
+        &mut self,
+        owner: Address,
+        spender: Address,
+        amount: u128,
+    ) -> Result<(), String> {
         self.allowances
             .entry(owner)
             .or_insert_with(HashMap::new)
@@ -134,7 +132,8 @@ impl AicTokenState {
         amount: u128,
     ) -> Result<(), String> {
         // Check allowance
-        let allowance = self.allowances
+        let allowance = self
+            .allowances
             .get_mut(&from)
             .and_then(|m| m.get_mut(&caller))
             .ok_or("insufficient allowance")?;
@@ -175,9 +174,9 @@ mod tests {
     #[test]
     fn test_mint() {
         let mut state = AicTokenState::new(addr(1));
-        
+
         state.mint(addr(1), addr(2), 1000).unwrap();
-        
+
         assert_eq!(state.balance_of(&addr(2)), 1000);
         assert_eq!(state.total_supply, 1000);
     }
@@ -185,10 +184,10 @@ mod tests {
     #[test]
     fn test_burn() {
         let mut state = AicTokenState::new(addr(1));
-        
+
         state.mint(addr(1), addr(2), 1000).unwrap();
         state.burn(addr(2), 300).unwrap();
-        
+
         assert_eq!(state.balance_of(&addr(2)), 700);
         assert_eq!(state.total_burned, 300);
         assert_eq!(state.total_supply, 700);
@@ -197,10 +196,10 @@ mod tests {
     #[test]
     fn test_transfer() {
         let mut state = AicTokenState::new(addr(1));
-        
+
         state.mint(addr(1), addr(2), 1000).unwrap();
         state.transfer(addr(2), addr(3), 400).unwrap();
-        
+
         assert_eq!(state.balance_of(&addr(2)), 600);
         assert_eq!(state.balance_of(&addr(3)), 400);
     }
@@ -208,11 +207,11 @@ mod tests {
     #[test]
     fn test_approve_and_transfer_from() {
         let mut state = AicTokenState::new(addr(1));
-        
+
         state.mint(addr(1), addr(2), 1000).unwrap();
         state.approve(addr(2), addr(3), 500).unwrap();
         state.transfer_from(addr(3), addr(2), addr(4), 300).unwrap();
-        
+
         assert_eq!(state.balance_of(&addr(2)), 700);
         assert_eq!(state.balance_of(&addr(4)), 300);
         assert_eq!(state.allowance_of(&addr(2), &addr(3)), 200);

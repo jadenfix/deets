@@ -19,7 +19,7 @@ use std::collections::HashSet;
 /// - W(a) ∩ R(b) ≠ ∅ (write-read)
 /// - W(b) ∩ R(a) ≠ ∅ (read-write)
 /// - Inputs(a) ∩ Inputs(b) ≠ ∅ (UTxO conflict)
-
+///
 pub struct ParallelScheduler {
     /// Maximum batch size
     max_batch_size: usize,
@@ -96,17 +96,17 @@ impl ParallelScheduler {
     {
         // Execute each batch sequentially (batches have dependencies)
         // Within each batch, transactions can run in parallel
-        
+
         for batch in batches {
             // In production: use rayon
             // batch.par_iter().try_for_each(|tx| executor(tx))?;
-            
+
             // For now: sequential within batch
             for tx in &batch {
                 executor(tx)?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -117,7 +117,7 @@ impl ParallelScheduler {
         }
 
         let batches = self.schedule(transactions);
-        
+
         // Speedup = total_txs / num_sequential_steps
         // where num_sequential_steps = number of batches
         transactions.len() as f64 / batches.len() as f64
@@ -133,7 +133,7 @@ impl Default for ParallelScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_types::{Address, PublicKey, Signature, UtxoId, UtxoOutput, H256};
+    use aether_types::{Address, PublicKey, Signature};
     use std::collections::HashSet;
 
     fn create_test_tx(reads: Vec<u8>, writes: Vec<u8>) -> Transaction {
@@ -141,7 +141,7 @@ mod tests {
             .iter()
             .map(|&b| Address::from_slice(&[b; 20]).unwrap())
             .collect();
-        
+
         let write_addrs: HashSet<Address> = writes
             .iter()
             .map(|&b| Address::from_slice(&[b; 20]).unwrap())
@@ -166,14 +166,14 @@ mod tests {
     #[test]
     fn test_non_conflicting_transactions() {
         let scheduler = ParallelScheduler::new();
-        
+
         // Three transactions with disjoint R/W sets
         let tx1 = create_test_tx(vec![], vec![1]);
         let tx2 = create_test_tx(vec![], vec![2]);
         let tx3 = create_test_tx(vec![], vec![3]);
-        
+
         let batches = scheduler.schedule(&[tx1, tx2, tx3]);
-        
+
         // Should all be in one batch (no conflicts)
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].len(), 3);
@@ -182,13 +182,13 @@ mod tests {
     #[test]
     fn test_conflicting_transactions() {
         let scheduler = ParallelScheduler::new();
-        
+
         // Two transactions writing to same address
         let tx1 = create_test_tx(vec![], vec![1]);
         let tx2 = create_test_tx(vec![], vec![1]); // Conflicts with tx1
-        
+
         let batches = scheduler.schedule(&[tx1, tx2]);
-        
+
         // Should be in separate batches
         assert_eq!(batches.len(), 2);
         assert_eq!(batches[0].len(), 1);
@@ -198,13 +198,13 @@ mod tests {
     #[test]
     fn test_read_write_conflict() {
         let scheduler = ParallelScheduler::new();
-        
+
         // tx1 writes, tx2 reads same address
         let tx1 = create_test_tx(vec![], vec![1]);
         let tx2 = create_test_tx(vec![1], vec![]);
-        
+
         let batches = scheduler.schedule(&[tx1, tx2]);
-        
+
         // Should be in separate batches (write-read conflict)
         assert_eq!(batches.len(), 2);
     }
@@ -212,28 +212,28 @@ mod tests {
     #[test]
     fn test_complex_dependencies() {
         let scheduler = ParallelScheduler::new();
-        
+
         // tx1: W(1)
         // tx2: W(2)
         // tx3: R(1), W(3)
         // tx4: R(2), W(4)
         // tx5: R(3, 4), W(5)
-        
+
         let tx1 = create_test_tx(vec![], vec![1]);
         let tx2 = create_test_tx(vec![], vec![2]);
         let tx3 = create_test_tx(vec![1], vec![3]);
         let tx4 = create_test_tx(vec![2], vec![4]);
         let tx5 = create_test_tx(vec![3, 4], vec![5]);
-        
+
         let batches = scheduler.schedule(&[tx1, tx2, tx3, tx4, tx5]);
-        
+
         // Expected batches:
         // Batch 0: tx1, tx2 (no conflicts)
         // Batch 1: tx3, tx4 (depend on batch 0, but independent of each other)
         // Batch 2: tx5 (depends on batch 1)
-        
+
         assert!(batches.len() >= 3);
-        
+
         // First batch should have tx1 and tx2
         assert!(batches[0].len() >= 2);
     }
@@ -241,14 +241,12 @@ mod tests {
     #[test]
     fn test_speedup_estimate() {
         let scheduler = ParallelScheduler::new();
-        
+
         // All independent transactions
-        let txs: Vec<Transaction> = (0..10)
-            .map(|i| create_test_tx(vec![], vec![i]))
-            .collect();
-        
+        let txs: Vec<Transaction> = (0..10).map(|i| create_test_tx(vec![], vec![i])).collect();
+
         let speedup = scheduler.speedup_estimate(&txs);
-        
+
         // Should be close to 10x (all can run in parallel)
         assert!(speedup > 5.0);
     }
@@ -257,8 +255,7 @@ mod tests {
     fn test_empty_schedule() {
         let scheduler = ParallelScheduler::new();
         let batches = scheduler.schedule(&[]);
-        
+
         assert_eq!(batches.len(), 0);
     }
 }
-

@@ -17,4 +17,3 @@ sha2 = "0.10"
 
 [dev-dependencies]
 aether-crypto-primitives = { path = "../crypto/primitives" }
-

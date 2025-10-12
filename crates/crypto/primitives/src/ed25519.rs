@@ -1,14 +1,14 @@
-use ed25519_dalek::{Signer, Verifier, SigningKey, VerifyingKey, Signature as DalekSignature};
+use ed25519_dalek::{Signature as DalekSignature, Signer, SigningKey, Verifier, VerifyingKey};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Ed25519Error {
     #[error("invalid signature")]
-    InvalidSignature,
+    Signature,
     #[error("invalid public key")]
-    InvalidPublicKey,
+    PublicKey,
     #[error("invalid secret key")]
-    InvalidSecretKey,
+    SecretKey,
 }
 
 pub struct Keypair {
@@ -24,7 +24,7 @@ impl Keypair {
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Ed25519Error> {
         if bytes.len() != 32 {
-            return Err(Ed25519Error::InvalidSecretKey);
+            return Err(Ed25519Error::SecretKey);
         }
         let mut key_bytes = [0u8; 32];
         key_bytes.copy_from_slice(bytes);
@@ -47,16 +47,15 @@ impl Keypair {
 
 pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Ed25519Error> {
     if public_key.len() != 32 {
-        return Err(Ed25519Error::InvalidPublicKey);
+        return Err(Ed25519Error::PublicKey);
     }
     if signature.len() != 64 {
-        return Err(Ed25519Error::InvalidSignature);
+        return Err(Ed25519Error::Signature);
     }
 
     let mut pk_bytes = [0u8; 32];
     pk_bytes.copy_from_slice(public_key);
-    let verifying_key = VerifyingKey::from_bytes(&pk_bytes)
-        .map_err(|_| Ed25519Error::InvalidPublicKey)?;
+    let verifying_key = VerifyingKey::from_bytes(&pk_bytes).map_err(|_| Ed25519Error::PublicKey)?;
 
     let mut sig_bytes = [0u8; 64];
     sig_bytes.copy_from_slice(signature);
@@ -64,7 +63,7 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(),
 
     verifying_key
         .verify(message, &signature)
-        .map_err(|_| Ed25519Error::InvalidSignature)?;
+        .map_err(|_| Ed25519Error::Signature)?;
 
     Ok(())
 }
@@ -94,4 +93,3 @@ mod tests {
         assert!(verify(&public_key, message, &signature).is_err());
     }
 }
-

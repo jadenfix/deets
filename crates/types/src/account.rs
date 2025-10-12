@@ -1,4 +1,4 @@
-use crate::primitives::{H256, Address};
+use crate::primitives::{Address, H256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,4 +38,3 @@ pub struct Utxo {
     pub owner: Address,
     pub script_hash: Option<H256>,
 }
-

@@ -38,23 +38,23 @@
 // fn encode(data: &[u8]) -> Vec<Vec<u8>>:
 //     n = k + r
 //     chunk_size = (data.len() + k - 1) / k
-//     
+//
 //     // Split data into k chunks
 //     data_shards = split_into_chunks(data, k, chunk_size)
-//     
+//
 //     // Compute r parity shards
 //     parity_shards = encoder.encode_parity(data_shards)
-//     
+//
 //     // Return all n shards
 //     return data_shards + parity_shards
 //
 // fn decode(shards: Vec<(usize, Vec<u8>)>) -> Result<Vec<u8>>:
 //     if shards.len() < k:
 //         return Err("insufficient shards")
-//     
+//
 //     // Use any k shards to reconstruct all data shards
 //     reconstructed = encoder.reconstruct(shards[0..k])
-//     
+//
 //     // Concatenate data shards
 //     return join(reconstructed)
 // ```
@@ -63,7 +63,7 @@
 // Data vector D = [d1, d2, ..., dk]
 // Generator matrix G (k × n) encodes:
 //   Codeword C = D × G = [d1, d2, ..., dk, p1, p2, ..., pr]
-// 
+//
 // Any k columns of G form invertible matrix → can solve for D
 //
 // PERFORMANCE:
@@ -76,9 +76,8 @@
 // - Reconstructed data → Block validator
 // ============================================================================
 
-pub mod encoder;
 pub mod decoder;
+pub mod encoder;
 
-pub use encoder::ReedSolomonEncoder;
 pub use decoder::ReedSolomonDecoder;
-
+pub use encoder::ReedSolomonEncoder;

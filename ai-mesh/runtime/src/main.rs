@@ -26,17 +26,17 @@
 //     // Initialize TEE
 //     tee_context = init_tee_environment()
 //     provider_key = load_provider_key()
-//     
+//
 //     // Connect to job router
 //     router = connect_to_router(ROUTER_ENDPOINT)
-//     
+//
 //     loop:
 //         // Wait for job assignment
 //         job = router.accept_job()
-//         
+//
 //         // Execute job in TEE
 //         result = execute_job(job, tee_context)
-//         
+//
 //         // Generate and submit VCR
 //         vcr = generate_vcr(job, result, tee_context, provider_key)
 //         submit_vcr_to_chain(vcr)
@@ -45,18 +45,18 @@
 //     // 1. Download model
 //     model = download_model(job.model_hash)
 //     verify_model_hash(model, job.model_hash)
-//     
+//
 //     // 2. Download code (inference script)
 //     code = download_code(job.code_hash)
 //     verify_code_hash(code, job.code_hash)
-//     
+//
 //     // 3. Parse input
 //     input = parse_input(job.input_data)
 //     verify_input_hash(input, job.input_hash)
-//     
+//
 //     // 4. Set deterministic seed
 //     set_random_seed(job.seed)
-//     
+//
 //     // 5. Execute inference with trace capture
 //     trace_layers = []
 //     output = run_inference(model, input, code, |layer_output| {
@@ -64,9 +64,9 @@
 //         if is_critical_layer(layer):
 //             trace_layers.push(layer_output)
 //     })
-//     
+//
 //     output_hash = hash(output)
-//     
+//
 //     return JobResult {
 //         output: output,
 //         output_hash: output_hash,
@@ -83,16 +83,16 @@
 //         job.code_hash ||
 //         job.seed
 //     )
-//     
+//
 //     tee_quote = tee_context.generate_quote(binding)
-//     
+//
 //     // 2. Generate KZG commitments for trace
 //     kzg_commits = []
 //     for layer_trace in result.trace_layers:
 //         polynomial = interpolate(layer_trace)
 //         commitment = kzg_commit(polynomial)
 //         kzg_commits.push(commitment)
-//     
+//
 //     // 3. Construct VCR
 //     vcr = Vcr {
 //         job_id: job.id,
@@ -112,36 +112,36 @@
 //         },
 //         signature: vec![]  // Sign next
 //     }
-//     
+//
 //     // 4. Sign VCR
 //     message = serialize_for_signing(vcr)
 //     vcr.signature = provider_key.sign(message)
-//     
+//
 //     return vcr
 //
 // fn handle_kzg_challenge(challenge):
 //     // Watchtower issued challenge
 //     job_id = challenge.vcr_id
-//     
+//
 //     // Load trace from disk
 //     trace = load_trace(job_id)
-//     
+//
 //     openings = []
 //     for (layer_idx, point_indices) in challenge.requested_points:
 //         layer_trace = trace.layers[layer_idx]
 //         polynomial = interpolate(layer_trace)
-//         
+//
 //         for point_idx in point_indices:
 //             value = polynomial.eval(point_idx)
 //             proof = kzg_create_opening(polynomial, point_idx)
-//             
+//
 //             openings.push(Opening {
 //                 layer_idx: layer_idx,
 //                 point_idx: point_idx,
 //                 value: value,
 //                 proof: proof
 //             })
-//     
+//
 //     submit_kzg_response(challenge.id, openings)
 // ```
 //
@@ -183,8 +183,7 @@ fn main() {
     println!("Aether AI Runtime - Attested Worker");
     println!("Version: 0.1.0");
     println!("TEE: Initializing...");
-    
+
     // Actual implementation would initialize TEE, connect to router,
     // and process jobs in an event loop
 }
-

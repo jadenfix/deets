@@ -4,8 +4,8 @@
 // PURPOSE: Succinct cryptographic commitment to entire ledger state
 // ============================================================================
 
-pub mod tree;
 pub mod proof;
+pub mod tree;
 
-pub use tree::{SparseMerkleTree, MerkleProof};
-
+pub use proof::MerkleProof;
+pub use tree::SparseMerkleTree;

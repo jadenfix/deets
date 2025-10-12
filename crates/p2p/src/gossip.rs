@@ -16,20 +16,20 @@ use std::time::{Duration, Instant};
 /// - D_lo: Lower bound for peer degree (4)
 /// - D_hi: Upper bound for peer degree (12)
 /// - Heartbeat interval: 1 second
-
+///
 pub struct GossipManager {
     /// Subscribed topics
     subscriptions: HashMap<String, TopicInfo>,
-    
+
     /// Seen messages (for deduplication)
     seen_messages: HashSet<Vec<u8>>,
-    
+
     /// Message cache (for history)
     message_cache: Vec<(Vec<u8>, Instant)>,
-    
+
     /// Max cache size
     cache_size: usize,
-    
+
     /// Cache duration
     cache_duration: Duration,
 }
@@ -55,11 +55,14 @@ impl GossipManager {
     /// Subscribe to a topic
     pub fn subscribe(&mut self, topic: String) {
         if !self.subscriptions.contains_key(&topic) {
-            self.subscriptions.insert(topic.clone(), TopicInfo {
-                name: topic.clone(),
-                peers: vec![],
-                message_count: 0,
-            });
+            self.subscriptions.insert(
+                topic.clone(),
+                TopicInfo {
+                    name: topic.clone(),
+                    peers: vec![],
+                    message_count: 0,
+                },
+            );
             println!("Subscribed to gossip topic: {}", topic);
         }
     }
@@ -152,9 +155,8 @@ impl GossipManager {
         let now = Instant::now();
 
         // Remove old cached messages
-        self.message_cache.retain(|(_, timestamp)| {
-            now.duration_since(*timestamp) < self.cache_duration
-        });
+        self.message_cache
+            .retain(|(_, timestamp)| now.duration_since(*timestamp) < self.cache_duration);
 
         // Limit seen messages
         if self.seen_messages.len() > self.cache_size {
@@ -167,7 +169,7 @@ impl GossipManager {
         Sha256::digest(message).to_vec()
     }
 
-    fn cache_message(&mut self, hash: Vec<u8>, message: Vec<u8>) {
+    fn cache_message(&mut self, hash: Vec<u8>, _message: Vec<u8>) {
         if self.message_cache.len() >= self.cache_size {
             self.message_cache.remove(0);
         }
@@ -196,7 +198,7 @@ mod tests {
     #[test]
     fn test_subscribe() {
         let mut gossip = GossipManager::new();
-        
+
         gossip.subscribe("/aether/tx".to_string());
         assert_eq!(gossip.topic_count(), 1);
     }
@@ -204,25 +206,27 @@ mod tests {
     #[test]
     fn test_publish() {
         let mut gossip = GossipManager::new();
-        
+
         gossip.subscribe("/aether/tx".to_string());
-        gossip.publish("/aether/tx", b"test message".to_vec()).unwrap();
-        
+        gossip
+            .publish("/aether/tx", b"test message".to_vec())
+            .unwrap();
+
         assert_eq!(gossip.seen_message_count(), 1);
     }
 
     #[test]
     fn test_deduplication() {
         let mut gossip = GossipManager::new();
-        
+
         gossip.subscribe("/aether/tx".to_string());
-        
+
         let msg = b"test message".to_vec();
-        
+
         // First publish
         gossip.publish("/aether/tx", msg.clone()).unwrap();
         assert_eq!(gossip.seen_message_count(), 1);
-        
+
         // Duplicate publish - should be ignored
         gossip.publish("/aether/tx", msg).unwrap();
         assert_eq!(gossip.seen_message_count(), 1); // Still 1
@@ -231,17 +235,17 @@ mod tests {
     #[test]
     fn test_peer_management() {
         let mut gossip = GossipManager::new();
-        
+
         gossip.subscribe("/aether/tx".to_string());
-        
+
         gossip.add_peer_to_topic("/aether/tx", "peer1".to_string());
         gossip.add_peer_to_topic("/aether/tx", "peer2".to_string());
-        
+
         let peers = gossip.get_topic_peers("/aether/tx");
         assert_eq!(peers.len(), 2);
-        
+
         gossip.remove_peer_from_topic("/aether/tx", "peer1");
-        
+
         let peers = gossip.get_topic_peers("/aether/tx");
         assert_eq!(peers.len(), 1);
     }
@@ -249,20 +253,19 @@ mod tests {
     #[test]
     fn test_handle_message() {
         let mut gossip = GossipManager::new();
-        
+
         gossip.subscribe("/aether/tx".to_string());
-        
+
         let msg1 = b"message1".to_vec();
         let msg2 = b"message2".to_vec();
-        
+
         // New message
         assert!(gossip.handle_message("/aether/tx", msg1.clone()).unwrap());
-        
+
         // Duplicate
         assert!(!gossip.handle_message("/aether/tx", msg1).unwrap());
-        
+
         // New message
         assert!(gossip.handle_message("/aether/tx", msg2).unwrap());
     }
 }
-

@@ -21,19 +21,19 @@ use serde::{Deserialize, Serialize};
 pub struct StakingState {
     /// Total staked amount
     pub total_staked: u128,
-    
+
     /// All validators
     pub validators: Vec<Validator>,
-    
+
     /// All delegations
     pub delegations: Vec<Delegation>,
-    
+
     /// Pending unbonds
     pub unbonding: Vec<Unbonding>,
-    
+
     /// Reward pool
     pub reward_pool: u128,
-    
+
     /// Current epoch
     pub current_epoch: u64,
 }
@@ -86,7 +86,8 @@ impl StakingState {
         reward_address: Address,
     ) -> Result<(), String> {
         // Check minimum stake
-        if initial_stake < 100_000_000 { // 100 SWR with 6 decimals
+        if initial_stake < 100_000_000 {
+            // 100 SWR with 6 decimals
             return Err("insufficient stake".to_string());
         }
 
@@ -125,7 +126,8 @@ impl StakingState {
         amount: u128,
     ) -> Result<(), String> {
         // Find validator
-        let validator_idx = self.validators
+        let validator_idx = self
+            .validators
             .iter()
             .position(|v| v.address == validator)
             .ok_or("validator not found")?;
@@ -136,7 +138,8 @@ impl StakingState {
         }
 
         // Create or update delegation
-        if let Some(delegation) = self.delegations
+        if let Some(delegation) = self
+            .delegations
             .iter_mut()
             .find(|d| d.delegator == delegator && d.validator == validator)
         {
@@ -166,7 +169,8 @@ impl StakingState {
         current_slot: u64,
     ) -> Result<(), String> {
         // Find delegation
-        let delegation = self.delegations
+        let delegation = self
+            .delegations
             .iter_mut()
             .find(|d| d.delegator == delegator && d.validator == validator)
             .ok_or("delegation not found")?;
@@ -181,7 +185,8 @@ impl StakingState {
 
         // Remove if zero
         if delegation.amount == 0 {
-            self.delegations.retain(|d| !(d.delegator == delegator && d.validator == validator));
+            self.delegations
+                .retain(|d| !(d.delegator == delegator && d.validator == validator));
         }
 
         // Update validator
@@ -223,7 +228,8 @@ impl StakingState {
         validator: Address,
         slash_rate: u128, // Basis points (e.g., 500 = 5%)
     ) -> Result<u128, String> {
-        let v = self.validators
+        let v = self
+            .validators
             .iter_mut()
             .find(|v| v.address == validator)
             .ok_or("validator not found")?;
@@ -319,18 +325,11 @@ mod tests {
     fn test_delegate() {
         let mut state = StakingState::new();
 
-        state.register_validator(
-            test_address(1),
-            1_000_000_000,
-            1000,
-            test_address(2),
-        ).unwrap();
+        state
+            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .unwrap();
 
-        let result = state.delegate(
-            test_address(3),
-            test_address(1),
-            500_000_000,
-        );
+        let result = state.delegate(test_address(3), test_address(1), 500_000_000);
 
         assert!(result.is_ok());
         assert_eq!(state.delegations.len(), 1);
@@ -341,25 +340,15 @@ mod tests {
     fn test_unbond() {
         let mut state = StakingState::new();
 
-        state.register_validator(
-            test_address(1),
-            1_000_000_000,
-            1000,
-            test_address(2),
-        ).unwrap();
+        state
+            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .unwrap();
 
-        state.delegate(
-            test_address(3),
-            test_address(1),
-            500_000_000,
-        ).unwrap();
+        state
+            .delegate(test_address(3), test_address(1), 500_000_000)
+            .unwrap();
 
-        let result = state.unbond(
-            test_address(3),
-            test_address(1),
-            200_000_000,
-            1000,
-        );
+        let result = state.unbond(test_address(3), test_address(1), 200_000_000, 1000);
 
         assert!(result.is_ok());
         assert_eq!(state.unbonding.len(), 1);
@@ -370,18 +359,18 @@ mod tests {
     fn test_slash() {
         let mut state = StakingState::new();
 
-        state.register_validator(
-            test_address(1),
-            1_000_000_000,
-            1000,
-            test_address(2),
-        ).unwrap();
+        state
+            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .unwrap();
 
         // Slash 5%
         let slashed = state.slash(test_address(1), 500).unwrap();
 
         assert_eq!(slashed, 50_000_000);
-        assert_eq!(state.get_validator(&test_address(1)).unwrap().staked_amount, 950_000_000);
+        assert_eq!(
+            state.get_validator(&test_address(1)).unwrap().staked_amount,
+            950_000_000
+        );
     }
 
     #[test]
@@ -404,4 +393,3 @@ mod tests {
         assert_eq!(completed[0].1, 100);
     }
 }
-

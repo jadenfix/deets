@@ -19,4 +19,3 @@
 fn main() {
     println!("Aether Indexer v0.1.0");
 }
-

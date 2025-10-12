@@ -35,8 +35,8 @@
 // - Bandwidth: ~1 MB/s per peer
 // ============================================================================
 
-pub mod network;
 pub mod gossip;
+pub mod network;
 
-pub use network::{P2PNetwork, PeerInfo};
 pub use gossip::GossipManager;
+pub use network::{P2PNetwork, PeerInfo};

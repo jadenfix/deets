@@ -1,5 +1,5 @@
-use anyhow::Result;
 use aether_types::{Address, H256};
+use anyhow::Result;
 use std::collections::HashMap;
 
 /// Host Functions for WASM Contracts
@@ -12,14 +12,14 @@ use std::collections::HashMap;
 /// - Memory access is bounds-checked
 /// - State changes are atomic
 /// - No access to host filesystem/network
-
+///
 pub struct HostFunctions {
     /// Contract storage (key -> value)
     storage: HashMap<Vec<u8>, Vec<u8>>,
-    
+
     /// Account balances
     balances: HashMap<Address, u128>,
-    
+
     /// Gas meter
     gas_used: u64,
     gas_limit: u64,
@@ -46,12 +46,12 @@ impl HostFunctions {
     /// Cost: 5000 gas (expensive to incentivize minimal storage)
     pub fn storage_write(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<()> {
         self.charge_gas(5000)?;
-        
+
         // Charge extra for new keys
         if !self.storage.contains_key(&key) {
             self.charge_gas(20000)?; // New storage slot
         }
-        
+
         self.storage.insert(key, value);
         Ok(())
     }
@@ -67,26 +67,27 @@ impl HostFunctions {
     /// Cost: 9000 gas
     pub fn transfer(&mut self, from: &Address, to: &Address, amount: u128) -> Result<()> {
         self.charge_gas(9000)?;
-        
+
         let from_balance = self.balances.get(from).copied().unwrap_or(0);
         if from_balance < amount {
             anyhow::bail!("insufficient balance");
         }
-        
+
         let to_balance = self.balances.get(to).copied().unwrap_or(0);
-        
+
         self.balances.insert(*from, from_balance - amount);
         self.balances.insert(*to, to_balance + amount);
-        
+
         Ok(())
     }
 
     /// Compute SHA256 hash
     /// Cost: 60 gas + 12 gas per word
+    #[allow(clippy::manual_div_ceil)]
     pub fn sha256(&mut self, data: &[u8]) -> Result<H256> {
         let words = (data.len() + 31) / 32;
         self.charge_gas(60 + 12 * words as u64)?;
-        
+
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(data);
         Ok(H256::from_slice(&hash).unwrap())
@@ -96,10 +97,10 @@ impl HostFunctions {
     /// Cost: 375 gas + 8 gas per byte
     pub fn emit_log(&mut self, topics: Vec<H256>, data: Vec<u8>) -> Result<()> {
         self.charge_gas(375 + 8 * data.len() as u64)?;
-        
+
         // In production: store logs for receipts
         println!("LOG: topics={:?}, data_len={}", topics, data.len());
-        
+
         Ok(())
     }
 
@@ -132,13 +133,15 @@ impl HostFunctions {
     }
 
     fn charge_gas(&mut self, amount: u64) -> Result<()> {
-        self.gas_used = self.gas_used.checked_add(amount)
+        self.gas_used = self
+            .gas_used
+            .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("gas overflow"))?;
-        
+
         if self.gas_used > self.gas_limit {
             anyhow::bail!("out of gas");
         }
-        
+
         Ok(())
     }
 
@@ -154,14 +157,15 @@ mod tests {
     #[test]
     fn test_storage_operations() {
         let mut host = HostFunctions::new(100_000);
-        
+
         // Write
-        host.storage_write(b"key1".to_vec(), b"value1".to_vec()).unwrap();
-        
+        host.storage_write(b"key1".to_vec(), b"value1".to_vec())
+            .unwrap();
+
         // Read
         let value = host.storage_read(b"key1").unwrap();
         assert_eq!(value, Some(b"value1".to_vec()));
-        
+
         // Read non-existent
         let value = host.storage_read(b"key2").unwrap();
         assert_eq!(value, None);
@@ -170,13 +174,13 @@ mod tests {
     #[test]
     fn test_balance_operations() {
         let mut host = HostFunctions::new(100_000);
-        
+
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
-        
+
         // Initial balance
         host.balances.insert(addr1, 1000);
-        
+
         assert_eq!(host.get_balance(&addr1).unwrap(), 1000);
         assert_eq!(host.get_balance(&addr2).unwrap(), 0);
     }
@@ -184,15 +188,15 @@ mod tests {
     #[test]
     fn test_transfer() {
         let mut host = HostFunctions::new(100_000);
-        
+
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
-        
+
         host.balances.insert(addr1, 1000);
-        
+
         // Transfer
         host.transfer(&addr1, &addr2, 300).unwrap();
-        
+
         assert_eq!(host.get_balance(&addr1).unwrap(), 700);
         assert_eq!(host.get_balance(&addr2).unwrap(), 300);
     }
@@ -200,12 +204,12 @@ mod tests {
     #[test]
     fn test_transfer_insufficient_balance() {
         let mut host = HostFunctions::new(100_000);
-        
+
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
-        
+
         host.balances.insert(addr1, 100);
-        
+
         // Try to transfer more than balance
         let result = host.transfer(&addr1, &addr2, 200);
         assert!(result.is_err());
@@ -214,7 +218,7 @@ mod tests {
     #[test]
     fn test_sha256() {
         let mut host = HostFunctions::new(100_000);
-        
+
         let hash = host.sha256(b"hello world").unwrap();
         assert_eq!(hash.as_bytes().len(), 32);
     }
@@ -222,13 +226,12 @@ mod tests {
     #[test]
     fn test_gas_limits() {
         let mut host = HostFunctions::new(100); // Very low limit
-        
+
         // First operation succeeds
         assert!(host.storage_read(b"key").is_ok());
-        
+
         // Second operation should fail (out of gas)
         let result = host.storage_write(b"key".to_vec(), b"value".to_vec());
         assert!(result.is_err());
     }
 }
-

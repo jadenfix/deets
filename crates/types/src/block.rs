@@ -1,4 +1,4 @@
-use crate::primitives::{H256, Address, PublicKey, Signature, Slot};
+use crate::primitives::{Address, PublicKey, Slot, H256};
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
@@ -70,4 +70,3 @@ impl Block {
         }
     }
 }
-

@@ -1,5 +1,5 @@
-use anyhow::{Result, Context};
-use rocksdb::{DB, Options, ColumnFamilyDescriptor, WriteBatch};
+use anyhow::{Context, Result};
+use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -10,6 +10,8 @@ pub const CF_BLOCKS: &str = "blocks";
 pub const CF_RECEIPTS: &str = "receipts";
 pub const CF_METADATA: &str = "metadata";
 
+type DbIterator<'a> = Box<dyn Iterator<Item = (Box<[u8]>, Box<[u8]>)> + 'a>;
+
 pub struct Storage {
     db: Arc<DB>,
 }
@@ -19,14 +21,14 @@ impl Storage {
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
-        
+
         // Performance tuning
         opts.set_write_buffer_size(256 * 1024 * 1024); // 256MB
         opts.set_max_write_buffer_number(4);
         opts.set_level_zero_file_num_compaction_trigger(4);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts.increase_parallelism(num_cpus::get() as i32);
-        
+
         let cfs = vec![
             ColumnFamilyDescriptor::new(CF_ACCOUNTS, Options::default()),
             ColumnFamilyDescriptor::new(CF_UTXOS, Options::default()),
@@ -36,59 +38,55 @@ impl Storage {
             ColumnFamilyDescriptor::new(CF_METADATA, Options::default()),
         ];
 
-        let db = DB::open_cf_descriptors(&opts, path, cfs)
-            .context("failed to open database")?;
+        let db = DB::open_cf_descriptors(&opts, path, cfs).context("failed to open database")?;
 
         Ok(Storage { db: Arc::new(db) })
     }
 
     pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let cf_handle = self.db.cf_handle(cf)
-            .context("column family not found")?;
+        let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
         Ok(self.db.get_cf(cf_handle, key)?)
     }
 
     pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
-        let cf_handle = self.db.cf_handle(cf)
-            .context("column family not found")?;
+        let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
         self.db.put_cf(cf_handle, key, value)?;
         Ok(())
     }
 
     pub fn delete(&self, cf: &str, key: &[u8]) -> Result<()> {
-        let cf_handle = self.db.cf_handle(cf)
-            .context("column family not found")?;
+        let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
         self.db.delete_cf(cf_handle, key)?;
         Ok(())
     }
 
     pub fn write_batch(&self, batch: StorageBatch) -> Result<()> {
         let mut wb = WriteBatch::default();
-        
+
         for op in batch.operations {
             match op {
                 BatchOperation::Put { cf, key, value } => {
-                    let cf_handle = self.db.cf_handle(&cf)
-                        .context("column family not found")?;
+                    let cf_handle = self.db.cf_handle(&cf).context("column family not found")?;
                     wb.put_cf(cf_handle, key, value);
                 }
                 BatchOperation::Delete { cf, key } => {
-                    let cf_handle = self.db.cf_handle(&cf)
-                        .context("column family not found")?;
+                    let cf_handle = self.db.cf_handle(&cf).context("column family not found")?;
                     wb.delete_cf(cf_handle, key);
                 }
             }
         }
-        
+
         self.db.write(wb)?;
         Ok(())
     }
 
-    pub fn iterator(&self, cf: &str) -> Result<impl Iterator<Item = (Box<[u8]>, Box<[u8]>)> + '_> {
-        let cf_handle = self.db.cf_handle(cf)
-            .context("column family not found")?;
-        Ok(self.db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start)
-            .map(|item| item.unwrap()))
+    pub fn iterator(&self, cf: &str) -> Result<DbIterator<'_>> {
+        let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
+        let iter = self
+            .db
+            .iterator_cf(cf_handle, rocksdb::IteratorMode::Start)
+            .map(|item| item.unwrap());
+        Ok(Box::new(iter))
     }
 }
 
@@ -131,6 +129,12 @@ impl StorageBatch {
     }
 }
 
+impl Default for StorageBatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,11 +162,16 @@ mod tests {
         let mut batch = StorageBatch::new();
         batch.put(CF_METADATA, b"key1".to_vec(), b"value1".to_vec());
         batch.put(CF_METADATA, b"key2".to_vec(), b"value2".to_vec());
-        
+
         storage.write_batch(batch).unwrap();
 
-        assert_eq!(storage.get(CF_METADATA, b"key1").unwrap(), Some(b"value1".to_vec()));
-        assert_eq!(storage.get(CF_METADATA, b"key2").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(
+            storage.get(CF_METADATA, b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
+        assert_eq!(
+            storage.get(CF_METADATA, b"key2").unwrap(),
+            Some(b"value2".to_vec())
+        );
     }
 }
-

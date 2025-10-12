@@ -27,9 +27,9 @@
 // - Staking slashes for invalid VCRs
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
-use anyhow::{Result, bail};
 use aether_types::H256;
+use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiableComputeReceipt {
@@ -38,16 +38,16 @@ pub struct VerifiableComputeReceipt {
     pub model_hash: H256,
     pub input_hash: H256,
     pub output_hash: H256,
-    pub trace_commitment: Vec<u8>,  // KZG commitment
-    pub tee_attestation: Vec<u8>,   // TEE attestation report
+    pub trace_commitment: Vec<u8>, // KZG commitment
+    pub tee_attestation: Vec<u8>,  // TEE attestation report
     pub timestamp: u64,
-    pub signature: Vec<u8>,         // Worker signature
+    pub signature: Vec<u8>, // Worker signature
 }
 
 pub struct VcrValidator {
     /// Minimum quorum size for consensus
     quorum_size: usize,
-    
+
     /// Challenge window (slots)
     challenge_window: u64,
 }
@@ -126,7 +126,7 @@ impl VcrValidator {
         // TODO: Verify worker signature
         // 1. Hash VCR fields
         // 2. Verify signature against worker public key
-        
+
         if vcr.signature.is_empty() {
             bail!("empty signature");
         }
@@ -171,64 +171,61 @@ mod tests {
     fn test_verify_single_vcr() {
         let validator = VcrValidator::new();
         let vcr = create_test_vcr(1, 5);
-        
+
         assert!(validator.verify(&vcr).is_ok());
     }
 
     #[test]
     fn test_quorum_consensus() {
         let validator = VcrValidator::new();
-        
+
         // 3 workers, all agree
         let vcrs = vec![
             create_test_vcr(1, 5),
             create_test_vcr(2, 5),
             create_test_vcr(3, 5),
         ];
-        
+
         assert!(validator.verify_quorum(&vcrs).is_ok());
     }
 
     #[test]
     fn test_insufficient_quorum() {
         let validator = VcrValidator::new();
-        
+
         // Only 2 workers (need 3)
-        let vcrs = vec![
-            create_test_vcr(1, 5),
-            create_test_vcr(2, 5),
-        ];
-        
+        let vcrs = vec![create_test_vcr(1, 5), create_test_vcr(2, 5)];
+
         assert!(validator.verify_quorum(&vcrs).is_err());
     }
 
     #[test]
     fn test_no_consensus() {
         let validator = VcrValidator::new();
-        
+
         // 3 workers, no agreement
         let vcrs = vec![
             create_test_vcr(1, 5),
             create_test_vcr(2, 6),
             create_test_vcr(3, 7),
         ];
-        
+
         assert!(validator.verify_quorum(&vcrs).is_err());
     }
 
     #[test]
     fn test_mismatched_job_ids() {
         let validator = VcrValidator::new();
-        
+
         let mut vcrs = vec![
             create_test_vcr(1, 5),
             create_test_vcr(2, 5),
             create_test_vcr(3, 5),
         ];
-        
+
         // Change job_id of second VCR
         vcrs[1].job_id = H256::from_slice(&[1u8; 32]).unwrap();
-        
+
         assert!(validator.verify_quorum(&vcrs).is_err());
     }
 }

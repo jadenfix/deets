@@ -36,10 +36,10 @@
 // 6. Return result + gas used
 // ============================================================================
 
-pub mod vm;
 pub mod host_functions;
 pub mod scheduler;
+pub mod vm;
 
-pub use vm::{WasmVm, ExecutionContext, ExecutionResult, Log, gas_costs};
 pub use host_functions::HostFunctions;
 pub use scheduler::ParallelScheduler;
+pub use vm::{gas_costs, ExecutionContext, ExecutionResult, Log, WasmVm};

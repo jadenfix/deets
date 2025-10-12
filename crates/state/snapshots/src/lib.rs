@@ -35,18 +35,18 @@
 //     accounts = []
 //     for (addr, account) in storage.iter_accounts():
 //         accounts.push((addr, account))
-//     
+//
 //     // Export all UTxOs
 //     utxos = []
 //     for (id, utxo) in storage.iter_utxos():
 //         utxos.push((id, utxo))
-//     
+//
 //     // Export Merkle tree
 //     merkle_tree = storage.export_merkle_tree()
-//     
+//
 //     // Get state root
 //     state_root = storage.get_state_root()
-//     
+//
 //     snapshot = Snapshot {
 //         height: height,
 //         state_root: state_root,
@@ -56,11 +56,11 @@
 //         merkle_tree: merkle_tree,
 //         metadata: build_metadata()
 //     }
-//     
+//
 //     // Compress and write
 //     compressed = zstd_compress(serialize(snapshot))
 //     write_file(f"snapshot_{height}.bin", compressed)
-//     
+//
 //     return snapshot
 // ```
 //
@@ -70,25 +70,25 @@
 //     // Read and decompress
 //     compressed = read_file(snapshot_path)
 //     snapshot = deserialize(zstd_decompress(compressed))
-//     
+//
 //     // Verify state root
 //     computed_root = compute_state_root(snapshot.accounts, snapshot.utxos)
 //     if computed_root != snapshot.state_root:
 //         return Err("invalid state root")
-//     
+//
 //     // Import to storage
 //     batch = WriteBatch::new()
-//     
+//
 //     for (addr, account) in snapshot.accounts:
 //         batch.put_account(addr, account)
-//     
+//
 //     for (id, utxo) in snapshot.utxos:
 //         batch.put_utxo(id, utxo)
-//     
+//
 //     storage.import_merkle_tree(snapshot.merkle_tree)
 //     storage.set_state_root(snapshot.state_root)
 //     storage.set_chain_tip(snapshot.height)
-//     
+//
 //     storage.write(batch)
 // ```
 //
@@ -108,10 +108,9 @@
 // - Fast sync capability → Reduces bootstrap time from days to minutes
 // ============================================================================
 
+pub mod compression;
 pub mod generator;
 pub mod importer;
-pub mod compression;
 
-pub use generator::generate_snapshot;
+pub use generator::{decode_snapshot, generate_snapshot, SnapshotMetadata, StateSnapshot};
 pub use importer::import_snapshot;
-

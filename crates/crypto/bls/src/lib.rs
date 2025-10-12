@@ -39,14 +39,14 @@
 //     // Aggregate signatures
 //     sigs = votes.map(|v| v.signature)
 //     agg_sig = bls_aggregate_signatures(sigs)
-//     
+//
 //     // Aggregate pubkeys (for verification)
 //     pubkeys = votes.map(|v| v.validator_pubkey)
 //     agg_pubkey = bls_aggregate_pubkeys(pubkeys)
-//     
+//
 //     // Sum stake
 //     total_stake = sum(votes.map(|v| v.stake))
-//     
+//
 //     return AggregatedVote {
 //         block_hash: votes[0].block_hash,
 //         slot: votes[0].slot,
@@ -83,10 +83,9 @@
 // ============================================================================
 
 pub mod aggregate;
-pub mod verify;
 pub mod keypair;
+pub mod verify;
 
 pub use aggregate::aggregate_signatures;
-pub use verify::verify_aggregated;
 pub use keypair::BlsKeypair;
-
+pub use verify::verify_aggregated;

@@ -40,12 +40,12 @@
 //     latency_score = 100.0 * (1.0 - provider.avg_latency_ms / MAX_LATENCY)
 //     dispute_penalty = provider.disputes_lost * DISPUTE_PENALTY
 //     uptime_score = provider.uptime_ratio * 100.0
-//     
+//
 //     score = 0.4 * success_rate * 100.0
 //           + 0.3 * latency_score
 //           + 0.2 * uptime_score
 //           - dispute_penalty
-//     
+//
 //     return clamp(score, 0.0, 100.0)
 // ```
 //
@@ -55,22 +55,22 @@
 //
 // fn update_on_job_completion(provider, job):
 //     provider.jobs_completed += 1
-//     
+//
 //     // Update latency EWMA
 //     job_latency = job.completion_slot - job.accepted_slot
 //     provider.avg_latency_ms = ALPHA * provider.avg_latency_ms + (1.0 - ALPHA) * job_latency
-//     
+//
 //     // Recalculate score
 //     provider.score = calculate_score(provider)
-//     
+//
 //     provider.last_active_slot = current_slot
 //
 // fn update_on_job_failure(provider, job):
 //     provider.jobs_failed += 1
-//     
+//
 //     // Heavy penalty for failures
 //     provider.score = provider.score * 0.9
-//     
+//
 //     provider.last_active_slot = current_slot
 //
 // fn update_on_dispute(provider, won: bool):
@@ -80,7 +80,7 @@
 //     else:
 //         provider.disputes_lost += 1
 //         provider.score -= DISPUTE_LOSS_PENALTY
-//     
+//
 //     provider.score = clamp(provider.score, 0.0, 100.0)
 // ```
 //
@@ -88,7 +88,7 @@
 // ```
 // fn get_top_providers(model_hash, hardware_tier, min_score, limit) -> Vec<Address>:
 //     candidates = []
-//     
+//
 //     for provider in all_providers:
 //         if provider.score < min_score:
 //             continue
@@ -98,12 +98,12 @@
 //             continue
 //         if current_slot - provider.last_active_slot > STALENESS_THRESHOLD:
 //             continue  // Provider inactive
-//         
+//
 //         candidates.push(provider)
-//     
+//
 //     // Sort by score descending
 //     candidates.sort_by(|a, b| b.score.cmp(a.score))
-//     
+//
 //     return candidates[0..min(limit, candidates.len())]
 //
 // fn get_provider_details(address) -> Option<ProviderReputation>:
@@ -124,9 +124,8 @@
 // - Historical data → Analytics & monitoring
 // ============================================================================
 
-pub mod scoring;
 pub mod ewma;
 pub mod queries;
+pub mod scoring;
 
 pub use scoring::ProviderReputation;
-

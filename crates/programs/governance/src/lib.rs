@@ -26,17 +26,17 @@
 // - Min proposal stake (1000 SWR)
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
 use aether_types::{Address, H256};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ProposalStatus {
-    Active,      // Voting in progress
-    Passed,      // Quorum reached, waiting timelock
-    Failed,      // Didn't reach quorum or majority voted no
-    Executed,    // Successfully executed
-    Cancelled,   // Cancelled by proposer
+    Active,    // Voting in progress
+    Passed,    // Quorum reached, waiting timelock
+    Failed,    // Didn't reach quorum or majority voted no
+    Executed,  // Successfully executed
+    Cancelled, // Cancelled by proposer
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -133,7 +133,9 @@ impl GovernanceState {
         vote_for: bool,
         current_slot: u64,
     ) -> Result<(), String> {
-        let proposal = self.proposals.get_mut(&proposal_id)
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
             .ok_or("proposal not found")?;
 
         // Check proposal is active
@@ -170,7 +172,9 @@ impl GovernanceState {
 
     /// Finalize proposal (after voting period)
     pub fn finalize(&mut self, proposal_id: H256, current_slot: u64) -> Result<(), String> {
-        let proposal = self.proposals.get_mut(&proposal_id)
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
             .ok_or("proposal not found")?;
 
         if proposal.status != ProposalStatus::Active {
@@ -202,8 +206,14 @@ impl GovernanceState {
     }
 
     /// Execute a passed proposal
-    pub fn execute(&mut self, proposal_id: H256, current_slot: u64) -> Result<ProposalType, String> {
-        let proposal = self.proposals.get_mut(&proposal_id)
+    pub fn execute(
+        &mut self,
+        proposal_id: H256,
+        current_slot: u64,
+    ) -> Result<ProposalType, String> {
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
             .ok_or("proposal not found")?;
 
         if proposal.status != ProposalStatus::Passed {
@@ -226,7 +236,9 @@ impl GovernanceState {
 
     /// Cancel a proposal (by proposer)
     pub fn cancel(&mut self, proposal_id: H256, caller: Address) -> Result<(), String> {
-        let proposal = self.proposals.get_mut(&proposal_id)
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
             .ok_or("proposal not found")?;
 
         if caller != proposal.proposer {
@@ -274,16 +286,18 @@ mod tests {
         state.update_voting_power(addr(1), 2_000_000_000_000); // 2000 SWR
 
         let proposal_id = H256::zero();
-        state.propose(
-            proposal_id,
-            addr(1),
-            ProposalType::ParameterChange {
-                parameter: "fee_rate".to_string(),
-                value: 100,
-            },
-            "Change fee rate to 1%".to_string(),
-            1000,
-        ).unwrap();
+        state
+            .propose(
+                proposal_id,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "fee_rate".to_string(),
+                    value: 100,
+                },
+                "Change fee rate to 1%".to_string(),
+                1000,
+            )
+            .unwrap();
 
         let proposal = state.get_proposal(&proposal_id).unwrap();
         assert_eq!(proposal.status, ProposalStatus::Active);
@@ -296,13 +310,18 @@ mod tests {
         state.update_voting_power(addr(2), 1_000_000_000_000);
 
         let proposal_id = H256::zero();
-        state.propose(
-            proposal_id,
-            addr(1),
-            ProposalType::ParameterChange { parameter: "test".to_string(), value: 1 },
-            "Test".to_string(),
-            1000,
-        ).unwrap();
+        state
+            .propose(
+                proposal_id,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "test".to_string(),
+                    value: 1,
+                },
+                "Test".to_string(),
+                1000,
+            )
+            .unwrap();
 
         state.vote(proposal_id, addr(2), true, 1500).unwrap();
 
@@ -317,13 +336,18 @@ mod tests {
         state.update_voting_power(addr(2), 5_000_000_000_000);
 
         let proposal_id = H256::zero();
-        state.propose(
-            proposal_id,
-            addr(1),
-            ProposalType::ParameterChange { parameter: "test".to_string(), value: 1 },
-            "Test".to_string(),
-            1000,
-        ).unwrap();
+        state
+            .propose(
+                proposal_id,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "test".to_string(),
+                    value: 1,
+                },
+                "Test".to_string(),
+                1000,
+            )
+            .unwrap();
 
         // Vote
         state.vote(proposal_id, addr(1), true, 1500).unwrap();
@@ -337,6 +361,9 @@ mod tests {
 
         // Execute after timelock
         let proposal_type = state.execute(proposal_id, 200_000).unwrap();
-        assert!(matches!(proposal_type, ProposalType::ParameterChange { .. }));
+        assert!(matches!(
+            proposal_type,
+            ProposalType::ParameterChange { .. }
+        ));
     }
 }

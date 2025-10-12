@@ -16,5 +16,6 @@
 
 pub mod database;
 
-pub use database::{Storage, StorageBatch, CF_ACCOUNTS, CF_UTXOS, CF_MERKLE, CF_BLOCKS, CF_RECEIPTS, CF_METADATA};
-
+pub use database::{
+    Storage, StorageBatch, CF_ACCOUNTS, CF_BLOCKS, CF_MERKLE, CF_METADATA, CF_RECEIPTS, CF_UTXOS,
+};

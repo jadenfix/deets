@@ -54,8 +54,7 @@
 // - Connection metrics → Monitoring
 // ============================================================================
 
-pub mod endpoint;
 pub mod connection;
+pub mod endpoint;
 
 pub use endpoint::QuicEndpoint;
-

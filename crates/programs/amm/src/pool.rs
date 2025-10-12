@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use aether_types::{Address, H256};
+use serde::{Deserialize, Serialize};
 
 /// Constant Product AMM (x * y = k)
 ///
@@ -31,12 +31,7 @@ pub struct LiquidityPool {
 }
 
 impl LiquidityPool {
-    pub fn new(
-        pool_id: H256,
-        token_a: Address,
-        token_b: Address,
-        fee_bps: u32,
-    ) -> Self {
+    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Self {
         LiquidityPool {
             pool_id,
             token_a,
@@ -61,10 +56,8 @@ impl LiquidityPool {
 
         let lp_tokens = if self.lp_token_supply == 0 {
             // Initial liquidity
-            let liquidity = (amount_a.checked_mul(amount_b)
-                .ok_or("overflow")?)
-                .integer_sqrt();
-            
+            let liquidity = (amount_a.checked_mul(amount_b).ok_or("overflow")?).integer_sqrt();
+
             if liquidity < 1000 {
                 return Err("insufficient initial liquidity".to_string());
             }
@@ -72,15 +65,15 @@ impl LiquidityPool {
             self.reserve_a = amount_a;
             self.reserve_b = amount_b;
             self.lp_token_supply = liquidity;
-            
+
             liquidity
         } else {
             // Proportional liquidity
             let liquidity_a = (amount_a * self.lp_token_supply) / self.reserve_a;
             let liquidity_b = (amount_b * self.lp_token_supply) / self.reserve_b;
-            
+
             let liquidity = liquidity_a.min(liquidity_b);
-            
+
             if liquidity < min_lp_tokens {
                 return Err("insufficient LP tokens".to_string());
             }
@@ -88,7 +81,7 @@ impl LiquidityPool {
             self.reserve_a += amount_a;
             self.reserve_b += amount_b;
             self.lp_token_supply += liquidity;
-            
+
             liquidity
         };
 
@@ -125,11 +118,7 @@ impl LiquidityPool {
     }
 
     /// Swap token A for token B
-    pub fn swap_a_to_b(
-        &mut self,
-        amount_in: u128,
-        min_amount_out: u128,
-    ) -> Result<u128, String> {
+    pub fn swap_a_to_b(&mut self, amount_in: u128, min_amount_out: u128) -> Result<u128, String> {
         if amount_in == 0 {
             return Err("amount must be non-zero".to_string());
         }
@@ -150,11 +139,7 @@ impl LiquidityPool {
     }
 
     /// Swap token B for token A
-    pub fn swap_b_to_a(
-        &mut self,
-        amount_in: u128,
-        min_amount_out: u128,
-    ) -> Result<u128, String> {
+    pub fn swap_b_to_a(&mut self, amount_in: u128, min_amount_out: u128) -> Result<u128, String> {
         if amount_in == 0 {
             return Err("amount must be non-zero".to_string());
         }
@@ -209,9 +194,11 @@ impl LiquidityPool {
 
     /// Check constant product invariant (with tolerance for rounding)
     fn check_invariant(&self) -> Result<(), String> {
-        let k_new = self.reserve_a.checked_mul(self.reserve_b)
+        let k_new = self
+            .reserve_a
+            .checked_mul(self.reserve_b)
             .ok_or("overflow")?;
-        
+
         // Invariant should not decrease (may increase slightly due to fees)
         if k_new == 0 {
             return Err("invariant violated: k = 0".to_string());
@@ -338,4 +325,3 @@ mod tests {
         assert_eq!(price, 2_000_000);
     }
 }
-

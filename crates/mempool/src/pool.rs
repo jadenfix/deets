@@ -1,7 +1,7 @@
-use aether-types::{H256, Transaction, Address};
+use aether_types::{Address, Transaction, H256};
 use anyhow::Result;
-use std::collections::{HashMap, BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 const MAX_MEMPOOL_SIZE: usize = 50_000;
 const MIN_FEE: u128 = 1000;
@@ -73,7 +73,7 @@ impl Mempool {
             if tx.fee <= existing.fee + (existing.fee / 10) {
                 anyhow::bail!("fee not high enough to replace (need 10% increase)");
             }
-            
+
             // Remove old transaction
             self.by_hash.remove(&tx_hash);
             if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
@@ -102,10 +102,7 @@ impl Mempool {
 
         // Add to structures
         self.by_hash.insert(tx_hash, tx.clone());
-        self.by_sender
-            .entry(tx.sender)
-            .or_insert_with(HashSet::new)
-            .insert(tx_hash);
+        self.by_sender.entry(tx.sender).or_default().insert(tx_hash);
 
         self.pending.push(PrioritizedTx {
             tx,
@@ -163,14 +160,14 @@ impl Mempool {
 
     fn rebuild_heap(&mut self) {
         let mut new_heap = BinaryHeap::new();
-        
+
         while let Some(ptx) = self.pending.pop() {
             let tx_hash = ptx.tx.hash();
             if self.by_hash.contains_key(&tx_hash) {
                 new_heap.push(ptx);
             }
         }
-        
+
         self.pending = new_heap;
     }
 
@@ -178,7 +175,7 @@ impl Mempool {
         // Convert heap to vec, sort, remove lowest
         let mut txs: Vec<_> = std::mem::take(&mut self.pending).into_vec();
         txs.sort_by(|a, b| b.cmp(a)); // Reverse sort (lowest last)
-        
+
         if let Some(lowest) = txs.pop() {
             let tx_hash = lowest.tx.hash();
             self.by_hash.remove(&tx_hash);
@@ -186,7 +183,7 @@ impl Mempool {
                 sender_txs.remove(&tx_hash);
             }
         }
-        
+
         self.pending = txs.into();
     }
 
@@ -199,10 +196,16 @@ impl Mempool {
     }
 }
 
+impl Default for Mempool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether-types::{Signature, UtxoId, UtxoOutput};
+    use aether_types::{Signature, UtxoId, UtxoOutput};
     use std::collections::HashSet;
 
     fn create_test_tx(nonce: u64, fee: u128) -> Transaction {
@@ -225,7 +228,7 @@ mod tests {
     fn test_add_transaction() {
         let mut mempool = Mempool::new();
         let tx = create_test_tx(0, 2000);
-        
+
         mempool.add_transaction(tx).unwrap();
         assert_eq!(mempool.len(), 1);
     }
@@ -233,17 +236,17 @@ mod tests {
     #[test]
     fn test_priority_ordering() {
         let mut mempool = Mempool::new();
-        
+
         let tx1 = create_test_tx(0, 1000);
         let tx2 = create_test_tx(1, 5000);
         let tx3 = create_test_tx(2, 3000);
-        
+
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
         mempool.add_transaction(tx3).unwrap();
-        
+
         let txs = mempool.get_transactions(10, 1_000_000);
-        
+
         // Should be ordered by fee: tx2, tx3, tx1
         assert_eq!(txs[0].fee, 5000);
         assert_eq!(txs[1].fee, 3000);
@@ -253,13 +256,13 @@ mod tests {
     #[test]
     fn test_gas_limit() {
         let mut mempool = Mempool::new();
-        
+
         let tx1 = create_test_tx(0, 2000);
         let tx2 = create_test_tx(1, 3000);
-        
+
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
-        
+
         let txs = mempool.get_transactions(10, 25000); // Only enough for 1 tx
         assert_eq!(txs.len(), 1);
     }
@@ -267,17 +270,16 @@ mod tests {
     #[test]
     fn test_remove_transactions() {
         let mut mempool = Mempool::new();
-        
+
         let tx1 = create_test_tx(0, 2000);
         let tx2 = create_test_tx(1, 3000);
-        
+
         mempool.add_transaction(tx1.clone()).unwrap();
         mempool.add_transaction(tx2.clone()).unwrap();
-        
+
         let hashes = vec![tx1.hash()];
         mempool.remove_transactions(&hashes);
-        
+
         assert_eq!(mempool.len(), 1);
     }
 }
-

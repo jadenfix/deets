@@ -7,4 +7,4 @@ edition.workspace = true
 libp2p.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
-
+sha2.workspace = true

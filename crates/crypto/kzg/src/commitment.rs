@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 /// KZG Polynomial Commitments for Trace Verification
@@ -41,7 +41,7 @@ pub struct KzgProof {
 pub struct KzgVerifier {
     /// Powers of tau (trusted setup)
     powers_of_tau: Vec<Vec<u8>>,
-    
+
     /// Maximum degree
     max_degree: usize,
 }
@@ -76,7 +76,7 @@ impl KzgVerifier {
 
         // In production: Use BLS12-381 library
         // commitment = Σᵢ cᵢ·[τⁱ]₁
-        
+
         // Simplified: Just use first power (for structure)
         let commitment = vec![1u8; 48]; // G1 point
 
@@ -84,11 +84,7 @@ impl KzgVerifier {
     }
 
     /// Create opening proof for evaluation at point z
-    pub fn create_proof(
-        &self,
-        coefficients: &[u8],
-        point: &[u8],
-    ) -> Result<KzgProof> {
+    pub fn create_proof(&self, coefficients: &[u8], point: &[u8]) -> Result<KzgProof> {
         if coefficients.is_empty() {
             bail!("empty coefficients");
         }
@@ -100,20 +96,15 @@ impl KzgVerifier {
         // In production: Compute quotient polynomial Q(x) = (P(x) - P(z)) / (x - z)
         // proof = [Q(τ)]₁
         // evaluation = P(z)
-        
-        let proof = vec![2u8; 48];      // G1 point
+
+        let proof = vec![2u8; 48]; // G1 point
         let evaluation = vec![3u8; 32]; // Field element
 
         Ok(KzgProof { proof, evaluation })
     }
 
     /// Verify opening proof
-    pub fn verify(
-        &self,
-        commitment: &KzgCommitment,
-        proof: &KzgProof,
-        point: &[u8],
-    ) -> Result<()> {
+    pub fn verify(&self, commitment: &KzgCommitment, proof: &KzgProof, point: &[u8]) -> Result<()> {
         if commitment.commitment.len() != 48 {
             bail!("invalid commitment length");
         }
@@ -132,7 +123,7 @@ impl KzgVerifier {
 
         // In production: Pairing check
         // e([P(τ)]₁ - [P(z)]₁, [1]₂) = e([Q(τ)]₁, [τ]₂ - [z]₂)
-        
+
         // Simplified: Basic validation passed
         Ok(())
     }
@@ -150,7 +141,7 @@ impl KzgVerifier {
 
         // In production: Use random linear combination for batch verification
         // Reduces n pairing checks to 2 pairings
-        
+
         for i in 0..commitments.len() {
             self.verify(&commitments[i], &proofs[i], &points[i])?;
         }
@@ -167,9 +158,9 @@ mod tests {
     fn test_commitment() {
         let verifier = KzgVerifier::new(1024);
         let coefficients = vec![1u8; 32];
-        
+
         let commitment = verifier.commit(&coefficients).unwrap();
-        
+
         assert_eq!(commitment.commitment.len(), 48);
     }
 
@@ -178,9 +169,9 @@ mod tests {
         let verifier = KzgVerifier::new(1024);
         let coefficients = vec![1u8; 32];
         let point = vec![2u8; 32];
-        
+
         let proof = verifier.create_proof(&coefficients, &point).unwrap();
-        
+
         assert_eq!(proof.proof.len(), 48);
         assert_eq!(proof.evaluation.len(), 32);
     }
@@ -190,42 +181,44 @@ mod tests {
         let verifier = KzgVerifier::new(1024);
         let coefficients = vec![1u8; 32];
         let point = vec![2u8; 32];
-        
+
         let commitment = verifier.commit(&coefficients).unwrap();
         let proof = verifier.create_proof(&coefficients, &point).unwrap();
-        
+
         assert!(verifier.verify(&commitment, &proof, &point).is_ok());
     }
 
     #[test]
     fn test_batch_verify() {
         let verifier = KzgVerifier::new(1024);
-        
+
         let coeffs1 = vec![1u8; 32];
         let coeffs2 = vec![2u8; 32];
         let point1 = vec![3u8; 32];
         let point2 = vec![4u8; 32];
-        
+
         let comm1 = verifier.commit(&coeffs1).unwrap();
         let comm2 = verifier.commit(&coeffs2).unwrap();
         let proof1 = verifier.create_proof(&coeffs1, &point1).unwrap();
         let proof2 = verifier.create_proof(&coeffs2, &point2).unwrap();
-        
-        assert!(verifier.batch_verify(
-            &[comm1, comm2],
-            &[proof1, proof2],
-            &[point1, point2],
-        ).is_ok());
+
+        assert!(verifier
+            .batch_verify(&[comm1, comm2], &[proof1, proof2], &[point1, point2],)
+            .is_ok());
     }
 
     #[test]
     fn test_invalid_commitment_length() {
         let verifier = KzgVerifier::new(1024);
-        let commitment = KzgCommitment { commitment: vec![1u8; 32] }; // Wrong length
-        let proof = KzgProof { proof: vec![2u8; 48], evaluation: vec![3u8; 32] };
+        let commitment = KzgCommitment {
+            commitment: vec![1u8; 32],
+        }; // Wrong length
+        let proof = KzgProof {
+            proof: vec![2u8; 48],
+            evaluation: vec![3u8; 32],
+        };
         let point = vec![4u8; 32];
-        
+
         assert!(verifier.verify(&commitment, &proof, &point).is_err());
     }
 }
-

@@ -19,4 +19,3 @@ pub mod firehose;
 pub mod streaming;
 
 pub use firehose::FirehoseServer;
-

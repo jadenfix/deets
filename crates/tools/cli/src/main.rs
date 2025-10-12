@@ -30,4 +30,3 @@ fn main() {
     println!();
     println!("For more information, run: aetherctl help <command>");
 }
-

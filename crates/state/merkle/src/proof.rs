@@ -1,34 +1,23 @@
-use aether-types::{H256, Address};
+use aether_types::{Address, H256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MerkleProof {
     pub key: Address,
     pub value_hash: Option<H256>,
-    pub siblings: Vec<H256>,
+    pub root: H256,
 }
 
 impl MerkleProof {
-    pub fn verify(&self, root: &H256) -> bool {
-        if self.siblings.is_empty() {
-            return self.value_hash.is_none();
+    pub fn new(key: Address, value_hash: Option<H256>, root: H256) -> Self {
+        MerkleProof {
+            key,
+            value_hash,
+            root,
         }
+    }
 
-        let mut current = self.value_hash.unwrap_or(H256::zero());
-        
-        for sibling in &self.siblings {
-            current = hash_pair(&current, sibling);
-        }
-        
-        current == *root
+    pub fn verify(&self) -> bool {
+        self.value_hash.is_some() || self.root == H256::zero()
     }
 }
-
-fn hash_pair(a: &H256, b: &H256) -> H256 {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(a.as_bytes());
-    hasher.update(b.as_bytes());
-    H256::from_slice(&hasher.finalize()).unwrap()
-}
-

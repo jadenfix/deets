@@ -1,4 +1,4 @@
-use aether_types::{H256, Address, Block, Transaction, TransactionReceipt};
+use aether_types::{Address, Block, TransactionReceipt, H256};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -72,9 +72,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
         let routes = rpc.or(health);
 
         println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
-        warp::serve(routes)
-            .run(([127, 0, 0, 1], self.port))
-            .await;
+        warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
 
         Ok(())
     }
@@ -99,30 +97,14 @@ async fn process_rpc_request<B: RpcBackend>(
     backend: Arc<RwLock<B>>,
 ) -> JsonRpcResponse {
     let result = match req.method.as_str() {
-        "aeth_sendRawTransaction" => {
-            handle_send_raw_transaction(&req.params, backend).await
-        }
-        "aeth_getBlockByNumber" => {
-            handle_get_block_by_number(&req.params, backend).await
-        }
-        "aeth_getBlockByHash" => {
-            handle_get_block_by_hash(&req.params, backend).await
-        }
-        "aeth_getTransactionReceipt" => {
-            handle_get_transaction_receipt(&req.params, backend).await
-        }
-        "aeth_getStateRoot" => {
-            handle_get_state_root(&req.params, backend).await
-        }
-        "aeth_getAccount" => {
-            handle_get_account(&req.params, backend).await
-        }
-        "aeth_getSlotNumber" => {
-            handle_get_slot_number(backend).await
-        }
-        "aeth_getFinalizedSlot" => {
-            handle_get_finalized_slot(backend).await
-        }
+        "aeth_sendRawTransaction" => handle_send_raw_transaction(&req.params, backend).await,
+        "aeth_getBlockByNumber" => handle_get_block_by_number(&req.params, backend).await,
+        "aeth_getBlockByHash" => handle_get_block_by_hash(&req.params, backend).await,
+        "aeth_getTransactionReceipt" => handle_get_transaction_receipt(&req.params, backend).await,
+        "aeth_getStateRoot" => handle_get_state_root(&req.params, backend).await,
+        "aeth_getAccount" => handle_get_account(&req.params, backend).await,
+        "aeth_getSlotNumber" => handle_get_slot_number(backend).await,
+        "aeth_getFinalizedSlot" => handle_get_finalized_slot(backend).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -158,20 +140,17 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
         });
     }
 
-    let tx_hex = params[0]
-        .as_str()
-        .ok_or_else(|| JsonRpcError {
-            code: -32602,
-            message: "Invalid parameter type".to_string(),
-            data: None,
-        })?;
+    let tx_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
+        code: -32602,
+        message: "Invalid parameter type".to_string(),
+        data: None,
+    })?;
 
-    let tx_bytes = hex::decode(tx_hex.trim_start_matches("0x"))
-        .map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid hex: {}", e),
-            data: None,
-        })?;
+    let tx_bytes = hex::decode(tx_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+        data: None,
+    })?;
 
     let backend = backend.read().await;
     let tx_hash = backend
@@ -252,12 +231,11 @@ async fn handle_get_block_by_hash<B: RpcBackend>(
 
     let full_tx = params[1].as_bool().unwrap_or(false);
 
-    let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x"))
-        .map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid hex: {}", e),
-            data: None,
-        })?;
+    let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+        data: None,
+    })?;
 
     let block_hash = H256::from_slice(&hash_bytes).map_err(|e| JsonRpcError {
         code: -32602,
@@ -295,12 +273,11 @@ async fn handle_get_transaction_receipt<B: RpcBackend>(
         data: None,
     })?;
 
-    let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x"))
-        .map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid hex: {}", e),
-            data: None,
-        })?;
+    let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+        data: None,
+    })?;
 
     let tx_hash = H256::from_slice(&hash_bytes).map_err(|e| JsonRpcError {
         code: -32602,
@@ -324,7 +301,7 @@ async fn handle_get_state_root<B: RpcBackend>(
     params: &[Value],
     backend: Arc<RwLock<B>>,
 ) -> Result<Value, JsonRpcError> {
-    let block_ref = params.get(0).and_then(|v| v.as_str()).map(String::from);
+    let block_ref = params.first().and_then(|v| v.as_str()).map(String::from);
 
     let backend = backend.read().await;
     let state_root = backend
@@ -356,12 +333,11 @@ async fn handle_get_account<B: RpcBackend>(
         data: None,
     })?;
 
-    let addr_bytes = hex::decode(addr_hex.trim_start_matches("0x"))
-        .map_err(|e| JsonRpcError {
-            code: -32602,
-            message: format!("Invalid hex: {}", e),
-            data: None,
-        })?;
+    let addr_bytes = hex::decode(addr_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid hex: {}", e),
+        data: None,
+    })?;
 
     let address = Address::from_slice(&addr_bytes).map_err(|e| JsonRpcError {
         code: -32602,
@@ -436,7 +412,11 @@ mod tests {
             Ok(H256::zero())
         }
 
-        fn get_account(&self, _address: Address, _block_ref: Option<String>) -> Result<Option<Value>> {
+        fn get_account(
+            &self,
+            _address: Address,
+            _block_ref: Option<String>,
+        ) -> Result<Option<Value>> {
             Ok(None)
         }
 
@@ -478,4 +458,3 @@ mod tests {
         assert!(response.error.is_none());
     }
 }
-

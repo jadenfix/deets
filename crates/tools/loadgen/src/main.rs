@@ -16,4 +16,3 @@
 fn main() {
     println!("Aether Load Generator v0.1.0");
 }
-

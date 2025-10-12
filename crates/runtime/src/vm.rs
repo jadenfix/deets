@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use aether_types::{Address, H256};
+use anyhow::{bail, Result};
 use std::collections::HashMap;
-use aether_types::{H256, Address};
 
 /// WASM Virtual Machine for Smart Contract Execution
 ///
@@ -16,20 +16,21 @@ use aether_types::{H256, Address};
 /// - Deterministic imports only
 /// - No floating point (non-deterministic)
 /// - No SIMD (platform-specific)
-
+///
+#[allow(dead_code)]
 pub struct WasmVm {
     /// Gas limit for execution
     gas_limit: u64,
-    
+
     /// Gas used so far
     gas_used: u64,
-    
+
     /// Memory limit (bytes)
     memory_limit: usize,
-    
+
     /// Stack depth limit
     stack_limit: usize,
-    
+
     /// Host state (account storage)
     storage: HashMap<Vec<u8>, Vec<u8>>,
 }
@@ -78,19 +79,19 @@ impl WasmVm {
     ) -> Result<ExecutionResult> {
         // Validate WASM module
         self.validate_wasm(wasm_bytes)?;
-        
+
         // Charge gas for module instantiation
         self.charge_gas(1000)?;
-        
+
         // In production: use Wasmtime
         // let engine = Engine::new(&config)?;
         // let module = Module::new(&engine, wasm_bytes)?;
         // let mut store = Store::new(&engine, ());
         // store.add_fuel(context.gas_limit)?;
-        
+
         // For now: simplified execution
         let result = self.execute_simplified(wasm_bytes, context, input)?;
-        
+
         Ok(result)
     }
 
@@ -103,7 +104,15 @@ impl WasmVm {
     ) -> Result<ExecutionResult> {
         // Charge gas for execution
         self.charge_gas(1000 + input.len() as u64)?;
-        
+
+        if input.len() > self.memory_limit {
+            bail!("input exceeds memory limit");
+        }
+
+        if context.gas_limit < self.gas_limit {
+            bail!("context gas limit below VM requirement");
+        }
+
         // Simulate successful execution
         Ok(ExecutionResult {
             success: true,
@@ -118,24 +127,30 @@ impl WasmVm {
         if wasm_bytes.len() > 1024 * 1024 {
             bail!("WASM module too large (max 1MB)");
         }
-        
+
         // Check WASM magic number
         if wasm_bytes.len() < 4 || &wasm_bytes[0..4] != b"\0asm" {
             bail!("invalid WASM magic number");
         }
-        
+
         Ok(())
     }
 
     /// Charge gas for an operation
     pub fn charge_gas(&mut self, amount: u64) -> Result<()> {
-        self.gas_used = self.gas_used.checked_add(amount)
+        self.gas_used = self
+            .gas_used
+            .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("gas overflow"))?;
-        
+
         if self.gas_used > self.gas_limit {
-            bail!("out of gas: used {} > limit {}", self.gas_used, self.gas_limit);
+            bail!(
+                "out of gas: used {} > limit {}",
+                self.gas_used,
+                self.gas_limit
+            );
         }
-        
+
         Ok(())
     }
 
@@ -174,13 +189,13 @@ mod tests {
     #[test]
     fn test_gas_charging() {
         let mut vm = WasmVm::new(1000);
-        
+
         assert!(vm.charge_gas(500).is_ok());
         assert_eq!(vm.gas_used(), 500);
-        
+
         assert!(vm.charge_gas(400).is_ok());
         assert_eq!(vm.gas_used(), 900);
-        
+
         // Should fail - exceeds limit
         assert!(vm.charge_gas(200).is_err());
     }
@@ -189,22 +204,22 @@ mod tests {
     fn test_remaining_gas() {
         let mut vm = WasmVm::new(1000);
         vm.charge_gas(300).unwrap();
-        
+
         assert_eq!(vm.remaining_gas(), 700);
     }
 
     #[test]
     fn test_wasm_validation() {
         let vm = WasmVm::new(100_000);
-        
+
         // Valid WASM header
         let valid_wasm = b"\0asm\x01\x00\x00\x00";
         assert!(vm.validate_wasm(valid_wasm).is_ok());
-        
+
         // Invalid magic number
         let invalid_wasm = b"XXXX\x01\x00\x00\x00";
         assert!(vm.validate_wasm(invalid_wasm).is_err());
-        
+
         // Too short
         assert!(vm.validate_wasm(b"\0as").is_err());
     }
@@ -212,7 +227,7 @@ mod tests {
     #[test]
     fn test_execute_basic() {
         let mut vm = WasmVm::new(100_000);
-        
+
         let wasm = b"\0asm\x01\x00\x00\x00"; // Minimal WASM
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
@@ -222,11 +237,10 @@ mod tests {
             block_number: 1,
             timestamp: 1000,
         };
-        
+
         let result = vm.execute(wasm, &context, b"input").unwrap();
-        
+
         assert!(result.success);
         assert!(result.gas_used > 0);
     }
 }
-

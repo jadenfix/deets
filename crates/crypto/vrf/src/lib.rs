@@ -24,4 +24,4 @@
 
 pub mod ecvrf;
 
-pub use ecvrf::{VrfKeypair, VrfProof, verify_proof, output_to_value, check_leader_eligibility};
+pub use ecvrf::{check_leader_eligibility, output_to_value, verify_proof, VrfKeypair, VrfProof};

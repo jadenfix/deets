@@ -15,11 +15,12 @@
 //   METRICS.tx_execution_time.observe(duration_ms);
 // ============================================================================
 
-pub mod consensus;
-pub mod runtime;
-pub mod p2p;
 pub mod ai;
+pub mod consensus;
+pub mod p2p;
+pub mod runtime;
 
+pub use ai::AI_METRICS;
 pub use consensus::CONSENSUS_METRICS;
+pub use p2p::P2P_METRICS;
 pub use runtime::RUNTIME_METRICS;
-

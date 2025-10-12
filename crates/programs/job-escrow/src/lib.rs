@@ -27,8 +27,8 @@
 // - Slashing for invalid results
 // ============================================================================
 
-use serde::{Deserialize, Serialize};
 use aether_types::{Address, H256};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +77,7 @@ impl JobEscrowState {
     }
 
     /// Post a new job
+    #[allow(clippy::too_many_arguments)]
     pub fn post_job(
         &mut self,
         job_id: H256,
@@ -118,8 +119,7 @@ impl JobEscrowState {
 
     /// Provider accepts job
     pub fn accept_job(&mut self, job_id: H256, provider: Address) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id)
-            .ok_or("job not found")?;
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Posted {
             return Err("job not available".to_string());
@@ -140,8 +140,7 @@ impl JobEscrowState {
         vcr_proof: Vec<u8>,
         current_slot: u64,
     ) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id)
-            .ok_or("job not found")?;
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.provider != Some(provider) {
             return Err("not job provider".to_string());
@@ -165,8 +164,7 @@ impl JobEscrowState {
 
     /// Verify and complete job
     pub fn verify_job(&mut self, job_id: H256, current_slot: u64) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id)
-            .ok_or("job not found")?;
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Submitted {
             return Err("job not submitted".to_string());
@@ -195,9 +193,8 @@ impl JobEscrowState {
     }
 
     /// Challenge a result
-    pub fn challenge_job(&mut self, job_id: H256, challenger: Address) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id)
-            .ok_or("job not found")?;
+    pub fn challenge_job(&mut self, job_id: H256, _challenger: Address) -> Result<(), String> {
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Submitted {
             return Err("cannot challenge job".to_string());
@@ -210,8 +207,7 @@ impl JobEscrowState {
 
     /// Cancel job (refund requester)
     pub fn cancel_job(&mut self, job_id: H256, caller: Address) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id)
-            .ok_or("job not found")?;
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if caller != job.requester {
             return Err("not job requester".to_string());
@@ -254,15 +250,9 @@ mod tests {
         let mut state = JobEscrowState::new();
         let job_id = H256::zero();
 
-        state.post_job(
-            job_id,
-            addr(1),
-            H256::zero(),
-            H256::zero(),
-            1000,
-            100,
-            1000,
-        ).unwrap();
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
 
         let job = state.get_job(&job_id).unwrap();
         assert_eq!(job.status, JobStatus::Posted);
@@ -274,7 +264,9 @@ mod tests {
         let mut state = JobEscrowState::new();
         let job_id = H256::zero();
 
-        state.post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000).unwrap();
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
         state.accept_job(job_id, addr(2)).unwrap();
 
         let job = state.get_job(&job_id).unwrap();
@@ -287,9 +279,13 @@ mod tests {
         let mut state = JobEscrowState::new();
         let job_id = H256::zero();
 
-        state.post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000).unwrap();
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
         state.accept_job(job_id, addr(2)).unwrap();
-        state.submit_result(job_id, addr(2), H256::zero(), vec![1, 2, 3], 150).unwrap();
+        state
+            .submit_result(job_id, addr(2), H256::zero(), vec![1, 2, 3], 150)
+            .unwrap();
 
         let job = state.get_job(&job_id).unwrap();
         assert_eq!(job.status, JobStatus::Submitted);

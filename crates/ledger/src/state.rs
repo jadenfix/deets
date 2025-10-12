@@ -1,7 +1,9 @@
-use aether-types::{H256, Address, Account, Utxo, UtxoId, Transaction, TransactionReceipt, TransactionStatus};
-use aether-state-storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_UTXOS, CF_METADATA};
-use aether-state-merkle::SparseMerkleTree;
-use anyhow::{Result, Context, bail};
+use aether_state_merkle::SparseMerkleTree;
+use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
+use aether_types::{
+    Account, Address, Transaction, TransactionReceipt, TransactionStatus, Utxo, UtxoId, H256,
+};
+use anyhow::{anyhow, bail, Result};
 use std::collections::HashMap;
 
 pub struct Ledger {
@@ -15,13 +17,13 @@ impl Ledger {
             storage,
             merkle_tree: SparseMerkleTree::new(),
         };
-        
+
         ledger.load_state_root()?;
         Ok(ledger)
     }
 
     fn load_state_root(&mut self) -> Result<()> {
-        if let Some(root_bytes) = self.storage.get(CF_METADATA, b"state_root")? {
+        if let Some(_root_bytes) = self.storage.get(CF_METADATA, b"state_root")? {
             // In production, would reconstruct tree from stored nodes
             // For now, just note the root exists
         }
@@ -71,7 +73,11 @@ impl Ledger {
         // Validate sender account
         let mut sender_account = self.get_or_create_account(&tx.sender)?;
         if sender_account.nonce != tx.nonce {
-            bail!("invalid nonce: expected {}, got {}", sender_account.nonce, tx.nonce);
+            bail!(
+                "invalid nonce: expected {}, got {}",
+                sender_account.nonce,
+                tx.nonce
+            );
         }
 
         // Check sender has enough balance for fee
@@ -140,7 +146,7 @@ impl Ledger {
         Ok(TransactionReceipt {
             tx_hash,
             block_hash: H256::zero(), // Set by block processor
-            slot: 0, // Set by block processor
+            slot: 0,                  // Set by block processor
             status: TransactionStatus::Success,
             gas_used: 0, // Would be computed by runtime
             logs: vec![],
@@ -161,7 +167,7 @@ impl Ledger {
         for item in self.storage.iterator(CF_ACCOUNTS)? {
             let (key_bytes, value_bytes) = item;
             if key_bytes.len() == 20 {
-                let address = Address::from_slice(&key_bytes)?;
+                let address = Address::from_slice(&key_bytes).map_err(|e| anyhow!(e))?;
                 let account: Account = bincode::deserialize(&value_bytes)?;
                 let account_hash = self.hash_account(&account);
                 accounts.insert(address, account_hash);
@@ -176,7 +182,8 @@ impl Ledger {
 
         // Store new root
         let root = self.merkle_tree.root();
-        self.storage.put(CF_METADATA, b"state_root", root.as_bytes())?;
+        self.storage
+            .put(CF_METADATA, b"state_root", root.as_bytes())?;
 
         Ok(())
     }
@@ -188,9 +195,12 @@ impl Ledger {
         H256::from_slice(&hash).unwrap()
     }
 
-    pub fn apply_block_transactions(&mut self, transactions: &[Transaction]) -> Result<Vec<TransactionReceipt>> {
+    pub fn apply_block_transactions(
+        &mut self,
+        transactions: &[Transaction],
+    ) -> Result<Vec<TransactionReceipt>> {
         let mut receipts = Vec::new();
-        
+
         for tx in transactions {
             match self.apply_transaction(tx) {
                 Ok(receipt) => receipts.push(receipt),
@@ -210,7 +220,7 @@ impl Ledger {
                 }
             }
         }
-        
+
         Ok(receipts)
     }
 }
@@ -218,8 +228,8 @@ impl Ledger {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether-crypto-primitives::Keypair;
-    use aether-types::{Signature, PublicKey, UtxoOutput};
+    use aether_crypto_primitives::Keypair;
+    use aether_types::{PublicKey, Signature};
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -231,7 +241,7 @@ mod tests {
 
         let keypair = Keypair::generate();
         let address = Address::from_slice(&keypair.to_address()).unwrap();
-        
+
         let account = ledger.get_or_create_account(&address).unwrap();
         assert_eq!(account.balance, 0);
         assert_eq!(account.nonce, 0);
@@ -247,7 +257,7 @@ mod tests {
         let address = Address::from_slice(&keypair.to_address()).unwrap();
 
         // Give account some balance
-        let mut account = Account::with_balance(address, 1000);
+        let account = Account::with_balance(address, 1000);
         let mut batch = StorageBatch::new();
         let key = address.as_bytes().to_vec();
         let value = bincode::serialize(&account).unwrap();
@@ -258,6 +268,7 @@ mod tests {
         let tx = Transaction {
             nonce: 0,
             sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
             inputs: vec![],
             outputs: vec![],
             reads: HashSet::new(),
@@ -273,4 +284,3 @@ mod tests {
         assert!(matches!(receipt.status, TransactionStatus::Success));
     }
 }
-

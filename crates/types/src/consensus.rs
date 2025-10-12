@@ -1,4 +1,4 @@
-use crate::primitives::{H256, PublicKey, Signature, Slot};
+use crate::primitives::{PublicKey, Signature, Slot, H256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -27,4 +27,3 @@ pub struct EpochInfo {
     pub validators: Vec<ValidatorInfo>,
     pub total_stake: u128,
 }
-

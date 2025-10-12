@@ -1,8 +1,8 @@
 // Simplified consensus for initial implementation
 // Full VRF-PoS + HotStuff will be added progressively
 
-use aether-types::{Block, H256, Slot, ValidatorInfo, Vote, PublicKey, Signature};
-use anyhow::{Result, bail};
+use aether_types::{Block, PublicKey, Slot, ValidatorInfo, Vote};
+use anyhow::{bail, Result};
 use std::collections::HashMap;
 
 pub struct SimpleConsensus {
@@ -35,7 +35,7 @@ impl SimpleConsensus {
         if self.validators.is_empty() {
             return None;
         }
-        
+
         let index = (slot as usize) % self.validators.len();
         Some(&self.validators[index])
     }
@@ -55,7 +55,8 @@ impl SimpleConsensus {
         }
 
         // Check proposer is valid leader
-        let leader = self.get_leader(block.header.slot)
+        let leader = self
+            .get_leader(block.header.slot)
             .ok_or_else(|| anyhow::anyhow!("no leader for slot"))?;
 
         if block.header.proposer != leader.pubkey.to_address() {
@@ -72,7 +73,7 @@ impl SimpleConsensus {
         }
 
         // Add to votes
-        self.votes.entry(vote.slot).or_insert_with(Vec::new).push(vote);
+        self.votes.entry(vote.slot).or_default().push(vote);
 
         Ok(())
     }
@@ -114,7 +115,7 @@ impl SimpleConsensus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether-crypto-primitives::Keypair;
+    use aether_crypto_primitives::Keypair;
 
     fn create_test_validators(count: usize) -> Vec<ValidatorInfo> {
         (0..count)
@@ -137,7 +138,7 @@ mod tests {
 
         let leader0 = consensus.get_leader(0).unwrap();
         let leader4 = consensus.get_leader(4).unwrap();
-        
+
         // Round-robin: slot 4 should have same leader as slot 0
         assert_eq!(leader0.pubkey, leader4.pubkey);
     }
@@ -148,7 +149,7 @@ mod tests {
         let mut consensus = SimpleConsensus::new(validators.clone());
 
         let slot = 1;
-        
+
         // Add votes from 2 of 3 validators (2/3 stake)
         for i in 0..2 {
             let vote = Vote {
@@ -165,4 +166,3 @@ mod tests {
         assert_eq!(consensus.finalized_slot(), slot);
     }
 }
-

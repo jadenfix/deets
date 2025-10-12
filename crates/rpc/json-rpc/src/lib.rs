@@ -18,4 +18,4 @@
 
 pub mod server;
 
-pub use server::{JsonRpcServer, JsonRpcRequest, JsonRpcResponse, JsonRpcError, RpcBackend};
+pub use server::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, JsonRpcServer, RpcBackend};

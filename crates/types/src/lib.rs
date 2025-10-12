@@ -16,15 +16,14 @@
 // - Consistent encoding (for hashing)
 // ============================================================================
 
-pub mod primitives;
-pub mod block;
-pub mod transaction;
 pub mod account;
+pub mod block;
 pub mod consensus;
+pub mod primitives;
+pub mod transaction;
 
-pub use primitives::{H256, H160, Address, Signature, PublicKey, Slot, Epoch};
-pub use block::{Block, BlockHeader, VrfProof, AggregatedVote};
-pub use transaction::{Transaction, TransactionReceipt, TransactionStatus, UtxoId, UtxoOutput};
 pub use account::{Account, Utxo};
-pub use consensus::{Vote, ValidatorInfo, EpochInfo};
-
+pub use block::{AggregatedVote, Block, BlockHeader, VrfProof};
+pub use consensus::{EpochInfo, ValidatorInfo, Vote};
+pub use primitives::{Address, Epoch, PublicKey, Signature, Slot, H160, H256};
+pub use transaction::{Transaction, TransactionReceipt, TransactionStatus, UtxoId, UtxoOutput};

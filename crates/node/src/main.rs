@@ -1,6 +1,6 @@
-use aether_node::Node;
 use aether_crypto_primitives::Keypair;
-use aether_types::{ValidatorInfo, PublicKey, Transaction, Signature, Address};
+use aether_node::Node;
+use aether_types::{Address, PublicKey, Signature, Transaction, ValidatorInfo};
 use std::collections::HashSet;
 
 #[tokio::main]
@@ -20,20 +20,20 @@ async fn main() -> anyhow::Result<()> {
         active: true,
     }];
 
-    println!("Validator address: {:?}", Address::from_slice(&validator_key.to_address())?);
+    let validator_address =
+        Address::from_slice(&validator_key.to_address()).map_err(|e| anyhow::anyhow!(e))?;
+
+    println!("Validator address: {:?}", validator_address);
     println!("Starting node...\n");
 
     // Create and run node
-    let mut node = Node::new(
-        "./data/node1",
-        validators,
-        Some(validator_key),
-    )?;
+    let mut node = Node::new("./data/node1", validators, Some(validator_key))?;
 
     // Add a test transaction
     let test_tx = Transaction {
         nonce: 0,
-        sender: Address::from_slice(&[1u8; 20])?,
+        sender: Address::from_slice(&[1u8; 20]).map_err(|e| anyhow::anyhow!(e))?,
+        sender_pubkey: validator_pubkey.clone(),
         inputs: vec![],
         outputs: vec![],
         reads: HashSet::new(),
@@ -60,4 +60,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

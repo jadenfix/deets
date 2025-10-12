@@ -35,7 +35,7 @@
 // fn create_shreds(block, slot, leader_key):
 //     // Split block into packets
 //     packets = split_block(block, MAX_SHRED_PAYLOAD)
-//     
+//
 //     shreds = []
 //     for (i, packet) in enumerate(packets):
 //         shred = Shred {
@@ -48,31 +48,31 @@
 //             signature: sign(leader_key, packet)
 //         }
 //         shreds.push(shred)
-//     
+//
 //     return shreds
 //
 // fn validate_shred(shred, leader_pubkey) -> bool:
 //     // Check signature
 //     if !verify(leader_pubkey, shred.payload, shred.signature):
 //         return false
-//     
+//
 //     // Check slot is recent
 //     if shred.slot < current_slot - MAX_SLOT_AGE:
 //         return false
-//     
+//
 //     return true
 //
 // fn reconstruct_block(shreds) -> Option<Block>:
 //     // Group by FEC set
 //     fec_set = group_by_fec_set(shreds)
-//     
+//
 //     // Need k data shreds or reconstruct from k of n
 //     if fec_set.data_shreds.len() >= k:
 //         return assemble_data_shreds(fec_set.data_shreds)
-//     
+//
 //     if fec_set.total_shreds() >= k:
 //         return erasure_decode(fec_set.all_shreds())
-//     
+//
 //     return None  // Insufficient shreds
 // ```
 //
@@ -88,9 +88,8 @@
 // - Reconstruction status → Repair requests
 // ============================================================================
 
-pub mod shred;
 pub mod serialization;
+pub mod shred;
 pub mod validation;
 
 pub use shred::Shred;
-

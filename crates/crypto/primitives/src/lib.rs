@@ -27,6 +27,5 @@ pub mod hash;
 pub mod keypair;
 
 pub use ed25519::{verify, Keypair as Ed25519Keypair};
-pub use hash::{sha256, blake3_hash, hash_multiple};
+pub use hash::{blake3_hash, hash_multiple, sha256};
 pub use keypair::Keypair;
-

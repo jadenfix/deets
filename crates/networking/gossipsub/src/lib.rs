@@ -36,16 +36,16 @@
 //
 // fn publish(topic, data):
 //     msg = Message { topic, data, id: hash(data) }
-//     
+//
 //     if seen_messages.contains(msg.id):
 //         return
-//     
+//
 //     seen_messages.insert(msg.id)
-//     
+//
 //     // Forward to mesh peers
 //     for peer in mesh[topic]:
 //         send_to_peer(peer, msg)
-//     
+//
 //     // Deliver locally
 //     for subscriber in subscriptions[topic]:
 //         subscriber.handle(data)
@@ -53,13 +53,13 @@
 // fn handle_received(msg):
 //     if seen_messages.contains(msg.id):
 //         return  // Already seen
-//     
+//
 //     seen_messages.insert(msg.id)
-//     
+//
 //     if validate_message(msg):
 //         // Forward to mesh (except sender)
 //         forward_to_mesh(msg)
-//         
+//
 //         // Deliver locally
 //         deliver_to_subscribers(msg)
 //     else:
@@ -72,9 +72,8 @@
 // - Propagation metrics → Monitoring
 // ============================================================================
 
-pub mod router;
 pub mod mesh;
+pub mod router;
 pub mod scoring;
 
 pub use router::GossipRouter;
-

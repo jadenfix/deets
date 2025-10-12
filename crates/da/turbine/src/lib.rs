@@ -49,7 +49,7 @@
 //
 // fn broadcast_as_leader(block):
 //     shreds = erasure_code(block, k=10, r=2)
-//     
+//
 //     // Send to layer-1 validators
 //     layer1 = topology.get_layer(1)
 //     for (i, validator) in enumerate(layer1):
@@ -58,12 +58,12 @@
 // fn handle_received_shred(shred):
 //     block_id = shred.block_hash
 //     shreds[block_id].push(shred)
-//     
+//
 //     // Retransmit to children
 //     children = topology.get_children(my_id)
 //     for child in children:
 //         send_shred(child, shred)
-//     
+//
 //     // Try to reconstruct
 //     if shreds[block_id].len() >= k:
 //         block = erasure_decode(shreds[block_id])
@@ -79,7 +79,7 @@
 // fn erasure_decode(shreds) -> Option<Block>:
 //     if shreds.len() < k:
 //         return None
-//     
+//
 //     decoder = ReedSolomon::new(k, r)
 //     data_chunks = decoder.decode(shreds[0..k])
 //     return join(data_chunks)
@@ -103,9 +103,8 @@
 
 pub mod broadcast;
 pub mod receive;
-pub mod topology;
 pub mod repair;
+pub mod topology;
 
 pub use broadcast::TurbineBroadcaster;
 pub use receive::TurbineReceiver;
-

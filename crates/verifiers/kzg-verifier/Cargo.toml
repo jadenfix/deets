@@ -6,6 +6,8 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+rand.workspace = true
 
 aether-crypto-kzg = { path = "../../crypto/kzg" }
-
+aether-types = { path = "../../types" }
