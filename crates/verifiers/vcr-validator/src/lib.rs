@@ -1,181 +1,234 @@
 // ============================================================================
-// AETHER VCR VALIDATOR - Verifiable Compute Receipt Validation
+// AETHER VCR VALIDATOR - Verifiable Compute Receipt
 // ============================================================================
-// PURPOSE: Orchestrate multi-layer verification of AI execution proofs
+// PURPOSE: Verify AI inference computations are deterministic and correct
 //
-// VERIFICATION STACK:
-// 1. Structural validation (VCR format, hashes)
-// 2. TEE attestation (SEV-SNP/TDX quotes)
-// 3. KZG commitments (trace spot-checks)
-// 4. Signature verification (provider identity)
-// 5. Redundancy quorum (optional, if multiple providers)
+// VCR COMPONENTS:
+// 1. Trace commitment: KZG commitment to execution trace
+// 2. TEE attestation: Proof of secure execution
+// 3. Input/output hashes: Deterministic I/O
+// 4. Metadata: Model hash, timestamp, worker ID
 //
-// COMPONENT CONNECTIONS:
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                    VCR VALIDATION PIPELINE                        │
-// ├──────────────────────────────────────────────────────────────────┤
-// │  VCR Submission  →  Format Check  →  Hash Verification           │
-// │         ↓                                  ↓                      │
-// │  TEE Verifier  →  Quote Validation  →  PCR Binding              │
-// │         ↓                                  ↓                      │
-// │  KZG Verifier  →  Commitment Check  →  Challenge Protocol        │
-// │         ↓                                  ↓                      │
-// │  Signature Verify  →  Provider Auth  →  Accept or Reject         │
-// └──────────────────────────────────────────────────────────────────┘
+// VERIFICATION PROCESS:
+// 1. Check TEE attestation (worker ran in TEE)
+// 2. Verify KZG commitment (trace matches claimed output)
+// 3. Challenge mechanism (spot-check trace validity)
+// 4. Quorum consensus (multiple workers agree)
 //
-// VCR STRUCTURE:
-// ```
-// struct Vcr:
-//     job_id: H256
-//     provider: Address
-//     input_hash: H256
-//     model_hash: H256
-//     code_hash: H256
-//     output_hash: H256
-//     seed: u64
-//     tee_quote: Vec<u8>
-//     kzg_commits: Option<Vec<KzgCommitment>>
-//     metadata: VcrMetadata
-//     signature: Signature
+// CHALLENGE WINDOW:
+// - 10 slots (5 seconds) after submission
+// - Anyone can challenge with counter-proof
+// - If challenge succeeds, worker is slashed
+// - If no challenge, VCR is accepted
 //
-// struct VcrMetadata:
-//     execution_time_ms: u64
-//     hardware_id: String
-//     software_version: String
-//     timestamp: u64
-// ```
-//
-// VALIDATION:
-// ```
-// fn validate_vcr(vcr, job) -> Result<ValidationResult>:
-//     // 1. Structural validation
-//     validate_structure(vcr, job)?;
-//     
-//     // 2. TEE attestation
-//     validate_tee_attestation(vcr, job)?;
-//     
-//     // 3. KZG commitments (if present)
-//     if vcr.kzg_commits.is_some():
-//         validate_kzg_structure(vcr)?;
-//     
-//     // 4. Signature verification
-//     validate_signature(vcr)?;
-//     
-//     return Ok(ValidationResult::Valid)
-//
-// fn validate_structure(vcr, job) -> Result<()>:
-//     // Check VCR matches job
-//     if vcr.job_id != job.id:
-//         return Err("job_id mismatch")
-//     if vcr.model_hash != job.model_hash:
-//         return Err("model_hash mismatch")
-//     if vcr.code_hash != job.code_hash:
-//         return Err("code_hash mismatch")
-//     if vcr.input_hash != job.input_hash:
-//         return Err("input_hash mismatch")
-//     
-//     // Check provider is authorized
-//     if vcr.provider != job.provider:
-//         return Err("provider mismatch")
-//     
-//     // Check timestamp reasonable
-//     if vcr.metadata.timestamp > current_time() + CLOCK_DRIFT_TOLERANCE:
-//         return Err("timestamp in future")
-//     
-//     Ok(())
-//
-// fn validate_tee_attestation(vcr, job) -> Result<()>:
-//     // Construct expected binding
-//     binding = hash(
-//         job.id ||
-//         job.input_hash ||
-//         job.model_hash ||
-//         job.code_hash ||
-//         vcr.seed
-//     )
-//     
-//     // Verify TEE quote
-//     quote = parse_tee_quote(vcr.tee_quote)
-//     verify_tee_quote(quote, binding)?;
-//     
-//     Ok(())
-//
-// fn validate_kzg_structure(vcr) -> Result<()>:
-//     commits = vcr.kzg_commits.unwrap()
-//     
-//     // Check reasonable number of commitments
-//     if commits.len() < MIN_KZG_LAYERS || commits.len() > MAX_KZG_LAYERS:
-//         return Err("invalid number of KZG layers")
-//     
-//     // Verify each commitment is valid G1 point
-//     for commit in commits:
-//         if !is_valid_g1_point(commit):
-//             return Err("invalid KZG commitment")
-//     
-//     Ok(())
-//
-// fn validate_signature(vcr) -> Result<()>:
-//     // Reconstruct message to sign
-//     message = serialize_for_signing(vcr)
-//     
-//     // Verify provider signature
-//     provider_pubkey = get_provider_pubkey(vcr.provider)
-//     if !verify_signature(provider_pubkey, message, vcr.signature):
-//         return Err("invalid signature")
-//     
-//     Ok(())
-// ```
-//
-// REDUNDANCY QUORUM (optional):
-// ```
-// fn validate_redundancy_quorum(vcrs: Vec<Vcr>) -> Result<()>:
-//     // Multiple providers executed same job
-//     // Check if outputs match
-//     
-//     if vcrs.len() < QUORUM_SIZE:
-//         return Err("insufficient redundancy")
-//     
-//     // Group by output_hash
-//     groups = group_by_output(vcrs)
-//     
-//     // Find majority
-//     majority = groups.iter().max_by_key(|g| g.len())
-//     
-//     if majority.len() < QUORUM_THRESHOLD:
-//         return Err("no quorum consensus")
-//     
-//     // Slash minority (they provided wrong output)
-//     for vcr in vcrs:
-//         if vcr.output_hash != majority[0].output_hash:
-//             slash_provider(vcr.provider)
-//     
-//     Ok(())
-// ```
-//
-// CHALLENGE GAME:
-// If watchtower suspects fraud:
-// ```
-// fn initiate_challenge(vcr_id, challenge_type):
-//     match challenge_type:
-//         TeeQuoteInvalid(proof):
-//             submit_tee_fraud_proof(vcr_id, proof)
-//         
-//         KzgOpeningInvalid:
-//             submit_kzg_challenge(vcr_id)
-//         
-//         RedundancyMismatch:
-//             submit_redundancy_dispute(vcr_id)
-// ```
-//
-// OUTPUTS:
-// - Valid VCR → Job settlement (burn AIC, pay provider)
-// - Invalid VCR → Provider slashing (burn bond, refund requester)
-// - Challenges → Fraud proofs for on-chain adjudication
+// INTEGRATION:
+// - Job escrow requires VCR for payment
+// - Reputation updates based on VCR validity
+// - Staking slashes for invalid VCRs
 // ============================================================================
 
-pub mod validator;
-pub mod structure;
-pub mod redundancy;
+use serde::{Deserialize, Serialize};
+use anyhow::{Result, bail};
+use aether_types::H256;
 
-pub use validator::validate_vcr;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiableComputeReceipt {
+    pub job_id: H256,
+    pub worker_id: Vec<u8>,
+    pub model_hash: H256,
+    pub input_hash: H256,
+    pub output_hash: H256,
+    pub trace_commitment: Vec<u8>,  // KZG commitment
+    pub tee_attestation: Vec<u8>,   // TEE attestation report
+    pub timestamp: u64,
+    pub signature: Vec<u8>,         // Worker signature
+}
 
+pub struct VcrValidator {
+    /// Minimum quorum size for consensus
+    quorum_size: usize,
+    
+    /// Challenge window (slots)
+    challenge_window: u64,
+}
+
+impl VcrValidator {
+    pub fn new() -> Self {
+        VcrValidator {
+            quorum_size: 3,
+            challenge_window: 10,
+        }
+    }
+
+    /// Verify a single VCR
+    pub fn verify(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
+        // 1. Verify basic fields
+        if vcr.worker_id.is_empty() {
+            bail!("empty worker ID");
+        }
+
+        if vcr.trace_commitment.len() != 48 {
+            bail!("invalid trace commitment length");
+        }
+
+        // 2. Verify TEE attestation
+        // TODO: Call TEE verifier
+        // tee_verifier.verify(&vcr.tee_attestation)?;
+
+        // 3. Verify KZG commitment
+        // TODO: Call KZG verifier
+        // kzg_verifier.verify(&vcr.trace_commitment, &vcr.output_hash)?;
+
+        // 4. Verify signature
+        self.verify_signature(vcr)?;
+
+        Ok(())
+    }
+
+    /// Verify VCRs from multiple workers (quorum consensus)
+    pub fn verify_quorum(&self, vcrs: &[VerifiableComputeReceipt]) -> Result<()> {
+        if vcrs.len() < self.quorum_size {
+            bail!("insufficient quorum: {} < {}", vcrs.len(), self.quorum_size);
+        }
+
+        // All VCRs should have same job_id
+        let job_id = vcrs[0].job_id;
+        for vcr in vcrs {
+            if vcr.job_id != job_id {
+                bail!("mismatched job IDs in quorum");
+            }
+        }
+
+        // All VCRs should agree on output
+        let output_hash = vcrs[0].output_hash;
+        let mut agreement_count = 0;
+
+        for vcr in vcrs {
+            if vcr.output_hash == output_hash {
+                agreement_count += 1;
+            }
+        }
+
+        // Check 2/3 consensus
+        if agreement_count * 3 < vcrs.len() * 2 {
+            bail!("no consensus: {} / {} agree", agreement_count, vcrs.len());
+        }
+
+        // Verify each VCR individually
+        for vcr in vcrs {
+            self.verify(vcr)?;
+        }
+
+        Ok(())
+    }
+
+    fn verify_signature(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
+        // TODO: Verify worker signature
+        // 1. Hash VCR fields
+        // 2. Verify signature against worker public key
+        
+        if vcr.signature.is_empty() {
+            bail!("empty signature");
+        }
+
+        Ok(())
+    }
+
+    pub fn set_quorum_size(&mut self, size: usize) {
+        self.quorum_size = size;
+    }
+
+    pub fn challenge_window(&self) -> u64 {
+        self.challenge_window
+    }
+}
+
+impl Default for VcrValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_vcr(worker_id: u8, output: u8) -> VerifiableComputeReceipt {
+        VerifiableComputeReceipt {
+            job_id: H256::zero(),
+            worker_id: vec![worker_id],
+            model_hash: H256::zero(),
+            input_hash: H256::zero(),
+            output_hash: H256::from_slice(&[output; 32]).unwrap(),
+            trace_commitment: vec![1u8; 48],
+            tee_attestation: vec![2u8; 100],
+            timestamp: 1000,
+            signature: vec![3u8; 64],
+        }
+    }
+
+    #[test]
+    fn test_verify_single_vcr() {
+        let validator = VcrValidator::new();
+        let vcr = create_test_vcr(1, 5);
+        
+        assert!(validator.verify(&vcr).is_ok());
+    }
+
+    #[test]
+    fn test_quorum_consensus() {
+        let validator = VcrValidator::new();
+        
+        // 3 workers, all agree
+        let vcrs = vec![
+            create_test_vcr(1, 5),
+            create_test_vcr(2, 5),
+            create_test_vcr(3, 5),
+        ];
+        
+        assert!(validator.verify_quorum(&vcrs).is_ok());
+    }
+
+    #[test]
+    fn test_insufficient_quorum() {
+        let validator = VcrValidator::new();
+        
+        // Only 2 workers (need 3)
+        let vcrs = vec![
+            create_test_vcr(1, 5),
+            create_test_vcr(2, 5),
+        ];
+        
+        assert!(validator.verify_quorum(&vcrs).is_err());
+    }
+
+    #[test]
+    fn test_no_consensus() {
+        let validator = VcrValidator::new();
+        
+        // 3 workers, no agreement
+        let vcrs = vec![
+            create_test_vcr(1, 5),
+            create_test_vcr(2, 6),
+            create_test_vcr(3, 7),
+        ];
+        
+        assert!(validator.verify_quorum(&vcrs).is_err());
+    }
+
+    #[test]
+    fn test_mismatched_job_ids() {
+        let validator = VcrValidator::new();
+        
+        let mut vcrs = vec![
+            create_test_vcr(1, 5),
+            create_test_vcr(2, 5),
+            create_test_vcr(3, 5),
+        ];
+        
+        // Change job_id of second VCR
+        vcrs[1].job_id = H256::from_slice(&[1u8; 32]).unwrap();
+        
+        assert!(validator.verify_quorum(&vcrs).is_err());
+    }
+}
