@@ -1,0 +1,14 @@
+[package]
+name = "aether-p2p"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+libp2p.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../types" }
+aether-gossipsub = { path = "../networking/gossipsub" }
+aether-quic-transport = { path = "../networking/quic-transport" }
+

@@ -1,0 +1,14 @@
+[package]
+name = "aether-rpc-json"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+aether-ledger = { path = "../../ledger" }
+

@@ -1,0 +1,10 @@
+[package]
+name = "aether-da-erasure"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+
+# Reed-Solomon implementation (e.g., reed-solomon-erasure crate)
+

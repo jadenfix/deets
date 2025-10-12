@@ -1,0 +1,22 @@
+[package]
+name = "aether-node"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "aether-node"
+path = "src/main.rs"
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+aether-consensus = { path = "../consensus" }
+aether-ledger = { path = "../ledger" }
+aether-mempool = { path = "../mempool" }
+aether-types = { path = "../types" }
+aether-crypto-primitives = { path = "../crypto/primitives" }
+aether-state-storage = { path = "../state/storage" }
+

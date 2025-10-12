@@ -1,0 +1,12 @@
+[package]
+name = "aether-da-shreds"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+bincode.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+

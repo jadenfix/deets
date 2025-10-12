@@ -1,0 +1,10 @@
+[package]
+name = "aether-codecs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bincode.workspace = true
+borsh.workspace = true
+serde.workspace = true
+

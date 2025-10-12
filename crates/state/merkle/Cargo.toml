@@ -1,0 +1,12 @@
+[package]
+name = "aether-state-merkle"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sha2.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+

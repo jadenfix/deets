@@ -1,0 +1,12 @@
+[package]
+name = "aether-program-job-escrow"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+aether-verifiers-vcr = { path = "../../verifiers/vcr-validator" }
+

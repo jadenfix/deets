@@ -1,0 +1,17 @@
+[package]
+name = "aether-consensus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+
+aether-types = { path = "../types" }
+
+[dev-dependencies]
+aether-crypto-primitives = { path = "../crypto/primitives" }
+

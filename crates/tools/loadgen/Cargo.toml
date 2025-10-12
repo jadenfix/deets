@@ -1,0 +1,11 @@
+[package]
+name = "aether-loadgen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+

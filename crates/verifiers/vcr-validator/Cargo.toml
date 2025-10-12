@@ -1,0 +1,15 @@
+[package]
+name = "aether-verifiers-vcr"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+aether-types = { path = "../../types" }
+aether-verifiers-tee = { path = "../tee" }
+aether-verifiers-kzg = { path = "../kzg-verifier" }
+aether-crypto-primitives = { path = "../../crypto/primitives" }
+

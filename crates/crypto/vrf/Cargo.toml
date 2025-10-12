@@ -1,0 +1,12 @@
+[package]
+name = "aether-crypto-vrf"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+# VRF implementation (e.g., schnorrkel for ECVRF)
+

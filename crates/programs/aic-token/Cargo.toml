@@ -1,0 +1,11 @@
+[package]
+name = "aether-program-aic-token"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+anyhow.workspace = true
+
+aether-types = { path = "../../types" }
+

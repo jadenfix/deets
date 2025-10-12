@@ -1,0 +1,13 @@
+[package]
+name = "aether-indexer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+
+aether-types = { path = "../../types" }
+aether-rpc-grpc = { path = "../../rpc/grpc-firehose" }
+

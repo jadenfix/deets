@@ -1,0 +1,11 @@
+[package]
+name = "aether-verifiers-kzg"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+
+aether-crypto-kzg = { path = "../../crypto/kzg" }
+

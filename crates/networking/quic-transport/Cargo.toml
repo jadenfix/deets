@@ -1,0 +1,10 @@
+[package]
+name = "aether-quic-transport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+quinn.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+

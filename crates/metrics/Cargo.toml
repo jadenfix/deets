@@ -1,0 +1,9 @@
+[package]
+name = "aether-metrics"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+prometheus.workspace = true
+tracing.workspace = true
+

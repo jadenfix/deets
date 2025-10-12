@@ -1,0 +1,93 @@
+# ============================================================================
+# AETHER GENESIS CONFIGURATION
+# ============================================================================
+# PURPOSE: Chain initialization parameters for devnet/testnet/mainnet
+#
+# CONNECTIONS:
+# - Read by: crates/node at genesis initialization
+# - Validates: All consensus, fee, rent, and economic parameters
+# - Produces: genesis.json (serialized initial state)
+# ============================================================================
+
+[chain]
+chain_id = "aether-dev-1"
+slot_ms = 500                    # 500ms slots for 2s finality target
+block_bytes_max = 2_000_000      # 2MB max block size
+epoch_slots = 43200              # ~6 hours per epoch at 500ms slots
+
+[consensus]
+# VRF-PoS parameters
+tau = 0.8                        # Leader election probability target
+quorum = "2/3"                   # BFT quorum threshold
+
+# Slashing parameters
+slash_double = "0.05"            # 5% slash for double-signing
+leak_downtime = "0.00001"        # Gradual leak for downtime (per slot)
+unbonding_delay_slots = 172800   # 24 hours unbonding
+
+# HotStuff parameters
+round_timeout_ms = 2000          # Round timeout before fallback
+view_change_timeout_ms = 5000    # View change timeout
+
+[fees]
+# Fee model: fee = a + b*bytes + c*steps + d*mem
+a = 10_000                       # Base fee (lamports)
+b = 5                            # Per-byte fee
+c = 2                            # Per compute step
+d = 1                            # Per memory byte
+
+# Congestion multipliers
+congestion_base = 1.0
+congestion_max = 100.0
+target_utilization = 0.75
+
+[rent]
+# State rent (anti-spam, reclaim unused state)
+rho_per_byte_per_epoch = 2       # Rent per byte per epoch
+horizon_epochs = 12              # Prepaid deposit exemption horizon
+minimum_balance = 1_000_000      # Minimum account balance
+
+[tokens]
+# SWR (Staking/Governance token)
+swr_initial_supply = 1_000_000_000_000_000  # 1B SWR (6 decimals)
+swr_decimals = 6
+
+# AIC (AI Credits token)
+aic_initial_supply = 10_000_000_000_000_000 # 10B AIC (6 decimals)
+aic_decimals = 6
+
+[rewards]
+# Staking rewards
+annual_inflation_rate = 0.08     # 8% annual inflation (decreasing)
+validator_commission_max = 0.20  # 20% max commission
+reward_epoch_delay = 2           # Rewards distributed 2 epochs later
+
+[ai_mesh]
+# Job escrow and VCR parameters
+vcr_challenge_window_slots = 1200    # ~10 minutes challenge window
+vcr_bond_minimum = 10_000_000        # Minimum provider bond
+reputation_decay_alpha = 0.95        # EWMA decay for reputation
+kzg_sample_size = 32                 # Number of KZG opening samples
+
+[networking]
+# P2P and gossipsub config
+max_peers = 50
+max_inbound = 25
+max_outbound = 25
+gossipsub_mesh_size = 8
+turbine_fanout = 12
+
+# Turbine RS coding
+erasure_k = 10                   # Data shards
+erasure_r = 2                    # Parity shards
+
+[genesis_accounts]
+# Initial allocations (address → balance)
+# Format: "address" = { swr = amount, aic = amount }
+# Populated by genesis ceremony
+
+[genesis_validators]
+# Initial validator set
+# Format: "pubkey" = { stake = amount, commission = rate }
+# Populated by genesis ceremony
+

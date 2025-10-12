@@ -1,0 +1,12 @@
+[package]
+name = "aether-verifiers-tee"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+# TEE attestation libraries (e.g., snp-verifier, tdx-verifier)
+

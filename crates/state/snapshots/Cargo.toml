@@ -1,0 +1,14 @@
+[package]
+name = "aether-state-snapshots"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+aether-types = { path = "../../types" }
+aether-state-storage = { path = "../storage" }
+aether-state-merkle = { path = "../merkle" }
+

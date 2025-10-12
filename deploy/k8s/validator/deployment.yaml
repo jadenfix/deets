@@ -1,0 +1,99 @@
+# ============================================================================
+# AETHER VALIDATOR - Kubernetes Deployment
+# ============================================================================
+# PURPOSE: Production-ready validator deployment for testnet/mainnet
+#
+# FEATURES:
+#   - Anti-affinity (spread across failure domains)
+#   - Local NVMe volumes
+#   - Resource limits
+#   - Liveness/readiness probes
+#   - Metrics scraping
+# ============================================================================
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: aether-validator
+  namespace: aether
+spec:
+  serviceName: "aether-validator"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aether-validator
+  template:
+    metadata:
+      labels:
+        app: aether-validator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - aether-validator
+              topologyKey: "kubernetes.io/hostname"
+      
+      containers:
+      - name: validator
+        image: aether/validator:latest
+        ports:
+          - containerPort: 9000
+            name: p2p
+          - containerPort: 9090
+            name: metrics
+        
+        env:
+          - name: VALIDATOR_KEY
+            valueFrom:
+              secretKeyRef:
+                name: validator-keys
+                key: validator.json
+          - name: GENESIS_FILE
+            value: "/config/genesis.json"
+        
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          - name: config
+            mountPath: /config
+        
+        resources:
+          requests:
+            cpu: "16"
+            memory: "128Gi"
+          limits:
+            cpu: "32"
+            memory: "256Gi"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 9090
+          initialDelaySeconds: 10
+          periodSeconds: 5
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "local-nvme"
+      resources:
+        requests:
+          storage: 2Ti
+

@@ -1,0 +1,158 @@
+# ============================================================================
+# AETHER - AI-Credits Blockchain Monorepo
+# ============================================================================
+# PURPOSE: Root workspace manifest for Aether L1 blockchain
+# 
+# SYSTEM ARCHITECTURE:
+# - Core Protocol Layer: Consensus (VRF-PoS + HotStuff) → Networking (QUIC/Turbine) → Ledger (eUTxO++) → Runtime (WASM)
+# - Economics Layer: SWR (staking token) + AIC (AI credits, burned on use)
+# - AI Mesh Layer: TEE-attested workers → VCR generation → On-chain verification → Dispute resolution
+# - Developer Layer: SDKs (TS/Python/Rust) → CLI → Explorer → Indexer
+#
+# DATA FLOW:
+# 1. User submits tx → Mempool (gossipsub 'tx' topic)
+# 2. VRF leader elected → Proposes block → Turbine sharding (RS erasure)
+# 3. Block execution: Scheduler analyzes R/W sets → Parallel WASM VM execution
+# 4. BLS vote aggregation → HotStuff finality (≥2/3 stake)
+# 5. State commitment (Sparse Merkle) → Receipts → Indexer ingestion
+#
+# AI JOB FLOW:
+# 1. User posts job (model_hash, AIC escrow) → Job Escrow contract
+# 2. Router selects provider → Provider accepts (stakes bond)
+# 3. TEE execution → VCR generation (quote + KZG commits) → On-chain submit
+# 4. Challenge window → Watchtower verification → Settlement
+#
+# SCALE TARGETS:
+# - L1: 5-20k TPS with parallel exec, 500ms slots, 2-4MB blocks
+# - L2/App-chains: IBC-like async messages for vertical scaling
+# - External DA: Celestia/Avail for data availability scaling
+# ============================================================================
+
+[workspace]
+resolver = "2"
+
+members = [
+    # Core protocol stack
+    "crates/node",
+    "crates/consensus",
+    "crates/ledger",
+    "crates/runtime",
+    "crates/mempool",
+    "crates/p2p",
+    
+    # Networking & data availability
+    "crates/networking/quic-transport",
+    "crates/networking/gossipsub",
+    "crates/da/turbine",
+    "crates/da/erasure-coding",
+    "crates/da/shreds",
+    
+    # Cryptography primitives
+    "crates/crypto/primitives",
+    "crates/crypto/vrf",
+    "crates/crypto/bls",
+    "crates/crypto/kes",
+    "crates/crypto/kzg",
+    
+    # State & storage
+    "crates/state/merkle",
+    "crates/state/storage",
+    "crates/state/snapshots",
+    
+    # Native programs (system contracts)
+    "crates/programs/staking",
+    "crates/programs/governance",
+    "crates/programs/amm",
+    "crates/programs/job-escrow",
+    "crates/programs/reputation",
+    "crates/programs/aic-token",
+    
+    # Verifiers
+    "crates/verifiers/tee",
+    "crates/verifiers/kzg-verifier",
+    "crates/verifiers/vcr-validator",
+    
+    # RPC & APIs
+    "crates/rpc/json-rpc",
+    "crates/rpc/grpc-firehose",
+    
+    # Common types & utilities
+    "crates/types",
+    "crates/codecs",
+    "crates/metrics",
+    
+    # SDKs
+    "crates/sdk/rust",
+    
+    # Tools
+    "crates/tools/cli",
+    "crates/tools/keytool",
+    "crates/tools/faucet",
+    "crates/tools/indexer",
+    "crates/tools/loadgen",
+    
+    # AI Mesh
+    "ai-mesh/runtime",
+    "ai-mesh/router",
+    "ai-mesh/receipts",
+    "ai-mesh/attestation",
+    "ai-mesh/models",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/aether/aether"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bincode = "1"
+borsh = "1"
+
+# Cryptography
+ed25519-dalek = "2"
+blst = "0.3"
+sha2 = "0.10"
+blake3 = "1"
+rand = "0.8"
+
+# Networking
+quinn = "0.10"
+libp2p = { version = "0.53", features = ["gossipsub", "identify", "kad", "noise", "tcp", "quic"] }
+
+# Storage
+rocksdb = "0.21"
+
+# WASM runtime
+wasmtime = "16"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Telemetry
+tracing = "0.1"
+tracing-subscriber = "0.3"
+prometheus = "0.13"
+
+# Testing
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
+debug = true
+

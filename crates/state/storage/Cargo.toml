@@ -1,0 +1,16 @@
+[package]
+name = "aether-state-storage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rocksdb.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+num_cpus = "1"
+
+aether-types = { path = "../../types" }
+
+[dev-dependencies]
+tempfile = "3"
+
