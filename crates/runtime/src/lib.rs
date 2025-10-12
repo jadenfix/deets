@@ -1,127 +1,45 @@
 // ============================================================================
-// AETHER RUNTIME - WASM Execution Engine with Parallel Scheduler
+// AETHER RUNTIME - WASM VM & Smart Contract Execution
 // ============================================================================
-// PURPOSE: Execute smart contracts in parallel using declared R/W sets
+// PURPOSE: Execute smart contracts with gas metering and sandboxing
 //
-// EXECUTION MODEL: WASM with deterministic gas metering
+// FEATURES:
+// - WASM VM using Wasmtime
+// - Deterministic execution
+// - Gas metering per instruction
+// - Host functions for blockchain interaction
+// - Memory and stack limits
+// - Parallel execution scheduling (R/W sets)
 //
-// COMPONENT CONNECTIONS:
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                     RUNTIME EXECUTOR                              │
-// ├──────────────────────────────────────────────────────────────────┤
-// │  Transaction Batch  →  R/W Set Analyzer  →  Conflict Graph       │
-// │         ↓                                        ↓                │
-// │  Parallel Scheduler  →  Topological Sort  →  Execution Batches   │
-// │         ↓                                        ↓                │
-// │  WASM VM Pool (per-program instances)  →  Gas Metering           │
-// │         ↓                                        ↓                │
-// │  System Calls (host functions)  →  State Reads/Writes (buffered) │
-// │         ↓                                        ↓                │
-// │  Execution Results  →  Fee Calculation  →  Receipt Generation    │
-// └──────────────────────────────────────────────────────────────────┘
+// HOST FUNCTIONS:
+// - storage_read/storage_write: Contract storage
+// - get_balance/transfer: Account operations
+// - sha256: Cryptographic hashing
+// - emit_log: Event logging
+// - block_number/timestamp/caller/address: Context info
 //
-// PARALLELISM ALGORITHM:
-// Build conflict graph G = (V, E) where:
-//   - V = transactions in block
-//   - E = {(a,b) | a conflicts with b}
+// GAS COSTS (per spec):
+// - Base: 100
+// - Memory: 1 per byte
+// - Storage read: 200
+// - Storage write: 5000 (+ 20000 for new slot)
+// - Transfer: 9000
+// - SHA256: 60 + 12 per word
+// - Log: 375 + 8 per byte
 //
-// Find maximal independent sets (MIS) for parallel execution:
-//   Batch 1 = MIS(G)
-//   Batch 2 = MIS(G \ Batch1)
-//   ...
-//
-// CONFLICT DETECTION:
-// ```
-// fn conflicts(tx_a, tx_b) -> bool:
-//     // Write-Write conflict
-//     if !tx_a.writes.disjoint(tx_b.writes):
-//         return true
-//     // Write-Read conflict (both directions)
-//     if !tx_a.writes.disjoint(tx_b.reads):
-//         return true
-//     if !tx_b.writes.disjoint(tx_a.reads):
-//         return true
-//     return false
-// ```
-//
-// GAS METERING:
-// Fee = a + b*tx_bytes + c*compute_units + d*memory_bytes
-//
-// Where:
-//   a = base fee
-//   b*tx_bytes = payload cost
-//   c*compute_units = WASM instruction cost
-//   d*memory_bytes = memory allocation cost
-//
-// PSEUDOCODE:
-// ```
-// struct Runtime:
-//     vm_pool: HashMap<ProgramId, WasmInstance>
-//     scheduler: ParallelScheduler
-//     gas_meter: GasMeter
-//
-// fn execute_block(txs):
-//     // Phase 1: Analyze R/W sets
-//     for tx in txs:
-//         rw_set = extract_rw_set(tx)
-//         tx.declare_sets(rw_set)
-//
-//     // Phase 2: Build conflict graph
-//     conflict_graph = build_conflict_graph(txs)
-//
-//     // Phase 3: Schedule into batches
-//     batches = scheduler.schedule(conflict_graph)
-//
-//     // Phase 4: Execute batches in parallel
-//     results = []
-//     for batch in batches:
-//         batch_results = parallel_map(batch, |tx| {
-//             vm = get_or_create_vm(tx.program_id)
-//             gas_meter.start(tx.gas_limit)
-//
-//             result = vm.execute(tx.entry_point, tx.args)
-//
-//             gas_used = gas_meter.consumed()
-//             fee = compute_fee(tx, gas_used)
-//
-//             return ExecutionResult {
-//                 status: result.status,
-//                 return_value: result.value,
-//                 gas_used: gas_used,
-//                 fee: fee,
-//                 writes: result.state_changes
-//             }
-//         })
-//         results.extend(batch_results)
-//
-//     return results
-// ```
-//
-// HOST FUNCTIONS (WASM imports):
-// - account_read(address) -> bytes
-// - account_write(address, data)
-// - utxo_check(utxo_id) -> bool
-// - emit_log(topic, data)
-// - call_program(program_id, method, args) -> result
-// - crypto_verify_sig(pubkey, msg, sig) -> bool
-//
-// DETERMINISM GUARANTEES:
-// - No floating point (except fixed-point Q64.64)
-// - No system time (use block timestamp)
-// - No random (use VRF from block)
-// - No non-det imports
-//
-// OUTPUTS:
-// - Execution results → Ledger for state commits
-// - Gas usage → Fee deduction
-// - Logs → Receipts & events
+// EXECUTION FLOW:
+// 1. Load WASM module
+// 2. Validate bytecode
+// 3. Instantiate with gas limit
+// 4. Inject host functions
+// 5. Execute entry point
+// 6. Return result + gas used
 // ============================================================================
 
-pub mod scheduler;
 pub mod vm;
-pub mod gas;
-pub mod syscalls;
+pub mod host_functions;
+pub mod scheduler;
 
-pub use vm::Runtime;
+pub use vm::{WasmVm, ExecutionContext, ExecutionResult, Log, gas_costs};
+pub use host_functions::HostFunctions;
 pub use scheduler::ParallelScheduler;
-
