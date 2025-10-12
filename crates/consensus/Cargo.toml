@@ -12,6 +12,7 @@ serde.workspace = true
 
 aether-types = { path = "../types" }
 aether-crypto-vrf = { path = "../crypto/vrf" }
+aether-crypto-bls = { path = "../crypto/bls" }
 sha2 = "0.10"
 
 [dev-dependencies]

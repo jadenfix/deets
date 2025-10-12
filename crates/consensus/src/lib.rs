@@ -10,8 +10,10 @@
 pub mod simple;
 pub mod slashing;
 pub mod vrf_pos;
+pub mod hotstuff;
 
 pub use simple::SimpleConsensus;
-pub use slashing::{detect_double_sign, verify_slash_proof, SlashProof, SlashType, Vote};
+pub use slashing::{detect_double_sign, verify_slash_proof, SlashProof, SlashType, Vote as SlashingVote};
 pub use vrf_pos::VrfPosConsensus;
+pub use hotstuff::{HotStuffConsensus, Vote as HotStuffVote, AggregatedVote, Phase};
 
