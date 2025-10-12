@@ -1,144 +1,220 @@
 // ============================================================================
-// AETHER AIC TOKEN PROGRAM - AI Credits Token Management
+// AETHER AIC TOKEN - AI Credits
 // ============================================================================
-// PURPOSE: Manage AIC token supply, transfers, and burning mechanism
+// PURPOSE: Consumable token for AI inference jobs
 //
-// TOKEN: AIC (AI Credits) - utility token for AI compute, burned on use
-//
-// COMPONENT CONNECTIONS:
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                    AIC TOKEN SYSTEM                               │
-// ├──────────────────────────────────────────────────────────────────┤
-// │  User Transfer  →  Balance Update  →  Account State              │
-// │         ↓                                ↓                        │
-// │  Job Escrow  →  AIC Burn  →  Supply Decrease (deflationary)      │
-// │         ↓                                ↓                        │
-// │  Provider Payment  →  Treasury/Stablecoin  →  Separate from AIC  │
-// └──────────────────────────────────────────────────────────────────┘
-//
-// ACCOUNT STATE:
-// ```
-// struct AicAccount:
-//     address: Address
-//     balance: u128
-//     frozen: bool
-//     allowances: HashMap<Address, u128>  // For delegated transfers
-// ```
+// ECONOMICS:
+// - Burned on use (deflationary)
+// - Minted through: staking rewards, purchase with SWR
+// - Used for: AI inference requests
+// - Price discovery: AMM vs SWR
 //
 // OPERATIONS:
-// ```
-// fn transfer(to, amount):
-//     from_account = get_account(caller)
-//     require(!from_account.frozen)
-//     require(from_account.balance >= amount)
-//     
-//     from_account.balance -= amount
-//     
-//     to_account = get_or_create_account(to)
-//     to_account.balance += amount
-//     
-//     emit_event(Transfer { from: caller, to: to, amount: amount })
+// - mint: Create new AIC (governance controlled)
+// - burn: Destroy AIC (automatic on job execution)
+// - transfer: Send AIC between accounts
+// - allowance: Approve spending (for contracts)
 //
-// fn burn(amount):
-//     account = get_account(caller)
-//     require(account.balance >= amount)
-//     
-//     account.balance -= amount
-//     total_supply -= amount
-//     
-//     emit_event(Burn { from: caller, amount: amount })
+// SUPPLY:
+// - No hard cap
+// - Burn rate adjusts based on network usage
+// - Mint rate controlled by governance
 //
-// fn approve(spender, amount):
-//     account = get_account(caller)
-//     account.allowances[spender] = amount
-//     
-//     emit_event(Approval { owner: caller, spender: spender, amount: amount })
-//
-// fn transfer_from(from, to, amount):
-//     from_account = get_account(from)
-//     require(!from_account.frozen)
-//     require(from_account.allowances[caller] >= amount)
-//     require(from_account.balance >= amount)
-//     
-//     from_account.balance -= amount
-//     from_account.allowances[caller] -= amount
-//     
-//     to_account = get_or_create_account(to)
-//     to_account.balance += amount
-//     
-//     emit_event(Transfer { from: from, to: to, amount: amount })
-// ```
-//
-// PRIVILEGED OPERATIONS (Job Escrow Program only):
-// ```
-// fn escrow_burn(account, amount):
-//     // Only callable by Job Escrow Program
-//     require(caller == JOB_ESCROW_PROGRAM)
-//     
-//     acc = get_account(account)
-//     require(acc.balance >= amount)
-//     
-//     acc.balance -= amount
-//     total_supply -= amount
-//     
-//     emit_event(Burn { from: account, amount: amount })
-//
-// fn escrow_transfer(from, to, amount):
-//     // Only callable by Job Escrow Program
-//     require(caller == JOB_ESCROW_PROGRAM)
-//     
-//     from_acc = get_account(from)
-//     require(from_acc.balance >= amount)
-//     
-//     from_acc.balance -= amount
-//     
-//     to_acc = get_or_create_account(to)
-//     to_acc.balance += amount
-//     
-//     emit_event(Transfer { from: from, to: to, amount: amount })
-// ```
-//
-// TOKENOMICS:
-// - Initial Supply: 10B AIC (genesis allocation)
-// - Decimals: 6 (1 AIC = 1,000,000 micro-AIC)
-// - Deflationary: Burned on AI job completion
-// - Provider Payment: Separate stablecoin/token from treasury
-// - No minting: Fixed initial supply (burns only)
-//
-// BURN MECHANISM:
-// When AI job completes successfully:
-//   1. User's escrowed AIC is burned (deflationary pressure)
-//   2. Provider receives payment from separate treasury (stablecoin/AIC)
-//   3. Total AIC supply decreases over time
-//
-// SUPPLY TRACKING:
-// ```
-// struct SupplyMetrics:
-//     total_supply: u128
-//     total_burned: u128
-//     circulating_supply: u128  // total - burned
-//     burn_rate_per_epoch: u128  // EWMA
-// ```
-//
-// ACCOUNT FREEZING:
-// Governance can freeze accounts (e.g., sanctioned addresses):
-// ```
-// fn freeze_account(address):
-//     require(caller == GOVERNANCE_PROGRAM)
-//     account = get_account(address)
-//     account.frozen = true
-// ```
-//
-// OUTPUTS:
-// - Balance updates → User wallets
-// - Burn events → Supply tracking & analytics
-// - Transfer events → Indexer & block explorer
+// INTEGRATION:
+// - Job escrow: Burns AIC on completion
+// - Staking: Earns AIC rewards
+// - AMM: AIC/SWR trading pair
 // ============================================================================
 
-pub mod token;
-pub mod transfer;
-pub mod burn;
-pub mod allowance;
+use serde::{Deserialize, Serialize};
+use aether_types::Address;
+use std::collections::HashMap;
 
-pub use token::AicAccount;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AicTokenState {
+    /// Total supply
+    pub total_supply: u128,
+    
+    /// Total burned
+    pub total_burned: u128,
+    
+    /// Balances
+    pub balances: HashMap<Address, u128>,
+    
+    /// Allowances (owner -> spender -> amount)
+    pub allowances: HashMap<Address, HashMap<Address, u128>>,
+    
+    /// Mint authority
+    pub mint_authority: Address,
+}
 
+impl AicTokenState {
+    pub fn new(mint_authority: Address) -> Self {
+        AicTokenState {
+            total_supply: 0,
+            total_burned: 0,
+            balances: HashMap::new(),
+            allowances: HashMap::new(),
+            mint_authority,
+        }
+    }
+
+    /// Mint new tokens
+    pub fn mint(&mut self, caller: Address, to: Address, amount: u128) -> Result<(), String> {
+        if caller != self.mint_authority {
+            return Err("unauthorized".to_string());
+        }
+
+        let balance = self.balances.entry(to).or_insert(0);
+        *balance = balance.checked_add(amount)
+            .ok_or("overflow")?;
+        
+        self.total_supply = self.total_supply.checked_add(amount)
+            .ok_or("overflow")?;
+
+        Ok(())
+    }
+
+    /// Burn tokens (destroy permanently)
+    pub fn burn(&mut self, from: Address, amount: u128) -> Result<(), String> {
+        let balance = self.balances.get_mut(&from)
+            .ok_or("insufficient balance")?;
+        
+        if *balance < amount {
+            return Err("insufficient balance".to_string());
+        }
+
+        *balance -= amount;
+        self.total_supply = self.total_supply.checked_sub(amount)
+            .ok_or("underflow")?;
+        self.total_burned = self.total_burned.checked_add(amount)
+            .ok_or("overflow")?;
+
+        Ok(())
+    }
+
+    /// Transfer tokens
+    pub fn transfer(&mut self, from: Address, to: Address, amount: u128) -> Result<(), String> {
+        if from == to {
+            return Err("cannot transfer to self".to_string());
+        }
+
+        let from_balance = self.balances.get_mut(&from)
+            .ok_or("insufficient balance")?;
+        
+        if *from_balance < amount {
+            return Err("insufficient balance".to_string());
+        }
+
+        *from_balance -= amount;
+        
+        let to_balance = self.balances.entry(to).or_insert(0);
+        *to_balance = to_balance.checked_add(amount)
+            .ok_or("overflow")?;
+
+        Ok(())
+    }
+
+    /// Approve spending
+    pub fn approve(&mut self, owner: Address, spender: Address, amount: u128) -> Result<(), String> {
+        self.allowances
+            .entry(owner)
+            .or_insert_with(HashMap::new)
+            .insert(spender, amount);
+
+        Ok(())
+    }
+
+    /// Transfer from (using allowance)
+    pub fn transfer_from(
+        &mut self,
+        caller: Address,
+        from: Address,
+        to: Address,
+        amount: u128,
+    ) -> Result<(), String> {
+        // Check allowance
+        let allowance = self.allowances
+            .get_mut(&from)
+            .and_then(|m| m.get_mut(&caller))
+            .ok_or("insufficient allowance")?;
+
+        if *allowance < amount {
+            return Err("insufficient allowance".to_string());
+        }
+
+        *allowance -= amount;
+
+        // Transfer
+        self.transfer(from, to, amount)?;
+
+        Ok(())
+    }
+
+    pub fn balance_of(&self, account: &Address) -> u128 {
+        self.balances.get(account).copied().unwrap_or(0)
+    }
+
+    pub fn allowance_of(&self, owner: &Address, spender: &Address) -> u128 {
+        self.allowances
+            .get(owner)
+            .and_then(|m| m.get(spender))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr(n: u8) -> Address {
+        Address::from_slice(&[n; 20]).unwrap()
+    }
+
+    #[test]
+    fn test_mint() {
+        let mut state = AicTokenState::new(addr(1));
+        
+        state.mint(addr(1), addr(2), 1000).unwrap();
+        
+        assert_eq!(state.balance_of(&addr(2)), 1000);
+        assert_eq!(state.total_supply, 1000);
+    }
+
+    #[test]
+    fn test_burn() {
+        let mut state = AicTokenState::new(addr(1));
+        
+        state.mint(addr(1), addr(2), 1000).unwrap();
+        state.burn(addr(2), 300).unwrap();
+        
+        assert_eq!(state.balance_of(&addr(2)), 700);
+        assert_eq!(state.total_burned, 300);
+        assert_eq!(state.total_supply, 700);
+    }
+
+    #[test]
+    fn test_transfer() {
+        let mut state = AicTokenState::new(addr(1));
+        
+        state.mint(addr(1), addr(2), 1000).unwrap();
+        state.transfer(addr(2), addr(3), 400).unwrap();
+        
+        assert_eq!(state.balance_of(&addr(2)), 600);
+        assert_eq!(state.balance_of(&addr(3)), 400);
+    }
+
+    #[test]
+    fn test_approve_and_transfer_from() {
+        let mut state = AicTokenState::new(addr(1));
+        
+        state.mint(addr(1), addr(2), 1000).unwrap();
+        state.approve(addr(2), addr(3), 500).unwrap();
+        state.transfer_from(addr(3), addr(2), addr(4), 300).unwrap();
+        
+        assert_eq!(state.balance_of(&addr(2)), 700);
+        assert_eq!(state.balance_of(&addr(4)), 300);
+        assert_eq!(state.allowance_of(&addr(2), &addr(3)), 200);
+    }
+}
