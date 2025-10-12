@@ -93,10 +93,10 @@ members = [
     
     # AI Mesh
     "ai-mesh/runtime",
-    "ai-mesh/router",
-    "ai-mesh/receipts",
-    "ai-mesh/attestation",
-    "ai-mesh/models",
+    # "ai-mesh/router",
+    # "ai-mesh/receipts",
+    # "ai-mesh/attestation",
+    # "ai-mesh/models",
 ]
 
 [workspace.package]
