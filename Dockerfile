@@ -1,5 +1,5 @@
 # Aether Blockchain - Multi-stage Docker Build
-FROM rust:1.75-slim as builder
+FROM rust:1.80-slim as builder
 
 WORKDIR /build
 
