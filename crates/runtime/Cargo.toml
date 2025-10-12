@@ -4,15 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow = "1.0"
-sha2 = "0.10"
-
 aether-types = { path = "../types" }
+aether-ledger = { path = "../ledger" }
 anyhow.workspace = true
 thiserror.workspace = true
 wasmtime.workspace = true
 serde.workspace = true
-
-aether-types = { path = "../types" }
-aether-ledger = { path = "../ledger" }
-
+sha2 = "0.10"

@@ -4,11 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-
 aether-types = { path = "../../types" }
 serde.workspace = true
 anyhow.workspace = true
-
-aether-types = { path = "../../types" }
-
