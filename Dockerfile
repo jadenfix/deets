@@ -12,7 +12,6 @@ RUN apt-get update && apt-get install -y \
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY ai-mesh ./ai-mesh
 
 # Build release binary
 RUN cargo build --release --bin aether-node
