@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow = "1.0"
+sha2 = "0.10"
+bincode = "1.3"
+
+aether-types = { path = "../types" }
 tokio.workspace = true
 libp2p.workspace = true
 anyhow.workspace = true

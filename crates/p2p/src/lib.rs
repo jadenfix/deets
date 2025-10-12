@@ -1,85 +1,42 @@
 // ============================================================================
 // AETHER P2P - Peer-to-Peer Networking Layer
 // ============================================================================
-// PURPOSE: Node discovery, peer management, message propagation
+// PURPOSE: Decentralized network for block and transaction propagation
 //
-// COMPONENT CONNECTIONS:
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                      P2P NETWORK                                  │
-// ├──────────────────────────────────────────────────────────────────┤
-// │  Bootstrap Nodes  →  Peer Discovery (Kademlia DHT)               │
-// │         ↓                              ↓                          │
-// │  Peer Scoring  →  Connection Manager  →  Inbound/Outbound Limits │
-// │         ↓                              ↓                          │
-// │  Gossipsub Topics:                                                │
-// │    - 'tx' (transactions)  →  Mempool                              │
-// │    - 'header' (block proposals)  →  Consensus                     │
-// │    - 'vote' (BLS votes)  →  Vote Aggregator                       │
-// │    - 'shred' (erasure-coded blocks)  →  Turbine Reconstructor     │
-// └──────────────────────────────────────────────────────────────────┘
+// ARCHITECTURE:
+// - libp2p for networking stack
+// - Gossipsub for pub/sub messaging
+// - Kademlia DHT for peer discovery
+// - QUIC for transport (low latency, multiplexing)
+// - Noise protocol for encryption
 //
-// GOSSIPSUB TOPICS:
-// - tx: Raw transaction propagation
-// - header: Block header announcements
-// - vote: Validator votes (BLS signatures)
-// - shred: Erasure-coded block shards (Turbine)
+// TOPICS:
+// - /aether/tx: Transaction propagation
+// - /aether/block: Block propagation
+// - /aether/vote: Consensus votes
+// - /aether/shred: Data availability shreds
 //
-// PEER SCORING:
-// Score = base + stake_weight - penalties
-// Penalties for: late messages, invalid data, rate limit violations
+// PEER MANAGEMENT:
+// - Scoring system (reputation)
+// - Ban misbehaving peers
+// - Connection limits
+// - NAT traversal
 //
-// PSEUDOCODE:
-// ```
-// struct P2PNetwork:
-//     swarm: Libp2p::Swarm
-//     peers: HashMap<PeerId, PeerInfo>
-//     topics: HashMap<TopicName, Subscription>
-//     config: P2PConfig
+// MESSAGE FLOW:
+// 1. Local node publishes to topic
+// 2. Gossipsub forwards to subscribed peers
+// 3. Peers validate and re-broadcast
+// 4. Deduplication prevents loops
+// 5. Handler processes new messages
 //
-// fn start():
-//     // Bootstrap
-//     for bootstrap_addr in config.bootstrap_nodes:
-//         dial(bootstrap_addr)
-//
-//     // Subscribe to topics
-//     subscribe("tx")
-//     subscribe("header")
-//     subscribe("vote")
-//     subscribe("shred")
-//
-//     // Event loop
-//     loop:
-//         match swarm.next_event():
-//             PeerConnected(peer_id):
-//                 handle_peer_connected(peer_id)
-//             MessageReceived(topic, data):
-//                 handle_message(topic, data)
-//             PeerScoreUpdate(peer_id, score):
-//                 if score < threshold:
-//                     disconnect(peer_id)
-//
-// fn broadcast(topic, data):
-//     gossipsub.publish(topic, data)
-//
-// fn send_direct(peer_id, data):
-//     if peer = peers.get(peer_id):
-//         peer.connection.send(data)
-// ```
-//
-// ANTI-SPAM:
-// - Rate limits per peer (tx/s, bytes/s)
-// - Stake-weighted inbound quotas
-// - Message deduplication (bloom filter)
-//
-// OUTPUTS:
-// - Received messages → Node subsystems (Mempool, Consensus)
-// - Peer list → Turbine routing
-// - Network metrics → Monitoring
+// PERFORMANCE:
+// - Target: 10k peers
+// - Message latency: <100ms p95
+// - Bandwidth: ~1 MB/s per peer
 // ============================================================================
 
 pub mod network;
-pub mod peer_manager;
-pub mod scoring;
+pub mod gossip;
 
-pub use network::P2PNetwork;
-
+pub use network::{P2PNetwork, PeerInfo};
+pub use gossip::GossipManager;
