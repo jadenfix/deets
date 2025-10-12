@@ -11,6 +11,8 @@ tracing.workspace = true
 serde.workspace = true
 
 aether-types = { path = "../types" }
+aether-crypto-vrf = { path = "../crypto/vrf" }
+sha2 = "0.10"
 
 [dev-dependencies]
 aether-crypto-primitives = { path = "../crypto/primitives" }

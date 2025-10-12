@@ -1,73 +1,27 @@
 // ============================================================================
-// AETHER CRYPTO VRF - Verifiable Random Function for Leader Election
+// AETHER CRYPTO VRF - Verifiable Random Function
 // ============================================================================
-// PURPOSE: Provably random leader election without trusted randomness beacon
+// PURPOSE: ECVRF for slot leader election in VRF-PoS consensus
 //
-// ALGORITHM: ECVRF (Elliptic Curve Verifiable Random Function)
+// ALGORITHM: ECVRF-EDWARDS25519-SHA512-ELL2 (IETF draft-irtf-cfrg-vrf)
 //
-// COMPONENT CONNECTIONS:
-// ┌──────────────────────────────────────────────────────────────────┐
-// │                       VRF SYSTEM                                  │
-// ├──────────────────────────────────────────────────────────────────┤
-// │  Epoch Randomness (η_e)  →  Slot Number  →  VRF Input            │
-// │         ↓                                      ↓                  │
-// │  Validator Secret Key  →  VRF Compute  →  (Output U, Proof π)    │
-// │         ↓                                      ↓                  │
-// │  U < Threshold?  →  Leader Election                               │
-// │  π Valid?  →  Other Validators Verify  →  Accept/Reject Block    │
-// └──────────────────────────────────────────────────────────────────┘
-//
-// VRF PROPERTIES:
-// 1. Uniqueness: Only one valid output per (secret_key, input) pair
-// 2. Verifiability: Anyone can verify output matches proof
-// 3. Unpredictability: Output pseudorandom until revealed
-//
-// LEADER ELECTION:
-// ```
-// η_e = H(VRF_{winner_prev}(η_{e-1} || e))  // Epoch randomness
-//
-// For validator i in slot s:
-//   input = η_e || slot_number || epoch
-//   (U_i, π_i) = VRF(secret_key_i, input)
-//   
-//   threshold = τ * (stake_i / Σ stake)
-//   if U_i < threshold:
-//       // Validator i is leader
-//       propose_block(proof=π_i)
-// ```
-//
-// VERIFICATION:
-// ```
-// fn verify_leader(pubkey, slot, proof, epoch_randomness, stake_table) -> bool:
-//     input = epoch_randomness || slot || epoch
-//     U = vrf_verify(pubkey, input, proof)
-//     
-//     if U is None:
-//         return false  // Invalid proof
-//     
-//     threshold = TAU * (stake_table[pubkey] / total_stake)
-//     return U < threshold
-// ```
-//
-// EPOCH RANDOMNESS UPDATE:
-// At end of epoch e:
-//   winners = collect_vrf_outputs_from_epoch_blocks()
-//   η_{e+1} = H(combine(winners))
+// USAGE:
+// 1. Each validator has a VRF keypair
+// 2. For each slot, evaluate VRF(secret_key, epoch_randomness || slot)
+// 3. If VRF_output < threshold * (validator_stake / total_stake), validator is leader
+// 4. Leader includes VRF proof in block header
+// 5. Others verify the proof to confirm leader legitimacy
 //
 // SECURITY:
-// - No single validator can predict future leaders
-// - Cannot grind for favorable randomness (commitment scheme)
-// - Slashing for invalid VRF proofs
+// - Unpredictable: VRF output is pseudorandom
+// - Verifiable: Anyone can verify the proof
+// - Non-interactive: No communication needed for proof generation
+// - Grinding-resistant: Cannot selectively choose favorable outputs
 //
-// OUTPUTS:
-// - (U, π) → Block proposal header
-// - η_e → Next epoch's randomness seed
-// - Verification results → Consensus accept/reject
+// EPOCH RANDOMNESS:
+// η_e = H(VRF_i(η_{e-1} || e)) - chained randomness across epochs
 // ============================================================================
 
-pub mod vrf;
-pub mod epoch_randomness;
+pub mod ecvrf;
 
-pub use vrf::{VrfProof, VrfOutput};
-pub use epoch_randomness::EpochRandomness;
-
+pub use ecvrf::{VrfKeypair, VrfProof, verify_proof, output_to_value, check_leader_eligibility};

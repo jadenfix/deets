@@ -9,7 +9,9 @@
 
 pub mod simple;
 pub mod slashing;
+pub mod vrf_pos;
 
 pub use simple::SimpleConsensus;
 pub use slashing::{detect_double_sign, verify_slash_proof, SlashProof, SlashType, Vote};
+pub use vrf_pos::VrfPosConsensus;
 
