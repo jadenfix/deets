@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # 4-node test network
+  validator-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - VALIDATOR_ID=1
+      - PEERS=validator-2:9000,validator-3:9000,validator-4:9000
+    ports:
+      - "8545:8545"
+      - "9000:9000"
+    volumes:
+      - validator-1-data:/app/data
+    networks:
+      - aether-testnet
+
+  validator-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - VALIDATOR_ID=2
+      - PEERS=validator-1:9000,validator-3:9000,validator-4:9000
+    ports:
+      - "8546:8545"
+      - "9001:9000"
+    volumes:
+      - validator-2-data:/app/data
+    networks:
+      - aether-testnet
+
+  validator-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - VALIDATOR_ID=3
+      - PEERS=validator-1:9000,validator-2:9000,validator-4:9000
+    ports:
+      - "8547:8545"
+      - "9002:9000"
+    volumes:
+      - validator-3-data:/app/data
+    networks:
+      - aether-testnet
+
+  validator-4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - VALIDATOR_ID=4
+      - PEERS=validator-1:9000,validator-2:9000,validator-3:9000
+    ports:
+      - "8548:8545"
+      - "9003:9000"
+    volumes:
+      - validator-4-data:/app/data
+    networks:
+      - aether-testnet
+
+  # Test runner
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    depends_on:
+      - validator-1
+      - validator-2
+      - validator-3
+      - validator-4
+    environment:
+      - RPC_URL=http://validator-1:8545
+    networks:
+      - aether-testnet
+    command: |
+      sh -c "
+        sleep 10 &&
+        cargo test --all-features --workspace
+      "
+
+volumes:
+  validator-1-data:
+  validator-2-data:
+  validator-3-data:
+  validator-4-data:
+
+networks:
+  aether-testnet:
+    driver: bridge
+

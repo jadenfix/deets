@@ -1,0 +1,21 @@
+# Aether Blockchain - Test Environment
+FROM rust:1.75-slim
+
+WORKDIR /workspace
+
+# Install test dependencies
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo tools
+RUN cargo install cargo-nextest cargo-tarpaulin
+
+# Copy workspace
+COPY . .
+
+# Run tests
+CMD ["cargo", "nextest", "run", "--all-features"]
+
