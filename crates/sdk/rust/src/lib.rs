@@ -27,7 +27,9 @@
 // ============================================================================
 
 pub mod client;
+pub mod job_builder;
 pub mod transaction_builder;
 pub mod types;
 
 pub use client::AetherClient;
+pub use job_builder::JobBuilder;

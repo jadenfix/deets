@@ -18,6 +18,7 @@ Successfully implemented **Phases 1-3** of the Aether blockchain from the techni
 ✅ **Economic system** (staking, governance, DEX, AIC tokens)  
 ✅ **AI mesh** (TEE workers, verifiable compute, VCRs)  
 ✅ **Docker & CI/CD** infrastructure  
+✅ **Developer SDK triad (Rust / TypeScript / Python) with automated acceptance**  
 ✅ **140+ unit tests** passing  
 
 ---
@@ -53,6 +54,13 @@ Successfully implemented **Phases 1-3** of the Aether blockchain from the techni
 - ✅ GitHub Actions CI/CD
 - ✅ Lint configuration (rustfmt, clippy)
 - ✅ Test scripts
+
+### Phase 7: Developer Platform & Ecosystem (40% 🚧)
+1. ✅ Rust SDK enhancements (job builder + tutorials)
+2. ✅ TypeScript SDK (transaction + job tooling)
+3. ✅ Python SDK (transaction + job tooling)
+4. 🚧 CLI (`aetherctl`) integrations
+5. 🚧 Explorer & wallet scaffolding
 
 ---
 

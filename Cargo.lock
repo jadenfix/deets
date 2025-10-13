@@ -431,6 +431,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
