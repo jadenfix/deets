@@ -201,20 +201,14 @@ mod tests {
         .unwrap();
         let server_addr = server.local_addr().unwrap();
         
-        let client = QuicEndpoint::new_with_cert(
-            "127.0.0.1:0".parse().unwrap(),
-            cert,
-            key
-        )
-        .await
-        .unwrap();
-        
+        let client = QuicEndpoint::new_with_cert("127.0.0.1:0".parse().unwrap(), cert, key)
+            .await
+            .unwrap();
+
         // Spawn server accept task
         let server_clone = server.clone();
-        tokio::spawn(async move {
-            server_clone.accept().await
-        });
-        
+        tokio::spawn(async move { server_clone.accept().await });
+
         // Client connects
         let _conn = client.connect(server_addr).await.unwrap();
     }
