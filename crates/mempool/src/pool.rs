@@ -205,13 +205,17 @@ impl Default for Mempool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_types::{Signature, UtxoId, UtxoOutput};
+    use aether_types::{PublicKey, Signature};
     use std::collections::HashSet;
 
     fn create_test_tx(nonce: u64, fee: u128) -> Transaction {
+        let pubkey_bytes = vec![(nonce as u8).saturating_add(1); 32];
+        let sender_pubkey = PublicKey::from_bytes(pubkey_bytes);
+        let sender = sender_pubkey.to_address();
         Transaction {
             nonce,
-            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender,
+            sender_pubkey,
             inputs: vec![],
             outputs: vec![],
             reads: HashSet::new(),
@@ -220,14 +224,14 @@ mod tests {
             data: vec![],
             gas_limit: 21000,
             fee,
-            signature: Signature::from_bytes(vec![]),
+            signature: Signature::from_bytes(vec![0; 64]),
         }
     }
 
     #[test]
     fn test_add_transaction() {
         let mut mempool = Mempool::new();
-        let tx = create_test_tx(0, 2000);
+        let tx = create_test_tx(0, 60_000);
 
         mempool.add_transaction(tx).unwrap();
         assert_eq!(mempool.len(), 1);
@@ -237,9 +241,9 @@ mod tests {
     fn test_priority_ordering() {
         let mut mempool = Mempool::new();
 
-        let tx1 = create_test_tx(0, 1000);
-        let tx2 = create_test_tx(1, 5000);
-        let tx3 = create_test_tx(2, 3000);
+        let tx1 = create_test_tx(0, 110_000);
+        let tx2 = create_test_tx(1, 160_000);
+        let tx3 = create_test_tx(2, 130_000);
 
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
@@ -248,17 +252,17 @@ mod tests {
         let txs = mempool.get_transactions(10, 1_000_000);
 
         // Should be ordered by fee: tx2, tx3, tx1
-        assert_eq!(txs[0].fee, 5000);
-        assert_eq!(txs[1].fee, 3000);
-        assert_eq!(txs[2].fee, 1000);
+        assert_eq!(txs[0].fee, 160_000);
+        assert_eq!(txs[1].fee, 130_000);
+        assert_eq!(txs[2].fee, 110_000);
     }
 
     #[test]
     fn test_gas_limit() {
         let mut mempool = Mempool::new();
 
-        let tx1 = create_test_tx(0, 2000);
-        let tx2 = create_test_tx(1, 3000);
+        let tx1 = create_test_tx(0, 90_000);
+        let tx2 = create_test_tx(1, 120_000);
 
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
@@ -271,8 +275,8 @@ mod tests {
     fn test_remove_transactions() {
         let mut mempool = Mempool::new();
 
-        let tx1 = create_test_tx(0, 2000);
-        let tx2 = create_test_tx(1, 3000);
+        let tx1 = create_test_tx(0, 90_000);
+        let tx2 = create_test_tx(1, 120_000);
 
         mempool.add_transaction(tx1.clone()).unwrap();
         mempool.add_transaction(tx2.clone()).unwrap();

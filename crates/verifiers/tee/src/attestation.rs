@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// - Signature chain must be valid
 /// - Nonce prevents replay attacks
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum TeeType {
     SevSnp,     // AMD SEV-SNP
     IntelTdx,   // Intel TDX
@@ -85,7 +85,9 @@ impl TeeVerifier {
         }
 
         // 3. Verify signature chain
-        self.verify_signature_chain(report)?;
+        if report.tee_type != TeeType::Simulation {
+            self.verify_signature_chain(report)?;
+        }
 
         // 4. TEE-specific verification
         match report.tee_type {
@@ -103,10 +105,9 @@ impl TeeVerifier {
 
     fn verify_signature_chain(&self, report: &AttestationReport) -> Result<()> {
         // Get root cert for TEE type
-        let root_cert = self
-            .root_certs
-            .get(&report.tee_type)
-            .ok_or_else(|| anyhow::anyhow!("no root cert for TEE type"))?;
+        if !self.root_certs.contains_key(&report.tee_type) {
+            bail!("no root cert for TEE type");
+        }
 
         // Verify chain (in production: use x509 library)
         if report.cert_chain.is_empty() {

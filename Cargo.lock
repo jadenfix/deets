@@ -437,6 +437,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "serde",
+ "tempfile",
  "tokio",
 ]
 

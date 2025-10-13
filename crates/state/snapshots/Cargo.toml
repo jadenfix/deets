@@ -12,3 +12,6 @@ bincode.workspace = true
 aether-types = { path = "../../types" }
 aether-state-storage = { path = "../storage" }
 aether-state-merkle = { path = "../merkle" }
+
+[dev-dependencies]
+tempfile = "3"

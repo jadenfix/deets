@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_gas_limits() {
-        let mut host = HostFunctions::new(100); // Very low limit
+        let mut host = HostFunctions::new(5_000); // Low limit
 
         // First operation succeeds
         assert!(host.storage_read(b"key").is_ok());

@@ -124,7 +124,11 @@ pub fn output_to_value(output: &[u8; 32]) -> f64 {
     let val = u64::from_le_bytes(bytes);
 
     // Normalize to [0, 1)
-    val as f64 / (u64::MAX as f64)
+    if val == u64::MAX {
+        1.0 - f64::EPSILON
+    } else {
+        val as f64 / (u64::MAX as f64)
+    }
 }
 
 /// Check if VRF output wins the lottery for slot leadership
@@ -191,26 +195,21 @@ mod tests {
     fn test_output_to_value_range() {
         let output = [0u8; 32];
         let val = output_to_value(&output);
-        assert!(val >= 0.0 && val < 1.0);
+        assert!((0.0..1.0).contains(&val));
 
         let output = [255u8; 32];
         let val = output_to_value(&output);
-        assert!(val >= 0.0 && val < 1.0);
+        assert!((0.0..1.0).contains(&val));
     }
 
     #[test]
     fn test_leader_eligibility() {
-        let mut output = [0u8; 32];
-        output[0] = 1; // Very small value
+        let low_output = [0u8; 32];
+        assert!(check_leader_eligibility(&low_output, 100, 10_000, 0.8));
+        assert!(check_leader_eligibility(&low_output, 5_000, 10_000, 0.8));
 
-        // Small stake should rarely be eligible
-        let eligible = check_leader_eligibility(&output, 100, 10000, 0.8);
-
-        // Large stake should often be eligible
-        let eligible_large = check_leader_eligibility(&output, 5000, 10000, 0.8);
-
-        // At least one should match expected behavior
-        assert!(true); // Probabilistic test
+        let high_output = [255u8; 32];
+        assert!(!check_leader_eligibility(&high_output, 100, 10_000, 0.8));
     }
 
     #[test]
@@ -219,7 +218,7 @@ mod tests {
         let keypair = VrfKeypair::generate();
         let mut epoch_randomness = [0u8; 32]; // Genesis randomness
 
-        for epoch in 0..5 {
+        for epoch in 0u64..5 {
             let mut input = Vec::new();
             input.extend_from_slice(&epoch_randomness);
             input.extend_from_slice(&epoch.to_le_bytes());
@@ -228,7 +227,7 @@ mod tests {
 
             // New randomness is hash of VRF output
             let mut hasher = Sha256::new();
-            hasher.update(&proof.output);
+            hasher.update(proof.output);
             epoch_randomness = hasher.finalize().into();
 
             println!("Epoch {}: randomness = {:?}", epoch, &epoch_randomness[..8]);

@@ -60,7 +60,7 @@ impl ParallelScheduler {
                     }
                 }
 
-                if !conflicts {
+                if !conflicts && !Self::has_pending_dependencies(tx, i, &remaining, &used_indices) {
                     current_batch.push(tx.clone());
                     used_indices.insert(i);
 
@@ -87,6 +87,26 @@ impl ParallelScheduler {
         }
 
         batches
+    }
+
+    fn has_pending_dependencies(
+        tx: &Transaction,
+        idx: usize,
+        remaining: &[Transaction],
+        used_indices: &HashSet<usize>,
+    ) -> bool {
+        for addr in &tx.reads {
+            for (j, other) in remaining.iter().enumerate() {
+                if j == idx || used_indices.contains(&j) {
+                    continue;
+                }
+
+                if other.writes.contains(addr) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Execute batches in parallel

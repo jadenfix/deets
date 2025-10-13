@@ -33,7 +33,7 @@ impl AetherClient {
         &self.config
     }
 
-    pub fn transfer(&self) -> TransferBuilder<'_> {
+    pub fn transfer(&self) -> TransferBuilder {
         TransferBuilder::new(&self.config)
     }
 

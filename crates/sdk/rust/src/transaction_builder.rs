@@ -6,8 +6,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::types::{ClientConfig, TransferRequest};
 
-pub struct TransferBuilder<'a> {
-    config: &'a ClientConfig,
+pub struct TransferBuilder {
     recipient: Option<Address>,
     amount: Option<u128>,
     memo: Option<String>,
@@ -15,10 +14,9 @@ pub struct TransferBuilder<'a> {
     gas_limit: u64,
 }
 
-impl<'a> TransferBuilder<'a> {
-    pub(crate) fn new(config: &'a ClientConfig) -> Self {
+impl TransferBuilder {
+    pub(crate) fn new(config: &ClientConfig) -> Self {
         TransferBuilder {
-            config,
             recipient: None,
             amount: None,
             memo: None,

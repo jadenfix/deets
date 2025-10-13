@@ -117,7 +117,7 @@ impl AicTokenState {
     ) -> Result<(), String> {
         self.allowances
             .entry(owner)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(spender, amount);
 
         Ok(())

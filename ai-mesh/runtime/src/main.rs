@@ -177,8 +177,6 @@
 // - Traces → Stored for challenge period
 // ============================================================================
 
-use std::env;
-
 fn main() {
     println!("Aether AI Runtime - Attested Worker");
     println!("Version: 0.1.0");

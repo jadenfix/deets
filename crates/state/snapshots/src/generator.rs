@@ -1,6 +1,6 @@
 use aether_state_storage::{Storage, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
-use aether_types::{account::Account, transaction::Utxo, transaction::UtxoId, Address, H256};
-use anyhow::{Context, Result};
+use aether_types::{account::Account, Address, Utxo, UtxoId, H256};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -41,7 +41,7 @@ pub fn generate_snapshot(storage: &Storage, height: u64) -> Result<Vec<u8>> {
     };
 
     let encoded = bincode::serialize(&snapshot)?;
-    Ok(compress(&encoded)?)
+    compress(&encoded)
 }
 
 pub fn decode_snapshot(bytes: &[u8]) -> Result<StateSnapshot> {
@@ -52,7 +52,8 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<StateSnapshot> {
 fn load_accounts(storage: &Storage) -> Result<Vec<(Address, Account)>> {
     let mut accounts = Vec::new();
     for (key, value) in storage.iterator(CF_ACCOUNTS)? {
-        let address = Address::from_slice(&key).context("invalid address length")?;
+        let address =
+            Address::from_slice(&key).map_err(|e| anyhow!("invalid address length: {e}"))?;
         let account: Account = bincode::deserialize(&value)?;
         accounts.push((address, account));
     }
@@ -71,7 +72,7 @@ fn load_utxos(storage: &Storage) -> Result<Vec<(UtxoId, Utxo)>> {
 
 fn load_state_root(storage: &Storage) -> Result<H256> {
     if let Some(bytes) = storage.get(CF_METADATA, b"state_root")? {
-        return Ok(H256::from_slice(&bytes).context("invalid state root")?);
+        return H256::from_slice(&bytes).map_err(|e| anyhow!("invalid state root: {e}"));
     }
     Ok(H256::zero())
 }

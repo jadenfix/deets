@@ -1,4 +1,4 @@
-use aether_types::{Address, H256};
+use aether_types::Address;
 use serde::{Deserialize, Serialize};
 
 /// Staking Program State
@@ -271,7 +271,7 @@ impl StakingState {
             let commission = (validator_reward * validator.commission_rate as u128) / 10000;
 
             // Rest goes to delegators
-            let delegator_reward = validator_reward - commission;
+            let _delegator_reward = validator_reward - commission;
 
             // In production: distribute to delegators proportionally
             validator.staked_amount += commission;

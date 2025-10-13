@@ -116,6 +116,7 @@ impl SimpleConsensus {
 mod tests {
     use super::*;
     use aether_crypto_primitives::Keypair;
+    use aether_types::{Signature, H256};
 
     fn create_test_validators(count: usize) -> Vec<ValidatorInfo> {
         (0..count)
@@ -149,15 +150,18 @@ mod tests {
         let mut consensus = SimpleConsensus::new(validators.clone());
 
         let slot = 1;
+        while consensus.current_slot() < slot {
+            consensus.advance_slot();
+        }
 
         // Add votes from 2 of 3 validators (2/3 stake)
-        for i in 0..2 {
+        for validator in validators.iter().skip(1) {
             let vote = Vote {
                 slot,
                 block_hash: H256::zero(),
-                validator: validators[i].pubkey.clone(),
+                validator: validator.pubkey.clone(),
                 signature: Signature::from_bytes(vec![]),
-                stake: validators[i].stake,
+                stake: validator.stake,
             };
             consensus.add_vote(vote).unwrap();
         }
