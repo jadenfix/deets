@@ -1,13 +1,23 @@
 use anyhow::{bail, Result};
+use reed_solomon_erasure::galois_8::ReedSolomon;
 
-/// Simple Reed-Solomon style encoder that splits input into data shards and
-/// appends parity shards by XOR'ing the data shards together. This keeps the
-/// interface close to the production design while remaining lightweight for
-/// tests.
-#[derive(Debug, Clone, Copy)]
+/// Production Reed-Solomon encoder using Cauchy matrix method
+/// for erasure coding. This implementation provides proper mathematical
+/// Reed-Solomon encoding with optimal recovery properties.
+///
+/// Parameters: RS(n, k) where n = k + r
+/// - k: number of data shards
+/// - r: number of parity shards
+/// - Any k shards can recover original data
+///
+/// Example: RS(12, 10) = 10 data + 2 parity
+/// - Can tolerate loss of any 2 shards
+/// - 16.7% packet loss tolerance
+#[derive(Debug)]
 pub struct ReedSolomonEncoder {
     pub data_shards: usize,
     pub parity_shards: usize,
+    encoder: ReedSolomon,
 }
 
 impl ReedSolomonEncoder {
@@ -19,9 +29,13 @@ impl ReedSolomonEncoder {
             bail!("parity shards must be non-zero");
         }
 
+        let encoder = ReedSolomon::new(data_shards, parity_shards)
+            .map_err(|e| anyhow::anyhow!("failed to create RS encoder: {}", e))?;
+
         Ok(ReedSolomonEncoder {
             data_shards,
             parity_shards,
+            encoder,
         })
     }
 
@@ -30,14 +44,17 @@ impl ReedSolomonEncoder {
         (data_len + self.data_shards - 1) / self.data_shards
     }
 
+    /// Encode data into data+parity shards using Reed-Solomon erasure coding
     pub fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>> {
         let chunk_size = self.shard_size(data.len());
         if chunk_size == 0 {
             return Ok(vec![vec![]; self.data_shards + self.parity_shards]);
         }
 
+        // Split data into equal-sized shards
         let mut shards = Vec::with_capacity(self.data_shards + self.parity_shards);
 
+        // Create data shards
         for shard_index in 0..self.data_shards {
             let start = shard_index * chunk_size;
             let end = (start + chunk_size).min(data.len());
@@ -50,28 +67,22 @@ impl ReedSolomonEncoder {
             shards.push(chunk);
         }
 
-        let parity_chunks = self.build_parity_chunks(&shards);
-        shards.extend(parity_chunks);
+        // Add empty parity shards
+        for _ in 0..self.parity_shards {
+            shards.push(vec![0u8; chunk_size]);
+        }
+
+        // Encode in-place
+        self.encoder
+            .encode(&mut shards)
+            .map_err(|e| anyhow::anyhow!("encoding failed: {}", e))?;
 
         Ok(shards)
     }
 
-    fn build_parity_chunks(&self, data_shards: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        let chunk_size = data_shards.first().map(|s| s.len()).unwrap_or(0);
-        let mut parity_chunks = Vec::with_capacity(self.parity_shards);
-
-        for parity_idx in 0..self.parity_shards {
-            let mut chunk = vec![0u8; chunk_size];
-            for (data_idx, data_chunk) in data_shards.iter().enumerate() {
-                for (byte_idx, byte) in data_chunk.iter().enumerate() {
-                    let tweak = (parity_idx as u8).wrapping_add(data_idx as u8);
-                    chunk[byte_idx] ^= byte.wrapping_add(tweak);
-                }
-            }
-            parity_chunks.push(chunk);
-        }
-
-        parity_chunks
+    /// Total number of shards (data + parity)
+    pub fn total_shards(&self) -> usize {
+        self.data_shards + self.parity_shards
     }
 }
 

@@ -5,6 +5,5 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-
-# Reed-Solomon implementation (e.g., reed-solomon-erasure crate)
+reed-solomon-erasure = "6"
 
