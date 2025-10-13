@@ -37,12 +37,7 @@ impl StakeCommand {
             fee: args.fee,
             gas_limit: args.gas_limit,
         };
-        let summary = perform_transfer(
-            config,
-            args.key.as_deref(),
-            params,
-        )
-        .await?;
+        let summary = perform_transfer(config, args.key.as_deref(), params).await?;
 
         println!("{}", serde_json::to_string_pretty(&summary)?);
         Ok(())
