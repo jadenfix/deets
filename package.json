@@ -1,0 +1,14 @@
+{
+  "name": "aether-monorepo",
+  "private": true,
+  "workspaces": [
+    "sdks/typescript",
+    "packages/ui",
+    "apps/explorer",
+    "apps/wallet"
+  ],
+  "scripts": {
+    "build:sdk": "npm run build --prefix sdks/typescript",
+    "test:ts": "npm run test --prefix sdks/typescript && npm run test --prefix packages/ui && npm run test --prefix apps/explorer && npm run test --prefix apps/wallet"
+  }
+}
