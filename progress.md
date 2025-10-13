@@ -246,11 +246,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 🚀 What's Next (Phases 4-7)
 
-### Phase 4: Networking & DA (Planned)
-- Turbine block propagation (sharded)
-- Reed-Solomon erasure coding
-- QUIC transport (low latency)
-- Data availability proofs
+### Phase 4: Networking & DA (IN PROGRESS - 50% ✅)
+- ✅ Turbine block propagation (sharded) - Implemented
+- ✅ Reed-Solomon erasure coding - Production RS library integrated
+- ✅ Batch signature verification - Parallel CPU implementation
+- ⏳ QUIC transport (low latency) - Existing implementation
+- ⏳ Data availability proofs - Enhanced testing needed
 
 ### Phase 5: SRE & Observability (Planned)
 - Prometheus metrics
@@ -273,6 +274,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 - Wallet integration
 - Documentation portal
 - Testnet launch
+
+---
+
+## 🧪 Phase 4 Progress Log
+
+- **2025-10-12** — Ran `cargo test -p aether-crypto-primitives ed25519::tests::test_phase4_batch_performance -- --ignored --nocapture`; observed `Batch verification throughput: 20048 sig/s`. CPU-only baseline still below the 50k sig/s target, so further tuning and consensus integration work remains.
 
 ---
 

@@ -69,10 +69,10 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(),
 }
 
 /// Batch signature verification - optimized for verifying multiple signatures at once
-/// 
+///
 /// Phase 4.2: CPU-optimized batch verification with hooks for future GPU acceleration
 /// Target: ≥ 300k sig/s per node (Phase 4 acceptance criteria)
-/// 
+///
 /// Currently implements parallel CPU verification. Future enhancements:
 /// - GPU batch verification via CUDA/OpenCL for 300k+/s throughput
 /// - SIMD optimizations for vectorized operations
@@ -80,13 +80,13 @@ pub fn verify_batch(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (public_key, message, signature) tuples
 ) -> Result<Vec<bool>, Ed25519Error> {
     use rayon::prelude::*;
-    
+
     // Parallel verification using Rayon
     let results: Vec<bool> = verifications
         .par_iter()
         .map(|(pk, msg, sig)| verify(pk, msg, sig).is_ok())
         .collect();
-    
+
     Ok(results)
 }
 
@@ -96,12 +96,12 @@ pub fn verify_batch_count(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
 ) -> Result<usize, Ed25519Error> {
     use rayon::prelude::*;
-    
+
     let count = verifications
         .par_iter()
         .filter(|(pk, msg, sig)| verify(pk, msg, sig).is_ok())
         .count();
-    
+
     Ok(count)
 }
 
@@ -134,16 +134,16 @@ mod tests {
     fn test_batch_verification() {
         let count = 100;
         let mut verifications = Vec::new();
-        
+
         for i in 0..count {
             let keypair = Keypair::generate();
             let message = format!("message {}", i).into_bytes();
             let signature = keypair.sign(&message);
             let public_key = keypair.public_key();
-            
+
             verifications.push((public_key, message, signature));
         }
-        
+
         let results = verify_batch(&verifications).unwrap();
         assert_eq!(results.len(), count);
         assert_eq!(results.iter().filter(|&&v| v).count(), count);
@@ -153,7 +153,7 @@ mod tests {
     fn test_batch_verification_with_failures() {
         let count = 50;
         let mut verifications = Vec::new();
-        
+
         // Add 25 valid signatures
         for i in 0..count / 2 {
             let keypair = Keypair::generate();
@@ -162,7 +162,7 @@ mod tests {
             let public_key = keypair.public_key();
             verifications.push((public_key, message, signature));
         }
-        
+
         // Add 25 invalid signatures
         for i in 0..count / 2 {
             let keypair = Keypair::generate();
@@ -172,7 +172,7 @@ mod tests {
             let public_key = keypair.public_key();
             verifications.push((public_key, message, signature));
         }
-        
+
         let count_valid = verify_batch_count(&verifications).unwrap();
         assert_eq!(count_valid, count / 2);
     }
@@ -183,10 +183,10 @@ mod tests {
         // Phase 4.2 Acceptance: ed25519 verify ≥ 300k/s/node
         // This test verifies throughput on current hardware
         use std::time::Instant;
-        
+
         let batch_size = 10_000;
         let mut verifications = Vec::with_capacity(batch_size);
-        
+
         // Generate test signatures
         for i in 0..batch_size {
             let keypair = Keypair::generate();
@@ -195,18 +195,18 @@ mod tests {
             let public_key = keypair.public_key();
             verifications.push((public_key, message, signature));
         }
-        
+
         // Measure batch verification time
         let start = Instant::now();
         let results = verify_batch(&verifications).unwrap();
         let elapsed = start.elapsed();
-        
+
         let successes = results.iter().filter(|&&v| v).count();
         assert_eq!(successes, batch_size);
-        
+
         let throughput = (batch_size as f64 / elapsed.as_secs_f64()) as u64;
         println!("Batch verification throughput: {} sig/s", throughput);
-        
+
         // Note: actual throughput depends on hardware
         // Target is ≥ 300k/s with GPU acceleration
         // CPU-only should achieve ≥ 50k/s with parallelization

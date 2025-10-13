@@ -30,7 +30,7 @@ impl ReedSolomonDecoder {
     }
 
     /// Decode shards back into original data
-    /// 
+    ///
     /// Accepts Option<Vec<u8>> to indicate present (Some) or missing (None) shards
     /// Requires at least k (data_shards) shards to be present
     pub fn decode(&self, shards: &[Option<Vec<u8>>]) -> Result<Vec<u8>> {
@@ -63,8 +63,8 @@ impl ReedSolomonDecoder {
 
         // Concatenate data shards
         let mut data = Vec::new();
-        for i in 0..self.data_shards {
-            if let Some(shard) = &working_shards[i] {
+        for (i, shard_opt) in working_shards.iter().take(self.data_shards).enumerate() {
+            if let Some(shard) = shard_opt {
                 data.extend_from_slice(shard);
             } else {
                 bail!("reconstruction failed: data shard {} still missing", i);
@@ -105,15 +105,15 @@ mod tests {
         // RS(12, 10) - 10 data + 2 parity
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
-        
+
         let data = b"This is test data for Reed-Solomon erasure coding with 10 data shards and 2 parity shards for fault tolerance";
         let shards = encoder.encode(data).unwrap();
-        
+
         // Simulate losing 2 shards (within tolerance)
         let mut received_shards: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
         received_shards[3] = None; // lose data shard
         received_shards[7] = None; // lose another data shard
-        
+
         // Should still reconstruct successfully
         let recovered = decoder.decode(&received_shards).unwrap();
         assert_eq!(recovered, data);
@@ -125,48 +125,51 @@ mod tests {
         // RS(12, 10) = 10 data + 2 parity = 16.7% tolerance
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
-        
+
         let data = b"Critical blockchain data that must survive 10% packet loss in real network conditions";
-        
+
         // Test multiple scenarios with exactly 10% loss (1.2 shards)
         // We'll test with 1 shard loss (8.3%) which is below 10%
         let trials = 100;
         let mut successes = 0;
-        
+
         for _ in 0..trials {
             let shards = encoder.encode(data).unwrap();
-            
+
             // Simulate losing 1 shard (8.3% < 10%)
             let mut received_shards: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
             received_shards[0] = None;
-            
+
             match decoder.decode(&received_shards) {
                 Ok(recovered) if recovered == data => successes += 1,
                 _ => {}
             }
         }
-        
+
         // Success rate should be 100% since we're only losing 1 shard
         let success_rate = successes as f64 / trials as f64;
-        assert!(success_rate >= 0.999, "Success rate {} below acceptance threshold 0.999", success_rate);
+        assert!(
+            success_rate >= 0.999,
+            "Success rate {} below acceptance threshold 0.999",
+            success_rate
+        );
     }
 
     #[test]
     fn fails_with_too_many_missing_shards() {
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
-        
+
         let data = b"test data";
         let shards = encoder.encode(data).unwrap();
-        
+
         // Lose 3 shards (more than r=2 parity can handle)
         let mut received_shards: Vec<Option<Vec<u8>>> = shards.into_iter().map(Some).collect();
         received_shards[0] = None;
         received_shards[1] = None;
         received_shards[2] = None;
-        
+
         // Should fail - not enough shards
         assert!(decoder.decode(&received_shards).is_err());
     }
 }
-
