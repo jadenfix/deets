@@ -23,23 +23,12 @@ impl ResolvedConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct RawConfig {
     endpoint: Option<String>,
     default_key: Option<String>,
     fee: Option<u128>,
     gas_limit: Option<u64>,
-}
-
-impl Default for RawConfig {
-    fn default() -> Self {
-        RawConfig {
-            endpoint: None,
-            default_key: None,
-            fee: None,
-            gas_limit: None,
-        }
-    }
 }
 
 pub fn load_config(path: Option<&str>) -> Result<ResolvedConfig> {
@@ -91,9 +80,9 @@ fn resolve_config_path(path: Option<&str>) -> Result<PathBuf> {
 }
 
 pub fn expand_path(path: &str) -> Result<PathBuf> {
-    if path.starts_with("~/") {
+    if let Some(stripped) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
-            return Ok(home.join(&path[2..]));
+            return Ok(home.join(stripped));
         } else {
             return Err(anyhow!(
                 "unable to resolve home directory for path {}",

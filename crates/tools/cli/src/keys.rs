@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use aether_crypto_primitives::Keypair;
 use anyhow::{anyhow, Result};
 use clap::{Args, Subcommand};
-use hex;
 use serde::Serialize;
 
 use crate::config::{expand_path, ResolvedConfig};

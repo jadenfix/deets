@@ -42,15 +42,18 @@ pub struct TransferCommand {
 impl TransferCommand {
     pub async fn execute(&self, config: &ResolvedConfig) -> Result<()> {
         let recipient = parse_address(&self.to)?;
+        let params = TransferParams {
+            recipient,
+            amount: self.amount,
+            nonce: self.nonce,
+            memo: self.memo.clone(),
+            fee: self.fee,
+            gas_limit: self.gas_limit,
+        };
         let summary = perform_transfer(
             config,
             self.key.as_deref(),
-            recipient,
-            self.amount,
-            self.nonce,
-            self.memo.clone(),
-            self.fee,
-            self.gas_limit,
+            params,
         )
         .await?;
 
@@ -72,32 +75,36 @@ pub struct TransferSummary {
     pub endpoint: String,
 }
 
+pub struct TransferParams {
+    pub recipient: Address,
+    pub amount: u128,
+    pub nonce: u64,
+    pub memo: Option<String>,
+    pub fee: Option<u128>,
+    pub gas_limit: Option<u64>,
+}
+
 pub async fn perform_transfer(
     config: &ResolvedConfig,
     key_path: Option<&str>,
-    recipient: Address,
-    amount: u128,
-    nonce: u64,
-    memo: Option<String>,
-    fee: Option<u128>,
-    gas_limit: Option<u64>,
+    params: TransferParams,
 ) -> Result<TransferSummary> {
     let key_path = resolve_key_path(config, key_path)?;
     let key_material = read_key_file(&key_path)?;
 
     let client = config.client();
-    let mut builder = client.transfer().to(recipient).amount(amount);
-    if let Some(memo) = &memo {
+    let mut builder = client.transfer().to(params.recipient).amount(params.amount);
+    if let Some(memo) = &params.memo {
         builder = builder.memo(memo.clone());
     }
-    if let Some(fee) = fee {
+    if let Some(fee) = params.fee {
         builder = builder.fee(fee);
     }
-    if let Some(gas) = gas_limit {
+    if let Some(gas) = params.gas_limit {
         builder = builder.gas_limit(gas);
     }
 
-    let tx = builder.build(&key_material.keypair, nonce)?;
+    let tx = builder.build(&key_material.keypair, params.nonce)?;
     let tx_clone = tx.clone();
     let response = client.submit(tx).await?;
 
@@ -105,11 +112,11 @@ pub async fn perform_transfer(
         tx_hash: h256_to_string(&response.tx_hash),
         accepted: response.accepted,
         sender: address_to_string(&tx_clone.sender),
-        recipient: address_to_string(&recipient),
-        amount,
+        recipient: address_to_string(&params.recipient),
+        amount: params.amount,
         fee: tx_clone.fee,
         gas_limit: tx_clone.gas_limit,
-        memo,
+        memo: params.memo,
         endpoint: config.endpoint.clone(),
     };
 

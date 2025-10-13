@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 
 use crate::config::ResolvedConfig;
 use crate::io::parse_address;
-use crate::transfers::perform_transfer;
+use crate::transfers::{perform_transfer, TransferParams};
 
 const STAKING_DELEGATE_ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
 const STAKING_WITHDRAW_ADDRESS: &str = "0x00000000000000000000000000000000000000ac";
@@ -29,15 +29,18 @@ impl StakeCommand {
             StakeCommand::Withdraw(_) => "stake:withdraw".to_string(),
         });
 
+        let params = TransferParams {
+            recipient,
+            amount: args.amount,
+            nonce: args.nonce,
+            memo: Some(memo),
+            fee: args.fee,
+            gas_limit: args.gas_limit,
+        };
         let summary = perform_transfer(
             config,
             args.key.as_deref(),
-            recipient,
-            args.amount,
-            args.nonce,
-            Some(memo),
-            args.fee,
-            args.gas_limit,
+            params,
         )
         .await?;
 
