@@ -115,6 +115,7 @@ dependencies = [
  "anyhow",
  "blst",
  "rand 0.8.5",
+ "rayon",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -190,6 +191,7 @@ dependencies = [
  "aether-da-shreds",
  "aether-types",
  "anyhow",
+ "rand 0.8.5",
  "sha2",
  "tokio",
 ]

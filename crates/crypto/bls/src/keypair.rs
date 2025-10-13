@@ -1,4 +1,10 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use blst::min_pk::{
+    PublicKey as BlstPublicKey, SecretKey as BlstSecretKey, Signature as BlstSignature,
+};
+use blst::BLST_ERROR;
+
+const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
 /// BLS12-381 Keypair for signing and verification
 ///
@@ -14,8 +20,8 @@ use anyhow::Result;
 
 #[derive(Clone)]
 pub struct BlsKeypair {
-    pub secret: Vec<u8>,
-    pub public: Vec<u8>,
+    secret: BlstSecretKey,
+    public: BlstPublicKey,
 }
 
 impl BlsKeypair {
@@ -25,12 +31,12 @@ impl BlsKeypair {
         let mut rng = rand::thread_rng();
 
         // Generate 32-byte secret key
-        let mut secret = vec![0u8; 32];
-        rng.fill_bytes(&mut secret);
+        let mut ikm = [0u8; 32];
+        rng.fill_bytes(&mut ikm);
 
-        // Derive public key (in production: use blst::min_sig::SecretKey)
-        // For now: placeholder derivation
-        let public = Self::derive_public(&secret);
+        let secret =
+            BlstSecretKey::key_gen(&ikm, &[]).expect("random IKM always valid for key generation");
+        let public = secret.sk_to_pk();
 
         BlsKeypair { secret, public }
     }
@@ -41,58 +47,27 @@ impl BlsKeypair {
             anyhow::bail!("BLS secret key must be 32 bytes");
         }
 
-        let public = Self::derive_public(&secret);
+        let secret = BlstSecretKey::from_bytes(&secret)
+            .map_err(|e| anyhow!("invalid secret key bytes: {:?}", e))?;
+        let public = secret.sk_to_pk();
 
         Ok(BlsKeypair { secret, public })
-    }
-
-    /// Derive public key from secret (simplified)
-    /// In production: use blst library for proper curve operations
-    fn derive_public(secret: &[u8]) -> Vec<u8> {
-        use sha2::{Digest, Sha256};
-
-        // Placeholder: hash-based derivation
-        // Real implementation would use scalar multiplication on G1
-        let mut hasher = Sha256::new();
-        hasher.update(b"BLS_PUBKEY");
-        hasher.update(secret);
-        let hash = hasher.finalize();
-
-        // Expand to 48 bytes (G1 compressed point size)
-        let mut public = vec![0u8; 48];
-        public[..32].copy_from_slice(&hash);
-
-        public
     }
 
     /// Sign a message
     /// Returns 96-byte BLS signature
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
-        use sha2::{Digest, Sha256};
-
-        // In production: use blst::min_sig::SecretKey::sign()
-        // For now: deterministic signature generation
-        let mut hasher = Sha256::new();
-        hasher.update(b"BLS_SIG");
-        hasher.update(&self.secret);
-        hasher.update(message);
-        let hash = hasher.finalize();
-
-        // Expand to 96 bytes (G2 compressed point size)
-        let mut signature = vec![0u8; 96];
-        signature[..32].copy_from_slice(&hash);
-
-        signature
+        self.secret.sign(message, DST, &[]).to_bytes().to_vec()
     }
 
-    /// Get public key
-    pub fn public_key(&self) -> &[u8] {
-        &self.public
+    /// Get public key (compressed 48-byte form)
+    pub fn public_key(&self) -> Vec<u8> {
+        self.public.to_bytes().to_vec()
     }
 
-    /// Get secret key
-    pub fn secret_key(&self) -> &[u8] {
-        &self.secret
+    /// Get secret key bytes (32-byte scalar)
+    pub fn secret_key(&self) -> Vec<u8> {
+        self.secret.to_bytes().to_vec()
     }
 }
 
@@ -106,15 +81,12 @@ pub fn verify(public_key: &[u8], _message: &[u8], signature: &[u8]) -> Result<bo
         anyhow::bail!("BLS signature must be 96 bytes");
     }
 
-    // In production: use blst::min_sig::PublicKey::verify()
-    // For now: simplified verification
+    let pk = BlstPublicKey::from_bytes(public_key)
+        .map_err(|e| anyhow!("invalid public key: {:?}", e))?;
+    let sig = BlstSignature::from_bytes(signature)
+        .map_err(|e| anyhow!("invalid signature bytes: {:?}", e))?;
 
-    // Check signature is non-zero
-    if signature.iter().all(|&b| b == 0) {
-        return Ok(false);
-    }
-
-    Ok(true)
+    Ok(sig.verify(true, _message, DST, &[], &pk, true) == BLST_ERROR::BLST_SUCCESS)
 }
 
 #[cfg(test)]
@@ -125,8 +97,8 @@ mod tests {
     fn test_keypair_generation() {
         let keypair = BlsKeypair::generate();
 
-        assert_eq!(keypair.secret.len(), 32);
-        assert_eq!(keypair.public.len(), 48);
+        assert_eq!(keypair.secret_key().len(), 32);
+        assert_eq!(keypair.public_key().len(), 48);
     }
 
     #[test]
@@ -168,7 +140,7 @@ mod tests {
         let message = b"test message";
         let signature = keypair.sign(message);
 
-        let verified = verify(&keypair.public, message, &signature).unwrap();
+        let verified = verify(&keypair.public_key(), message, &signature).unwrap();
         assert!(verified);
     }
 }

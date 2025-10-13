@@ -1,4 +1,9 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use blst::min_pk::{PublicKey as BlstPublicKey, Signature as BlstSignature};
+use blst::BLST_ERROR;
+use rayon::prelude::*;
+
+const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
 /// BLS Aggregated Signature Verification
 ///
@@ -26,7 +31,7 @@ use anyhow::Result;
 /// Returns: true if signature is valid, false otherwise
 pub fn verify_aggregated(
     aggregated_pubkey: &[u8],
-    _message: &[u8],
+    message: &[u8],
     aggregated_signature: &[u8],
 ) -> Result<bool> {
     // Validate inputs
@@ -38,26 +43,12 @@ pub fn verify_aggregated(
         anyhow::bail!("aggregated signature must be 96 bytes");
     }
 
-    // In production: use blst::min_sig::AggregateSignature::verify()
-    // This performs:
-    // 1. Hash message to G2 point
-    // 2. Compute pairing e(agg_pk, H(m))
-    // 3. Compute pairing e(G1, agg_sig)
-    // 4. Check equality
+    let pk = BlstPublicKey::from_bytes(aggregated_pubkey)
+        .map_err(|e| anyhow!("invalid aggregated public key: {:?}", e))?;
+    let sig = BlstSignature::from_bytes(aggregated_signature)
+        .map_err(|e| anyhow!("invalid aggregated signature: {:?}", e))?;
 
-    // For now: simplified verification
-    // Check signature is non-zero
-    if aggregated_signature.iter().all(|&b| b == 0) {
-        return Ok(false);
-    }
-
-    // Check public key is non-zero
-    if aggregated_pubkey.iter().all(|&b| b == 0) {
-        return Ok(false);
-    }
-
-    // Placeholder: assume valid if basic checks pass
-    Ok(true)
+    Ok(sig.verify(true, message, DST, &[], &pk, true) == BLST_ERROR::BLST_SUCCESS)
 }
 
 /// Verify multiple aggregated signatures in batch
@@ -69,19 +60,10 @@ pub fn verify_aggregated(
 pub fn batch_verify_aggregated(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (pubkey, message, signature)
 ) -> Result<Vec<bool>> {
-    let mut results = Vec::with_capacity(verifications.len());
-
-    // In production: use blst batch verification
-    // This computes a random linear combination of all pairings
-    // to verify all signatures in a single final pairing check
-
-    // For now: verify each individually
-    for (pubkey, message, signature) in verifications {
-        let result = verify_aggregated(pubkey, message, signature)?;
-        results.push(result);
-    }
-
-    Ok(results)
+    verifications
+        .par_iter()
+        .map(|(pubkey, message, signature)| verify_aggregated(pubkey, message, signature))
+        .collect::<Result<Vec<bool>>>()
 }
 
 /// Fast path for verifying when you have proof-of-possession
@@ -103,6 +85,7 @@ mod tests {
     use super::*;
     use crate::aggregate::{aggregate_public_keys, aggregate_signatures};
     use crate::keypair::BlsKeypair;
+    use std::time::Instant;
 
     #[test]
     fn test_verify_aggregated() {
@@ -114,11 +97,8 @@ mod tests {
         let sig2 = keypair2.sign(message);
 
         let agg_sig = aggregate_signatures(&[sig1, sig2]).unwrap();
-        let agg_pk = aggregate_public_keys(&[
-            keypair1.public_key().to_vec(),
-            keypair2.public_key().to_vec(),
-        ])
-        .unwrap();
+        let agg_pk =
+            aggregate_public_keys(&[keypair1.public_key(), keypair2.public_key()]).unwrap();
 
         let verified = verify_aggregated(&agg_pk, message, &agg_sig).unwrap();
         assert!(verified);
@@ -131,9 +111,8 @@ mod tests {
 
         let invalid_sig = vec![0u8; 96]; // All zeros
 
-        let verified = verify_aggregated(keypair.public_key(), message, &invalid_sig).unwrap();
-
-        assert!(!verified);
+        let pk = keypair.public_key();
+        assert!(verify_aggregated(&pk, message, &invalid_sig).is_err());
     }
 
     #[test]
@@ -147,15 +126,15 @@ mod tests {
         let sig1 = keypair1.sign(msg1);
         let sig2 = keypair2.sign(msg2);
 
-        let pk1 = keypair1.public_key().to_vec();
-        let pk2 = keypair2.public_key().to_vec();
+        let pk1 = keypair1.public_key();
+        let pk2 = keypair2.public_key();
 
         let verifications = vec![(pk1, msg1.to_vec(), sig1), (pk2, msg2.to_vec(), sig2)];
 
         let results = batch_verify_aggregated(&verifications).unwrap();
 
         assert_eq!(results.len(), 2);
-        // In production with real BLS, both should verify
+        assert!(results.into_iter().all(|r| r));
     }
 
     #[test]
@@ -168,7 +147,7 @@ mod tests {
         for _ in 0..50 {
             let keypair = BlsKeypair::generate();
             signatures.push(keypair.sign(message));
-            public_keys.push(keypair.public_key().to_vec());
+            public_keys.push(keypair.public_key());
         }
 
         let agg_sig = aggregate_signatures(&signatures).unwrap();
@@ -176,5 +155,39 @@ mod tests {
 
         let verified = verify_aggregated(&agg_pk, message, &agg_sig).unwrap();
         assert!(verified);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_phase4_bls_batch_performance() {
+        const VALIDATORS: usize = 512;
+        const ITERATIONS: usize = 200;
+
+        let message = b"phase4 bls throughput";
+        let mut signatures = Vec::with_capacity(VALIDATORS);
+        let mut public_keys = Vec::with_capacity(VALIDATORS);
+
+        for _ in 0..VALIDATORS {
+            let keypair = BlsKeypair::generate();
+            public_keys.push(keypair.public_key());
+            signatures.push(keypair.sign(message));
+        }
+
+        let agg_sig = aggregate_signatures(&signatures).unwrap();
+        let agg_pk = aggregate_public_keys(&public_keys).unwrap();
+
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            assert!(verify_aggregated(&agg_pk, message, &agg_sig).unwrap());
+        }
+        let elapsed = start.elapsed();
+        let throughput = (ITERATIONS as f64 / elapsed.as_secs_f64()) as u64;
+
+        println!(
+            "BLS aggregated verification throughput: {} verifications/s",
+            throughput
+        );
+
+        assert!(throughput > 10_000, "Throughput {} too low", throughput);
     }
 }

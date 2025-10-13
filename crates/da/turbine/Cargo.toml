@@ -11,3 +11,6 @@ sha2.workspace = true
 aether-da-erasure = { path = "../erasure-coding" }
 aether-da-shreds = { path = "../shreds" }
 aether-types = { path = "../../types" }
+
+[dev-dependencies]
+rand = "0.8"

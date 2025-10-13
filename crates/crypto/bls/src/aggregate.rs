@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use blst::min_pk::{AggregatePublicKey, AggregateSignature, Signature as BlstSignature};
 
 /// BLS Signature Aggregation
 ///
@@ -28,23 +29,12 @@ pub fn aggregate_signatures(signatures: &[Vec<u8>]) -> Result<Vec<u8>> {
         }
     }
 
-    // In production: use blst::min_sig::Signature::aggregate()
-    // This performs point addition on G2 curve
+    let sig_refs: Vec<&[u8]> = signatures.iter().map(|s| s.as_slice()).collect();
 
-    // For now: XOR-based placeholder aggregation
-    // Real implementation uses elliptic curve point addition
-    let mut aggregated = vec![0u8; 96];
+    let agg = AggregateSignature::aggregate_serialized(&sig_refs, true)
+        .map_err(|e| anyhow!("failed to aggregate signatures: {:?}", e))?;
 
-    for sig in signatures {
-        for (i, &byte) in sig.iter().enumerate() {
-            aggregated[i] ^= byte;
-        }
-    }
-
-    // Mark as aggregated (set high bit)
-    aggregated[0] |= 0x80;
-
-    Ok(aggregated)
+    Ok(agg.to_signature().to_bytes().to_vec())
 }
 
 /// Aggregate multiple BLS public keys into one
@@ -63,27 +53,22 @@ pub fn aggregate_public_keys(public_keys: &[Vec<u8>]) -> Result<Vec<u8>> {
         }
     }
 
-    // In production: use blst::min_sig::PublicKey::aggregate()
-    // This performs point addition on G1 curve
+    let pk_refs: Vec<&[u8]> = public_keys.iter().map(|pk| pk.as_slice()).collect();
 
-    // For now: XOR-based placeholder aggregation
-    let mut aggregated = vec![0u8; 48];
+    let agg = AggregatePublicKey::aggregate_serialized(&pk_refs, true)
+        .map_err(|e| anyhow!("failed to aggregate public keys: {:?}", e))?;
 
-    for pk in public_keys {
-        for (i, &byte) in pk.iter().enumerate() {
-            aggregated[i] ^= byte;
-        }
-    }
-
-    // Mark as aggregated
-    aggregated[0] |= 0x80;
-
-    Ok(aggregated)
+    Ok(agg.to_public_key().to_bytes().to_vec())
 }
 
 /// Check if a signature is aggregated (has multiple signers)
 pub fn is_aggregated(signature: &[u8]) -> bool {
-    signature.len() == 96 && (signature[0] & 0x80) != 0
+    if signature.len() != 96 {
+        return false;
+    }
+    BlstSignature::from_bytes(signature)
+        .map(|sig| sig.subgroup_check())
+        .unwrap_or(false)
 }
 
 /// Fast aggregation using parallel processing for large signature sets
@@ -97,8 +82,7 @@ pub fn aggregate_signatures_parallel(signatures: &[Vec<u8>]) -> Result<Vec<u8>> 
         return aggregate_signatures(signatures);
     }
 
-    // In production: use rayon to parallelize point additions
-    // For now: use sequential
+    // Placeholder for future rayon-based parallel aggregation.
     aggregate_signatures(signatures)
 }
 
@@ -127,8 +111,8 @@ mod tests {
         let keypair1 = BlsKeypair::generate();
         let keypair2 = BlsKeypair::generate();
 
-        let pk1 = keypair1.public_key().to_vec();
-        let pk2 = keypair2.public_key().to_vec();
+        let pk1 = keypair1.public_key();
+        let pk2 = keypair2.public_key();
 
         let aggregated = aggregate_public_keys(&[pk1, pk2]).unwrap();
 

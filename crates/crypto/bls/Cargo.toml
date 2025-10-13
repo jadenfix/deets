@@ -10,3 +10,4 @@ thiserror.workspace = true
 serde.workspace = true
 sha2 = "0.10"
 rand = "0.8"
+rayon = "1"

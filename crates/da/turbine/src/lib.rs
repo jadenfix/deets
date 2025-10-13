@@ -108,3 +108,69 @@ pub mod topology;
 
 pub use broadcast::TurbineBroadcaster;
 pub use receive::TurbineReceiver;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_types::H256;
+    use rand::{seq::SliceRandom, Rng};
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn phase4_acceptance_turbine_packet_loss_resilience() {
+        const DATA_SHARDS: usize = 10;
+        const PARITY_SHARDS: usize = 2;
+        const TOTAL_SHREDS: usize = DATA_SHARDS + PARITY_SHARDS;
+        const TRIALS: usize = 200;
+
+        let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+        let mut rng = rand::thread_rng();
+        let mut successes = 0usize;
+
+        for trial in 0..TRIALS {
+            let payload = format!("phase4 turbine payload {trial}").into_bytes();
+            let block_hash = {
+                let digest = Sha256::digest(&payload);
+                H256::from_slice(&digest).unwrap()
+            };
+
+            let shreds = broadcaster
+                .make_shreds(1, block_hash, &payload)
+                .expect("shards");
+
+            // Randomly drop up to parity shards to simulate <=16% loss
+            let drop_count = rng.gen_range(0..=PARITY_SHARDS);
+            let mut indices: Vec<usize> = (0..TOTAL_SHREDS).collect();
+            indices.shuffle(&mut rng);
+            let drop_set: std::collections::HashSet<_> =
+                indices.into_iter().take(drop_count).collect();
+
+            let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
+            let mut recovered = false;
+
+            for (idx, shred) in shreds.into_iter().enumerate() {
+                if drop_set.contains(&idx) {
+                    continue;
+                }
+                if let Some(block) = receiver.ingest_shred(shred).unwrap() {
+                    assert_eq!(block, payload);
+                    recovered = true;
+                    successes += 1;
+                    break;
+                }
+            }
+
+            assert!(
+                recovered,
+                "failed to reconstruct block despite <= parity loss (trial {trial})"
+            );
+        }
+
+        let success_rate = successes as f64 / TRIALS as f64;
+        assert!(
+            success_rate >= 0.999,
+            "success rate {} below acceptance threshold",
+            success_rate
+        );
+    }
+}
