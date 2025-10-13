@@ -88,6 +88,7 @@ members = [
     "crates/tools/cli",
     "crates/tools/keytool",
     "crates/tools/faucet",
+    "crates/tools/scorecard",
     "crates/tools/indexer",
     "crates/tools/loadgen",
     
@@ -173,4 +174,3 @@ opt-level = 3
 
 [profile.test.package.blake3]
 opt-level = 3
-

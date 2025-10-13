@@ -18,7 +18,6 @@ Thumbs.db
 keys/
 *.pem
 *.key
-*.json
 
 # Database
 *.db
@@ -41,7 +40,6 @@ build/
 
 # Node
 node_modules/
-package-lock.json
 
 # Python
 __pycache__/

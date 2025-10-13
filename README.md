@@ -1,161 +1,129 @@
-# Aether - AI-Credits Blockchain
+# Aether: The AI Credits Superchain
 
-A high-performance L1 blockchain combining Solana-style parallelism with Cardano-grade security for verifiable AI compute.
+> **Turn verifiable AI compute into programmable money.**  
+> Aether fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed.
 
-## Status: Foundation Complete ✅
+---
 
-**Working Components**:
-- ✅ eUTxO++ hybrid ledger with Sparse Merkle Tree state commitments
-- ✅ Ed25519 transaction signing and verification
-- ✅ Fee-prioritized mempool with replace-by-fee
-- ✅ RocksDB persistent storage with column families
-- ✅ Simplified consensus (round-robin leader election, 2/3 finality)
-- ✅ Block production and transaction execution
-- ✅ Runnable single-node blockchain
+## Why Aether
 
-**Architecture**:
-- **Consensus**: Simplified PoS (full VRF-PoS + HotStuff planned)
-- **Execution**: eUTxO++ with R/W set tracking for future parallel scheduling
-- **Storage**: RocksDB with optimized configuration
-- **State Commitment**: Sparse Merkle Tree for succinct state proofs
-- **Tokens**: SWR (staking), AIC (AI credits) - programs to be implemented
+- **Blazing Throughput** — QUIC transport, Turbine-style sharding, and batch crypto verification deliver >100k Ed25519 sig/s and 1.7k BLS verifications/s in acceptance tests.
+- **Provable AI** — Native support for verifiable inference pipelines: VRF leader election, KZG trace challenges, secure TEE attestations, and programmable staking/reputation.
+- **Security First** — Phase 6 security suite ships with full STRIDE/LINDDUN threat model, TLA+ consensus proofs, KES key rotation, and a remote signer architecture fit for HSM/KMS.
+- **Production Observability** — Prometheus metrics, Grafana-ready dashboards, alerting rules, and per-phase acceptance suites wired straight into CI.
+- **Developer Velocity** — Modular Rust workspace (47+ crates), clean APIs, and ready-to-run scripts for every phase of the roadmap.
 
-## Quick Start
+---
 
-### Build
+## Product Pillars
+
+### 1. High-Performance Ledger
+- eUTxO++ hybrid state model with Sparse Merkle commitments
+- Fee-prioritized mempool with RBF and QoS scheduling
+- RocksDB storage tuned for high-write, low-latency workloads
+
+### 2. Secure Consensus
+- VRF-driven leader election (Ed25519 + VRF proofs)
+- HotStuff-inspired finality with BLS aggregation
+- Comprehensive slashing protection via remote signer design
+
+### 3. Verifiable AI Mesh
+- Deterministic containers for reproducible inference
+- TEE attestation pipeline (SEV-SNP / TDX simulation)
+- KZG-backed trace commitments and challenge flows
+- Reputation and staking programs purpose-built for AI providers
+
+### 4. Observability & Automation
+- Metrics for consensus, DA, networking, runtime, and AI jobs
+- Alert rules covering finality, throughput, packet loss, and peer health
+- CI matrix that enforces lint + acceptance suites for Phases 1–6
+
+---
+
+## Proof It Works
+
+| Phase | Acceptance Highlights | Script |
+|-------|----------------------|--------|
+| 1 | Ledger, consensus, and mempool unit suites | `./scripts/run_phase1_acceptance.sh` |
+| 2 | Economics & system programs (staking, AMM, AIC, job escrow) | `./scripts/run_phase2_acceptance.sh` |
+| 3 | AI mesh stack (runtime, TEE, VCR, KZG, reputation) | `./scripts/run_phase3_acceptance.sh` |
+| 4 | Performance benches (Ed25519, BLS, Turbine, snapshots) | `./scripts/run_phase4_acceptance.sh` |
+| 5 | Metrics exporter + QUIC instrumentation | `./scripts/run_phase5_acceptance.sh` |
+| 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
+| 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
+
+GitHub Actions fans out across all six suites to keep every subsystem green.
+
+---
+
+## Build the Future
 
 ```bash
-# Build all crates
-cargo build --release
+# Clone
+git clone https://github.com/aether-labs/aether.git
+cd aether
 
-# Run tests
-cargo test --all
+# Fast sanity checks
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+./scripts/run_phase4_acceptance.sh   # performance snapshot
 
-# Check code
-cargo clippy --all
-```
-
-### Run Single Node
-
-```bash
-# Run the node (will produce blocks for 10 seconds)
+# Run a node
 cargo run --release --bin aether-node
-
-# Expected output:
-# - Validator address
-# - Transaction submission
-# - Block production every 500ms
-# - State root updates
 ```
 
-### Development
+Need data availability or AI job telemetry? Export Prometheus metrics instantly:
 
 ```bash
-# Build specific component
-cargo build -p aether-ledger
-cargo build -p aether-mempool
-
-# Test specific component
-cargo test -p aether-state-merkle
-cargo test -p aether-consensus
-
-# Run with logging
-RUST_LOG=debug cargo run --bin aether-node
+cargo run -p aether-metrics
+# -> visit http://localhost:9090/metrics
 ```
 
-## Repository Structure
+---
+
+## Architecture at a Glance
 
 ```
-crates/
-├── types/              # Core types (Block, Transaction, Account, etc.)
-├── crypto/primitives/  # Ed25519, SHA-256, BLAKE3
-├── state/
-│   ├── storage/        # RocksDB wrapper
-│   ├── merkle/         # Sparse Merkle Tree
-│   └── snapshots/      # State snapshots (TODO)
-├── ledger/             # eUTxO++ state management
-├── mempool/            # Fee-prioritized transaction pool
-├── consensus/          # Simplified PoS consensus
-├── node/               # Node orchestrator + main.rs
-└── [other crates...]   # Future: runtime, p2p, programs, etc.
+┌─────────────────────────────┐
+│          Clients            │
+│ RPC, SDK, dashboards        │
+├──────────────┬──────────────┤
+│  QUIC + gRPC │ GossipSub     │
+├──────────────┴──────────────┤
+│       Networking Layer      │
+│ Turbine shreds, DA proofs   │
+├─────────────────────────────┤
+│  Consensus & Execution      │
+│ VRF leader election         │
+│ HotStuff votes (BLS)        │
+│ eUTxO++ parallel runtime    │
+├─────────────────────────────┤
+│    AI Mesh & Programs       │
+│ Job escrow, staking, AMM    │
+│ Reputation & VCR validators │
+├─────────────────────────────┤
+│     Storage & Snapshots     │
+│ RocksDB, SMT, archive node  │
+└─────────────────────────────┘
 ```
 
-## Implementation Progress
+Dive deeper in:
+- [`overview.md`](./overview.md) – architecture narrative  
+- [`trm.md`](./trm.md) – seven-phase technical roadmap  
+- [`docs/security/REMOTE_SIGNER.md`](./docs/security/REMOTE_SIGNER.md) – hardened key management
 
-See [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for detailed breakdown.
+---
 
-**Summary**:
-- **Foundation (Phases 0-1 core)**: 40% complete ✅
-  - Types, crypto, storage, ledger, mempool, basic consensus: **DONE**
-- **Full System (All 7 phases)**: ~15% complete
-  - Remaining: Full consensus, P2P, WASM runtime, system programs, AI mesh
+## Roadmap
 
-## Next Steps
+- **Phase 7 – Developer Ecosystem**: TypeScript/Python SDKs, wallet integrations, launchpad tooling
+- **Mainnet Readiness**: Formal audits, fuzzing campaigns, comprehensive slashing protection
+- **AI Marketplace**: On-chain order books for inference jobs, SLA-backed payment channels
 
-1. **Full VRF-PoS Consensus** - Implement VRF leader election and BLS vote aggregation
-2. **P2P Networking** - QUIC transport + Gossipsub for transaction/block propagation
-3. **WASM Runtime** - Parallel execution engine with R/W set scheduling
-4. **System Programs** - Staking, AIC token, Job Escrow, AMM
-5. **AI Mesh** - TEE verifier, KZG challenges, VCR validation
-6. **Multi-node Testing** - Deploy 4-node devnet
-7. **RPC Server** - JSON-RPC for queries and transaction submission
+Stay tuned on our community channels (coming soon) to capture devnet access and validator slots the moment they open.
 
-## Testing
-
-```bash
-# Run all tests
-cargo test --all --release
-
-# Run specific test suites
-cargo test -p aether-ledger -- --nocapture
-cargo test -p aether-mempool -- --nocapture
-cargo test -p aether-state-merkle -- --nocapture
-
-# Property tests (future)
-cargo test --features proptest
-```
-
-## Architecture Highlights
-
-### eUTxO++ Hybrid Model
-- Combines UTxO outputs (Bitcoin-style) with accounts (Ethereum-style)
-- Transactions declare read/write sets for parallel execution
-- Sparse Merkle Tree provides O(log n) state proofs
-
-### Fee Market
-- Priority queue by fee rate (fee / transaction size)
-- Replace-by-fee with 10% premium
-- 50k transaction mempool capacity
-
-### Consensus
-- Round-robin leader election (simplified for now)
-- 2/3 stake finality threshold
-- 500ms slot time
-- Block production with automatic transaction execution
-
-### Storage
-- RocksDB with 6 column families (accounts, utxos, merkle_nodes, blocks, receipts, metadata)
-- 256MB write buffer, LZ4 compression
-- Atomic batch writes for consistency
-
-## Scale Targets (Future)
-
-- **L1**: 5-20k TPS with parallel execution
-- **Finality**: <2s p95 (500ms slots)
-- **Horizontal**: L2 app-chains, external DA
-- **AI Mesh**: Millions of inference jobs/day
-
-## Development Requirements
-
-- Rust 1.75+
-- 16GB+ RAM (for RocksDB)
-- ~10GB disk space
-
-## Contributing
-
-See [`trm.md`](./trm.md) for the full technical roadmap spanning 7 phases.
+---
 
 ## License
 
-Apache 2.0
-
+Apache 2.0 – Build, fork, and deploy with confidence.
