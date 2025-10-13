@@ -131,8 +131,8 @@ jobs:
       - name: Wait for network
         run: sleep 30
       
-      - name: Run integration tests
-        run: cargo test --test integration_test
+      - name: Run all workspace tests
+        run: cargo test --all-features --workspace
 
       - name: Stop test network
         if: always()

@@ -150,9 +150,9 @@ mod tests {
         let mut consensus = SimpleConsensus::new(validators.clone());
 
         let slot = 1;
-        while consensus.current_slot() < slot {
-            consensus.advance_slot();
-        }
+        // Advance to the target slot
+        consensus.advance_slot();
+        assert_eq!(consensus.current_slot(), slot);
 
         // Add votes from 2 of 3 validators (2/3 stake)
         for validator in validators.iter().skip(1) {
