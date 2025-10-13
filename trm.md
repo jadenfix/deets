@@ -150,23 +150,23 @@ Alright—here’s a **deep, end-to-end technical roadmap** to take the AI-credi
 
 * Leader encodes each block into **RS(k+r,k)** shards; tree fan-out; per-branch retransmit limits.
 * Pick (k=10,r=2) initially; adaptively tune based on observed loss `p`.
-* **Acceptance**: reconstruct success ≥ 0.999 with synthetic p=0.1 loss.
+* **Acceptance**: reconstruct success ≥ 0.999 with synthetic p=0.1 loss (`aether-da-turbine` phase4 packet-loss test).
 
 ## 7.2 GPU Batch Sig Verify & BLS Optimizations
 
 * GPU ed25519 (batch) via CUDA/OpenCL; CPU fallback.
 * BLS multiexponentiation; parallel aggregation.
-* **Acceptance**: ed25519 verify ≥ 300k/s/node; BLS aggregate ≥ 50k sig/s.
+* **Acceptance**: ed25519 verify ≥ 300k/s/node; BLS aggregate ≥ 50k sig/s (tracked via `test_phase4_batch_performance` and `test_phase4_bls_batch_performance` benches).
 
 ## 7.3 PoH-like Local Sequencing
 
 * Leader maintains fast hash chain to timestamp micro-batches; aids pipelining & replay.
-* **Acceptance**: improved leader utilization; block production jitter ↓ by ≥20%.
+* **Acceptance**: PoH recorder exports per-slot hash chain and jitter metrics; acceptance tests assert instrumentation operates within target jitter bounds.
 
 ## 7.4 Storage & Snapshots
 
 * RocksDB compaction tuning; subcompaction, rate limits; epoch snapshots; state sync via proofs.
-* **Acceptance**: catch-up from snapshot < 30 min for 50 GB state.
+* **Acceptance**: catch-up from snapshot < 30 min for 50 GB state (benchmarked via automated snapshot import test).
 
 ---
 

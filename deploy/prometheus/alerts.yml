@@ -1,0 +1,85 @@
+groups:
+  - name: aether_consensus
+    interval: 30s
+    rules:
+      - alert: HighFinalityLatency
+        expr: histogram_quantile(0.95, rate(aether_consensus_finality_latency_ms_bucket[5m])) > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High consensus finality latency"
+          description: "P95 finality latency is {{ $value }}ms (threshold: 5000ms)"
+
+      - alert: ForkDetected
+        expr: rate(aether_consensus_fork_events[5m]) > 0.1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blockchain fork detected"
+          description: "Fork rate: {{ $value }} forks/s"
+
+  - name: aether_data_availability
+    interval: 30s
+    rules:
+      - alert: HighReconstructionFailureRate
+        expr: rate(aether_da_reconstruction_failures_total[5m]) / rate(aether_da_blocks_reconstructed_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High DA reconstruction failure rate"
+          description: "Failure rate: {{ $value | humanizePercentage }}"
+
+      - alert: HighPacketLoss
+        expr: rate(aether_da_packets_lost_total[5m]) / (rate(aether_da_packets_lost_total[5m]) + rate(aether_da_shreds_received_total[5m])) > 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High packet loss detected"
+          description: "Packet loss rate: {{ $value | humanizePercentage }}"
+
+  - name: aether_networking
+    interval: 30s
+    rules:
+      - alert: LowPeerCount
+        expr: aether_net_peers_connected < 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low peer count"
+          description: "Only {{ $value }} peers connected"
+
+      - alert: HighConnectionErrorRate
+        expr: rate(aether_net_connection_errors_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network connection error rate"
+          description: "Error rate: {{ $value }} errors/s"
+
+  - name: aether_slo
+    interval: 30s
+    rules:
+      - alert: SLO_FinalityBreach
+        expr: histogram_quantile(0.99, rate(aether_consensus_finality_latency_ms_bucket[5m])) > 5000
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SLO breach: Finality latency P99 > 5s"
+          description: "P99 latency: {{ $value }}ms"
+
+      - alert: SLO_ThroughputBreach
+        expr: rate(aether_runtime_tx_executed[5m]) < 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SLO breach: Transaction throughput < 1000 TPS"
+          description: "Current TPS: {{ $value }}"
+
