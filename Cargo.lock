@@ -147,6 +147,7 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "rand 0.8.5",
+ "rayon",
  "sha2",
  "thiserror 1.0.69",
 ]
