@@ -280,6 +280,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## 🧪 Phase 4 Progress Log
 
 - **2025-10-12** — Ran `cargo test -p aether-crypto-primitives ed25519::tests::test_phase4_batch_performance -- --ignored --nocapture`; observed `Batch verification throughput: 20048 sig/s`. CPU-only baseline still below the 50k sig/s target, so further tuning and consensus integration work remains.
+- **2025-10-12** — Hardened CI for ARM64 cross-builds: installed `gcc-aarch64-linux-gnu`, `g++-aarch64-linux-gnu`, `pkg-config`, and set `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_{LINKER,AR}` plus `CC/AR` envs to stabilize `ring`/`rustls` deps on `aarch64-unknown-linux-gnu`.
 
 ---
 
