@@ -12,7 +12,16 @@ tokio.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml = "0.8"
+dirs = "5"
+clap = { version = "4.5", features = ["derive"] }
+hex = "0.4"
 
 aether-types = { path = "../../types" }
 aether-crypto-primitives = { path = "../../crypto/primitives" }
+aether-sdk = { path = "../../sdk/rust" }
 
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"

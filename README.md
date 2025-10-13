@@ -50,7 +50,7 @@
 | 4 | Performance benches (Ed25519, BLS, Turbine, snapshots) | `./scripts/run_phase4_acceptance.sh` |
 | 5 | Metrics exporter + QUIC instrumentation | `./scripts/run_phase5_acceptance.sh` |
 | 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
-| 7 | SDK & developer tooling (Rust/TS/Python) | `./scripts/run_phase7_acceptance.sh` |
+| 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
 
 GitHub Actions fans out across all six suites to keep every subsystem green.
 

@@ -1,0 +1,14 @@
+[package]
+name = "aether-scorecard"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "1"
+
+[dev-dependencies]
+pretty_assertions = "1"
