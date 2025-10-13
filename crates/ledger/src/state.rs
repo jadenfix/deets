@@ -1,3 +1,4 @@
+use aether_crypto_primitives::ed25519;
 use aether_state_merkle::SparseMerkleTree;
 use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
 use aether_types::{
@@ -63,6 +64,11 @@ impl Ledger {
     }
 
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
+        tx.verify_signature()?;
+        self.apply_transaction_validated(tx)
+    }
+
+    fn apply_transaction_validated(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
         // Validate UTxO inputs exist
         for input in &tx.inputs {
             if self.get_utxo(input)?.is_none() {
@@ -201,8 +207,31 @@ impl Ledger {
     ) -> Result<Vec<TransactionReceipt>> {
         let mut receipts = Vec::new();
 
-        for tx in transactions {
-            match self.apply_transaction(tx) {
+        if transactions.is_empty() {
+            return Ok(receipts);
+        }
+
+        let batch_inputs: Vec<_> = transactions.iter().map(|tx| tx.ed25519_tuple()).collect();
+        let batch_results = ed25519::verify_batch(&batch_inputs)
+            .map_err(|e| anyhow!("batch signature verification failed: {e:?}"))?;
+
+        for (tx, is_valid) in transactions.iter().zip(batch_results.into_iter()) {
+            if !is_valid {
+                receipts.push(TransactionReceipt {
+                    tx_hash: tx.hash(),
+                    block_hash: H256::zero(),
+                    slot: 0,
+                    status: TransactionStatus::Failed {
+                        reason: "invalid signature".to_string(),
+                    },
+                    gas_used: 0,
+                    logs: vec![],
+                    state_root: self.state_root(),
+                });
+                continue;
+            }
+
+            match self.apply_transaction_validated(tx) {
                 Ok(receipt) => receipts.push(receipt),
                 Err(e) => {
                     // Transaction failed, still include receipt
@@ -265,7 +294,7 @@ mod tests {
         ledger.storage.write_batch(batch).unwrap();
 
         // Create transaction
-        let tx = Transaction {
+        let mut tx = Transaction {
             nonce: 0,
             sender: address,
             sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
@@ -279,8 +308,65 @@ mod tests {
             fee: 100,
             signature: Signature::from_bytes(vec![]),
         };
+        let hash = tx.hash();
+        let signature = keypair.sign(hash.as_bytes());
+        tx.signature = Signature::from_bytes(signature);
 
         let receipt = ledger.apply_transaction(&tx).unwrap();
         assert!(matches!(receipt.status, TransactionStatus::Success));
+    }
+
+    #[test]
+    fn batch_verification_marks_invalid_signatures() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed balance
+        let account = Account::with_balance(address, 1_000);
+        let mut batch = StorageBatch::new();
+        let key = address.as_bytes().to_vec();
+        let value = bincode::serialize(&account).unwrap();
+        batch.put(CF_ACCOUNTS, key, value);
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Build signed transaction
+        let mut tx = Transaction {
+            nonce: 0,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        let signature = keypair.sign(hash.as_bytes());
+        tx.signature = Signature::from_bytes(signature.clone());
+
+        let mut invalid_tx = tx.clone();
+        invalid_tx.signature = Signature::from_bytes(vec![0; 64]);
+
+        let receipts = ledger
+            .apply_block_transactions(&[tx.clone(), invalid_tx])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 2);
+        assert!(matches!(receipts[0].status, TransactionStatus::Success));
+        assert!(matches!(
+            receipts[1].status,
+            TransactionStatus::Failed { .. }
+        ));
+        if let TransactionStatus::Failed { reason } = &receipts[1].status {
+            assert!(reason.contains("invalid signature"));
+        }
     }
 }

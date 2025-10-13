@@ -205,14 +205,15 @@ impl Default for Mempool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto_primitives::Keypair;
     use aether_types::{PublicKey, Signature};
     use std::collections::HashSet;
 
     fn create_test_tx(nonce: u64, fee: u128) -> Transaction {
-        let pubkey_bytes = vec![(nonce as u8).saturating_add(1); 32];
-        let sender_pubkey = PublicKey::from_bytes(pubkey_bytes);
+        let keypair = Keypair::generate();
+        let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
         let sender = sender_pubkey.to_address();
-        Transaction {
+        let mut tx = Transaction {
             nonce,
             sender,
             sender_pubkey,
@@ -224,8 +225,14 @@ mod tests {
             data: vec![],
             gas_limit: 21000,
             fee,
-            signature: Signature::from_bytes(vec![0; 64]),
-        }
+            signature: Signature::from_bytes(vec![]),
+        };
+
+        let hash = tx.hash();
+        let signature = keypair.sign(hash.as_bytes());
+        tx.signature = Signature::from_bytes(signature);
+
+        tx
     }
 
     #[test]

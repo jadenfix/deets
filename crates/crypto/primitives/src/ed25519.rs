@@ -81,10 +81,44 @@ pub fn verify_batch(
 ) -> Result<Vec<bool>, Ed25519Error> {
     use rayon::prelude::*;
 
-    // Parallel verification using Rayon
-    let results: Vec<bool> = verifications
+    if verifications.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Prepare inputs for Dalek batch verification
+    let mut verifying_keys = Vec::with_capacity(verifications.len());
+    let mut signatures = Vec::with_capacity(verifications.len());
+    let mut message_refs = Vec::with_capacity(verifications.len());
+
+    for (pk, msg, sig) in verifications {
+        if pk.len() != 32 {
+            return Err(Ed25519Error::PublicKey);
+        }
+        if sig.len() != 64 {
+            return Err(Ed25519Error::Signature);
+        }
+
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(pk);
+        let vk = VerifyingKey::from_bytes(&pk_bytes).map_err(|_| Ed25519Error::PublicKey)?;
+
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(sig);
+        let dalek_sig = DalekSignature::from_bytes(&sig_bytes);
+
+        verifying_keys.push(vk);
+        signatures.push(dalek_sig);
+        message_refs.push(msg.as_slice());
+    }
+
+    let results: Vec<bool> = signatures
         .par_iter()
-        .map(|(pk, msg, sig)| verify(pk, msg, sig).is_ok())
+        .enumerate()
+        .map(|(idx, signature)| {
+            verifying_keys[idx]
+                .verify(message_refs[idx], signature)
+                .is_ok()
+        })
         .collect();
 
     Ok(results)
@@ -95,14 +129,8 @@ pub fn verify_batch(
 pub fn verify_batch_count(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)],
 ) -> Result<usize, Ed25519Error> {
-    use rayon::prelude::*;
-
-    let count = verifications
-        .par_iter()
-        .filter(|(pk, msg, sig)| verify(pk, msg, sig).is_ok())
-        .count();
-
-    Ok(count)
+    let results = verify_batch(verifications)?;
+    Ok(results.into_iter().filter(|v| *v).count())
 }
 
 #[cfg(test)]

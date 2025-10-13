@@ -11,3 +11,5 @@ bincode.workspace = true
 
 aether-types = { path = "../types" }
 
+[dev-dependencies]
+aether-crypto-primitives = { path = "../crypto/primitives" }

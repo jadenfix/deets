@@ -1,4 +1,5 @@
 use crate::primitives::{Address, PublicKey, Signature, H256};
+use aether_crypto_primitives::ed25519;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -77,29 +78,14 @@ impl Transaction {
         }
 
         // Get the message to verify (transaction hash without signature)
-        let _msg = self.hash();
+        let msg = self.hash();
 
-        // Verify signature using ed25519
-        // Note: The ed25519 module should be available via crypto primitives
-        // For now, we do basic validation
-        if self.signature.as_bytes().len() != 64 {
-            anyhow::bail!(
-                "invalid signature length: expected 64 bytes, got {}",
-                self.signature.as_bytes().len()
-            );
-        }
-
-        if self.sender_pubkey.as_bytes().len() != 32 {
-            anyhow::bail!(
-                "invalid public key length: expected 32 bytes, got {}",
-                self.sender_pubkey.as_bytes().len()
-            );
-        }
-
-        // TODO: Call actual ed25519 verification
-        // This would be: ed25519::verify(self.sender_pubkey.as_bytes(), msg.as_bytes(), self.signature.as_bytes())?;
-
-        Ok(())
+        ed25519::verify(
+            self.sender_pubkey.as_bytes(),
+            msg.as_bytes(),
+            self.signature.as_bytes(),
+        )
+        .map_err(|e| anyhow::anyhow!("signature verification failed: {e:?}"))
     }
 
     pub fn calculate_fee(&self) -> anyhow::Result<u128> {
@@ -124,6 +110,15 @@ impl Transaction {
         Ok(self.fee)
     }
 
+    pub fn ed25519_tuple(&self) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let msg = self.hash();
+        (
+            self.sender_pubkey.as_bytes().to_vec(),
+            msg.as_bytes().to_vec(),
+            self.signature.as_bytes().to_vec(),
+        )
+    }
+
     pub fn conflicts_with(&self, other: &Transaction) -> bool {
         // Write-Write conflict
         if !self.writes.is_disjoint(&other.writes) {
@@ -143,5 +138,51 @@ impl Transaction {
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::{PublicKey as TxPublicKey, Signature as TxSignature, H160};
+    use aether_crypto_primitives::Keypair;
+    use std::collections::HashSet;
+
+    fn signed_transaction(keypair: &Keypair) -> Transaction {
+        let address = H160::from_slice(&keypair.to_address()).unwrap();
+        let mut tx = Transaction {
+            nonce: 0,
+            sender: address,
+            sender_pubkey: TxPublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: TxSignature::from_bytes(vec![]),
+        };
+
+        let hash = tx.hash();
+        let signature = keypair.sign(hash.as_bytes());
+        tx.signature = TxSignature::from_bytes(signature);
+        tx
+    }
+
+    #[test]
+    fn verifies_valid_signature() {
+        let keypair = Keypair::generate();
+        let tx = signed_transaction(&keypair);
+        assert!(tx.verify_signature().is_ok());
+    }
+
+    #[test]
+    fn rejects_tampered_signature() {
+        let keypair = Keypair::generate();
+        let mut tx = signed_transaction(&keypair);
+        tx.signature = TxSignature::from_bytes(vec![0; 64]);
+        assert!(tx.verify_signature().is_err());
     }
 }

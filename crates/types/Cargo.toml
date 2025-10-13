@@ -10,3 +10,4 @@ bincode.workspace = true
 sha2.workspace = true
 hex = "0.4"
 anyhow.workspace = true
+aether-crypto-primitives = { path = "../crypto/primitives" }
