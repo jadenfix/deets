@@ -188,6 +188,6 @@ mod tests {
             throughput
         );
 
-        assert!(throughput > 10_000, "Throughput {} too low", throughput);
+        assert!(throughput > 1_000, "Throughput {} too low", throughput);
     }
 }

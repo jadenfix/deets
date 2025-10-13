@@ -151,3 +151,24 @@ jobs:
       - name: Stop test network
         if: always()
         run: docker compose -f docker-compose.test.yml down
+
+  phase4_acceptance:
+    name: Phase 4 Acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-phase4-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Phase 4 acceptance suite
+        run: ./scripts/run_phase4_acceptance.sh
