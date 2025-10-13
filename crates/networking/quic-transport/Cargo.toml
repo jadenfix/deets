@@ -7,4 +7,11 @@ edition.workspace = true
 quinn.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true
+rustls = "0.21"
+rustls-pemfile = "1"
+rcgen = "0.11"
+tracing.workspace = true
+bytes = "1"
+webpki = "0.22"
 

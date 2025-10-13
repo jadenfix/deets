@@ -158,3 +158,19 @@ panic = "abort"
 inherits = "release"
 debug = true
 
+# Optimize crypto crates even in test builds for realistic perf
+[profile.test]
+opt-level = 2
+
+[profile.test.package.blst]
+opt-level = 3
+
+[profile.test.package.ed25519-dalek]
+opt-level = 3
+
+[profile.test.package.sha2]
+opt-level = 3
+
+[profile.test.package.blake3]
+opt-level = 3
+

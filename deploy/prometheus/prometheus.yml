@@ -1,0 +1,55 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'aether-mainnet'
+    network: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+
+# Alert rules
+rule_files:
+  - 'alerts.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Aether validator nodes
+  - job_name: 'aether-validators'
+    static_configs:
+      - targets: 
+          - 'validator1:9090'
+          - 'validator2:9090'
+          - 'validator3:9090'
+          - 'validator4:9090'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '(.*):.*'
+        replacement: '$1'
+
+  # Aether RPC nodes
+  - job_name: 'aether-rpc'
+    static_configs:
+      - targets:
+          - 'rpc1:9090'
+          - 'rpc2:9090'
+
+  # Infrastructure monitoring
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets:
+          - 'validator1:9100'
+          - 'validator2:9100'
+          - 'validator3:9100'
+          - 'validator4:9100'
+
+  # Pushgateway for batch jobs
+  - job_name: 'pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
+
