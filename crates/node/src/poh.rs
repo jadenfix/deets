@@ -20,6 +20,12 @@ pub struct PohRecorder {
     tick_count: usize,
 }
 
+impl Default for PohRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PohRecorder {
     pub fn new() -> Self {
         Self::with_start(Instant::now())
