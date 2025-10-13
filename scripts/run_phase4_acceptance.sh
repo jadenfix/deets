@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo ":: Running Phase 4 acceptance suite"
+echo ":: Phase 4 acceptance – Networking, DA & performance"
 
 echo ":: ed25519 batch verification throughput"
 cargo test -p aether-crypto-primitives ed25519::tests::test_phase4_batch_performance -- --ignored --nocapture

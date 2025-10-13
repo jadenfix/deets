@@ -89,12 +89,12 @@ fn test_out_of_order_shred_delivery() {
         let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
         let mut shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
-        
+
         // Randomly shuffle shreds (simulate network reordering)
         shreds.shuffle(&mut rng);
 
         let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-        
+
         let mut recovered = false;
         for shred in shreds {
             if let Some(block) = receiver.ingest_shred(shred).unwrap() {
@@ -104,7 +104,11 @@ fn test_out_of_order_shred_delivery() {
             }
         }
 
-        assert!(recovered, "failed to reconstruct with shuffled shreds (trial {})", trial);
+        assert!(
+            recovered,
+            "failed to reconstruct with shuffled shreds (trial {})",
+            trial
+        );
     }
 }
 
@@ -116,7 +120,7 @@ fn test_large_block_stress() {
     const BLOCK_SIZE: usize = 4_000_000; // 4MB
 
     let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
-    
+
     // Generate large payload
     let mut payload = Vec::with_capacity(BLOCK_SIZE);
     for i in 0..BLOCK_SIZE {
@@ -125,11 +129,11 @@ fn test_large_block_stress() {
 
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
     let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
-    
+
     assert_eq!(shreds.len(), DATA_SHARDS + PARITY_SHARDS);
 
     let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-    
+
     let mut recovered = false;
     for shred in shreds {
         if let Some(block) = receiver.ingest_shred(shred).unwrap() {
@@ -155,12 +159,12 @@ fn test_minimal_shred_reconstruction() {
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
     let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
-    
+
     // Take exactly k shreds (minimum needed)
     let minimal_shreds: Vec<_> = shreds.into_iter().take(DATA_SHARDS).collect();
 
     let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-    
+
     let mut recovered = false;
     for shred in minimal_shreds {
         if let Some(block) = receiver.ingest_shred(shred).unwrap() {
@@ -186,14 +190,14 @@ fn test_network_partition_recovery() {
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
     let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
-    
+
     // Simulate partition: only receive first PARTITION_SIZE shreds
     let partition_shreds: Vec<_> = shreds.into_iter().take(PARTITION_SIZE).collect();
-    
+
     // This should fail if PARTITION_SIZE < DATA_SHARDS
     if PARTITION_SIZE < DATA_SHARDS {
         let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-        
+
         let mut recovered = false;
         for shred in partition_shreds {
             if let Some(_block) = receiver.ingest_shred(shred).unwrap() {
@@ -201,11 +205,14 @@ fn test_network_partition_recovery() {
                 break;
             }
         }
-        
-        assert!(!recovered, "should not reconstruct with insufficient shreds");
+
+        assert!(
+            !recovered,
+            "should not reconstruct with insufficient shreds"
+        );
     } else {
         let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-        
+
         let mut recovered = false;
         for shred in partition_shreds {
             if let Some(block) = receiver.ingest_shred(shred).unwrap() {
@@ -214,8 +221,11 @@ fn test_network_partition_recovery() {
                 break;
             }
         }
-        
-        assert!(recovered, "should reconstruct with sufficient shreds despite partition");
+
+        assert!(
+            recovered,
+            "should reconstruct with sufficient shreds despite partition"
+        );
     }
 }
 
@@ -229,24 +239,33 @@ fn bench_encoding_throughput() {
     const ITERATIONS: usize = 100;
 
     let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
-    
+
     let payload = vec![0u8; BLOCK_SIZE];
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
     let start = std::time::Instant::now();
-    
+
     for i in 0..ITERATIONS {
-        let _shreds = broadcaster.make_shreds(i as u64, block_hash, &payload).unwrap();
+        let _shreds = broadcaster
+            .make_shreds(i as u64, block_hash, &payload)
+            .unwrap();
     }
-    
+
     let elapsed = start.elapsed();
     let throughput_mbps = (BLOCK_SIZE * ITERATIONS) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-    
+
     println!("Encoding throughput: {:.2} MB/s", throughput_mbps);
-    println!("Average latency: {:.2} ms", elapsed.as_millis() as f64 / ITERATIONS as f64);
-    
+    println!(
+        "Average latency: {:.2} ms",
+        elapsed.as_millis() as f64 / ITERATIONS as f64
+    );
+
     // Should be able to encode at least 100 MB/s
-    assert!(throughput_mbps > 100.0, "encoding throughput too low: {:.2} MB/s", throughput_mbps);
+    assert!(
+        throughput_mbps > 100.0,
+        "encoding throughput too low: {:.2} MB/s",
+        throughput_mbps
+    );
 }
 
 /// Benchmark decoding throughput
@@ -259,7 +278,7 @@ fn bench_decoding_throughput() {
     const ITERATIONS: usize = 100;
 
     let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
-    
+
     let payload = vec![0u8; BLOCK_SIZE];
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
@@ -267,25 +286,32 @@ fn bench_decoding_throughput() {
     let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
 
     let start = std::time::Instant::now();
-    
+
     for _ in 0..ITERATIONS {
         let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
-        
+
         for shred in shreds.clone() {
             if receiver.ingest_shred(shred).unwrap().is_some() {
                 break;
             }
         }
     }
-    
+
     let elapsed = start.elapsed();
     let throughput_mbps = (BLOCK_SIZE * ITERATIONS) as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-    
+
     println!("Decoding throughput: {:.2} MB/s", throughput_mbps);
-    println!("Average latency: {:.2} ms", elapsed.as_millis() as f64 / ITERATIONS as f64);
-    
+    println!(
+        "Average latency: {:.2} ms",
+        elapsed.as_millis() as f64 / ITERATIONS as f64
+    );
+
     // Should be able to decode at least 100 MB/s
-    assert!(throughput_mbps > 100.0, "decoding throughput too low: {:.2} MB/s", throughput_mbps);
+    assert!(
+        throughput_mbps > 100.0,
+        "decoding throughput too low: {:.2} MB/s",
+        throughput_mbps
+    );
 }
 
 /// Test concurrent reconstruction from multiple blocks
@@ -296,16 +322,18 @@ fn test_concurrent_block_reconstruction() {
     const NUM_BLOCKS: usize = 5;
 
     let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
-    
+
     // Generate multiple blocks
     let mut all_shreds = Vec::new();
     let mut expected_payloads = Vec::new();
-    
+
     for i in 0..NUM_BLOCKS {
         let payload = format!("block {}", i).into_bytes();
         let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
-        let shreds = broadcaster.make_shreds(i as u64, block_hash, &payload).unwrap();
-        
+        let shreds = broadcaster
+            .make_shreds(i as u64, block_hash, &payload)
+            .unwrap();
+
         all_shreds.extend(shreds);
         expected_payloads.push(payload);
     }
@@ -317,7 +345,7 @@ fn test_concurrent_block_reconstruction() {
     // Single receiver processes all shreds
     let mut receiver = TurbineReceiver::new(DATA_SHARDS, PARITY_SHARDS).unwrap();
     let mut reconstructed = Vec::new();
-    
+
     for shred in all_shreds {
         if let Some(block) = receiver.ingest_shred(shred).unwrap() {
             reconstructed.push(block);
@@ -326,7 +354,7 @@ fn test_concurrent_block_reconstruction() {
 
     // Should have reconstructed all blocks
     assert_eq!(reconstructed.len(), NUM_BLOCKS);
-    
+
     // Verify all payloads match (order may differ)
     for payload in &expected_payloads {
         assert!(
@@ -335,4 +363,3 @@ fn test_concurrent_block_reconstruction() {
         );
     }
 }
-
