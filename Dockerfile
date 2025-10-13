@@ -1,5 +1,5 @@
 # Aether Blockchain - Multi-stage Docker Build
-FROM rust:1.80-slim as builder
+FROM rust:1.86-slim as builder
 
 WORKDIR /build
 
@@ -7,6 +7,9 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
+    clang \
+    llvm-dev \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
@@ -40,4 +43,3 @@ EXPOSE 8545 9000
 
 ENTRYPOINT ["aether-node"]
 CMD ["--config", "/app/config/genesis.toml", "--data-dir", "/app/data"]
-
