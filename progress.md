@@ -284,6 +284,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 - **2025-10-12** — Added `.cargo/config.toml` with explicit `linker`/`ar` for `aarch64-unknown-linux-gnu` so local + CI cross-compiles consistently resolve to the GNU cross toolchain.
 - **2025-10-12** — Wired ed25519 batch verification through ledger & transaction types: real signature checks per tx, batch verification for blocks, tests covering invalid signatures, and perf suite now exercising optimized Rayon-based batch verifier (~17k sig/s CPU baseline).
 - **2025-10-12** — Updated mempool + tests to require valid ed25519 signatures, ensuring end-to-end tx flow uses real crypto primitives before scheduling.
+- **2025-10-12** — Implemented PoH-style leader sequencing recorder in the node: per-slot hash chain, jitter metrics, and unit tests capturing slot timing.
 - **2025-10-12** — Phase 4 DA coverage: Turbine packet-loss resilience test (`<= parity` shard drops) with success-rate assertion ≥ 0.999.
 - **2025-10-12** — Replaced placeholder BLS pipeline with `blst`-backed keys, aggregation, and verification; added parallel batch verify + perf harness logging aggregated throughput.
 

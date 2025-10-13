@@ -6,8 +6,10 @@ use aether_state_storage::Storage;
 use aether_types::{Block, PublicKey, Slot, Transaction, ValidatorInfo, VrfProof, H256};
 use anyhow::{Context, Result};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time;
+
+use crate::poh::{PohMetrics, PohRecorder};
 
 pub struct Node {
     ledger: Ledger,
@@ -15,6 +17,8 @@ pub struct Node {
     consensus: SimpleConsensus,
     validator_key: Option<Keypair>,
     running: bool,
+    poh: PohRecorder,
+    last_poh_metrics: Option<PohMetrics>,
 }
 
 impl Node {
@@ -34,6 +38,8 @@ impl Node {
             consensus,
             validator_key,
             running: false,
+            poh: PohRecorder::new(),
+            last_poh_metrics: None,
         })
     }
 
@@ -64,6 +70,13 @@ impl Node {
 
     async fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
+
+        let metrics = self.poh.tick(Instant::now());
+        self.last_poh_metrics = Some(metrics.clone());
+        println!(
+            "PoH tick {} ms avg {:.1} jitter {:.1}",
+            metrics.last_duration_ms, metrics.average_duration_ms, metrics.jitter_ms
+        );
 
         if let Some(ref keypair) = self.validator_key {
             let pubkey = PublicKey::from_bytes(keypair.public_key());
@@ -151,5 +164,43 @@ impl Node {
 
     pub fn mempool_size(&self) -> usize {
         self.mempool.len()
+    }
+
+    pub fn poh_metrics(&self) -> Option<&PohMetrics> {
+        self.last_poh_metrics.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aether_types::{PublicKey, ValidatorInfo};
+    use tempfile::TempDir;
+
+    fn validator_info_from_key(keypair: &Keypair) -> ValidatorInfo {
+        ValidatorInfo {
+            pubkey: PublicKey::from_bytes(keypair.public_key()),
+            stake: 1_000,
+            commission: 0,
+            active: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn updates_poh_metrics_each_slot() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+
+        let mut node = Node::new(temp_dir.path(), validators, Some(keypair)).unwrap();
+
+        node.process_slot().await.unwrap();
+        let first_metrics = node.poh_metrics().cloned().unwrap();
+        assert_eq!(first_metrics.tick_count, 1);
+
+        node.process_slot().await.unwrap();
+        let second_metrics = node.poh_metrics().cloned().unwrap();
+        assert!(second_metrics.tick_count >= 2);
+        assert!(second_metrics.average_duration_ms >= 0.0);
     }
 }

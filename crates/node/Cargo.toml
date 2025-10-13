@@ -12,6 +12,7 @@ tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
+blake3.workspace = true
 
 aether-consensus = { path = "../consensus" }
 aether-ledger = { path = "../ledger" }
@@ -20,3 +21,5 @@ aether-types = { path = "../types" }
 aether-crypto-primitives = { path = "../crypto/primitives" }
 aether-state-storage = { path = "../state/storage" }
 
+[dev-dependencies]
+tempfile = "3"
