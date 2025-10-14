@@ -5,12 +5,12 @@
 // ============================================================================
 
 use crate::ConsensusEngine;
-use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, verify_aggregated, BlsKeypair};
+use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
 use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair, VrfProof};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, Vote, H256};
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// HotStuff consensus phases
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

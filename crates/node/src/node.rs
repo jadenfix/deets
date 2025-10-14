@@ -3,7 +3,7 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::Ledger;
 use aether_mempool::Mempool;
 use aether_state_storage::Storage;
-use aether_types::{Block, PublicKey, Slot, Transaction, ValidatorInfo, VrfProof, H256};
+use aether_types::{Block, PublicKey, Slot, Transaction, H256};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -158,7 +158,8 @@ impl Node {
         }
 
         // Create vote for our own block (BLS signature)
-        let validator_pubkey = PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
+        let validator_pubkey =
+            PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
         if let Ok(_) = self.consensus.add_vote(aether_types::Vote {
             slot,
             block_hash,

@@ -1,6 +1,6 @@
 use aether_crypto_vrf::{check_leader_eligibility, VrfKeypair, VrfProof};
-use aether_types::{Address, Block, Slot, ValidatorInfo, VrfProof as TypesVrfProof, H256};
-use anyhow::{bail, Result};
+use aether_types::{Address, Block, Slot, ValidatorInfo, H256};
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -47,8 +47,10 @@ pub struct VrfPosConsensus {
 impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
         let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
-        let validators_map: HashMap<Address, ValidatorInfo> =
-            validators.into_iter().map(|v| (v.pubkey.to_address(), v)).collect();
+        let validators_map: HashMap<Address, ValidatorInfo> = validators
+            .into_iter()
+            .map(|v| (v.pubkey.to_address(), v))
+            .collect();
 
         VrfPosConsensus {
             epoch_randomness: H256::zero(), // Genesis randomness
@@ -114,16 +116,10 @@ impl VrfPosConsensus {
         };
 
         // Verify VRF proof
-        let vrf_pubkey: [u8; 32] = validator.pubkey
-                .as_bytes()
-                [..32]
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
-        aether_crypto_vrf::verify_proof(
-            &vrf_pubkey,
-            &input,
-            &vrf_proof,
-        )?;
+        let vrf_pubkey: [u8; 32] = validator.pubkey.as_bytes()[..32]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
+        aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)?;
 
         // Check eligibility threshold
         let eligible = check_leader_eligibility(
@@ -300,9 +296,7 @@ mod tests {
 
         for slot_num in 0..trials {
             let slot: Slot = slot_num;
-            if let Ok(Some(_)) =
-                consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr)
-            {
+            if let Ok(Some(_)) = consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr) {
                 eligible_count += 1;
             }
         }

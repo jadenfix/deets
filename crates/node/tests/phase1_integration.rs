@@ -25,16 +25,12 @@ struct ValidatorNode {
 }
 
 impl ValidatorNode {
-    fn new(
-        id: usize,
-        keypair: ValidatorKeypair,
-        all_validators: Vec<ValidatorInfo>,
-    ) -> Self {
+    fn new(id: usize, keypair: ValidatorKeypair, all_validators: Vec<ValidatorInfo>) -> Self {
         let consensus = create_hybrid_consensus(
             all_validators,
             Some(&keypair),
-            0.8,   // tau: 80% leader rate
-            100,   // epoch length
+            0.8, // tau: 80% leader rate
+            100, // epoch length
         )
         .expect("create consensus");
 
@@ -106,9 +102,8 @@ async fn phase1_multi_validator_devnet() {
     println!("\n=== Phase 1 Integration Test: 4-Validator Devnet ===\n");
 
     // Setup 4 validators
-    let validator_keypairs: Vec<ValidatorKeypair> = (0..4)
-        .map(|_| ValidatorKeypair::generate())
-        .collect();
+    let validator_keypairs: Vec<ValidatorKeypair> =
+        (0..4).map(|_| ValidatorKeypair::generate()).collect();
 
     let validator_infos: Vec<ValidatorInfo> = validator_keypairs
         .iter()
@@ -192,10 +187,7 @@ async fn phase1_multi_validator_devnet() {
     println!("Finalized slot: {}", validators[0].finalized_slot());
 
     // Assertions
-    assert!(
-        total_blocks > 0,
-        "At least one block should be produced"
-    );
+    assert!(total_blocks > 0, "At least one block should be produced");
 
     // With 4 validators and tau=0.8, we expect leaders in most slots
     assert!(
@@ -218,8 +210,8 @@ async fn phase1_single_validator_finality() {
     let keypair = ValidatorKeypair::generate();
     let validators = vec![validator_info_from_keypair(&keypair, 10_000)];
 
-    let mut consensus = create_hybrid_consensus(validators, Some(&keypair), 0.8, 100)
-        .expect("create consensus");
+    let mut consensus =
+        create_hybrid_consensus(validators, Some(&keypair), 0.8, 100).expect("create consensus");
 
     println!("✓ Created single validator with 100% stake");
 
@@ -234,13 +226,7 @@ async fn phase1_single_validator_finality() {
                 proof: proof_crypto.proof,
             };
 
-            let block = Block::new(
-                slot,
-                H256::zero(),
-                keypair.address(),
-                proof,
-                vec![],
-            );
+            let block = Block::new(slot, H256::zero(), keypair.address(), proof, vec![]);
 
             println!("Slot {}: Block produced", slot);
 
