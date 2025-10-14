@@ -80,6 +80,7 @@ pub fn validator_info_from_keypair(keypair: &ValidatorKeypair, stake: u128) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_consensus::ConsensusEngine;
 
     #[test]
     fn test_validator_keypair_generation() {
