@@ -60,8 +60,8 @@ GitHub Actions fans out across all six suites to keep every subsystem green.
 
 ```bash
 # Clone
-git clone https://github.com/aether-labs/aether.git
-cd aether
+git clone https://github.com/jadenfix/deets.git
+cd deets
 
 # Fast sanity checks
 cargo fmt --all -- --check
