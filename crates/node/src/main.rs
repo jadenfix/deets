@@ -1,33 +1,39 @@
 use aether_crypto_primitives::Keypair;
-use aether_node::Node;
-use aether_types::{Address, PublicKey, Signature, Transaction, ValidatorInfo};
+use aether_node::{create_hybrid_consensus, validator_info_from_keypair, Node, ValidatorKeypair};
+use aether_types::{Address, PublicKey, Signature, Transaction};
 use std::collections::HashSet;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("Aether Node v0.1.0");
-    println!("==================\n");
+    println!("Aether Node v0.1.0 - Phase 1 Integration");
+    println!("=========================================\n");
 
-    // Generate validator keys
-    let validator_key = Keypair::generate();
-    let validator_pubkey = PublicKey::from_bytes(validator_key.public_key());
+    // Generate validator keys (Ed25519 + VRF + BLS)
+    let validator_keypair = ValidatorKeypair::generate();
+    let validator_pubkey = validator_keypair.public_key();
+    let validator_address = validator_keypair.address();
 
-    // Create single validator for testing
-    let validators = vec![ValidatorInfo {
-        pubkey: validator_pubkey.clone(),
-        stake: 1_000_000,
-        commission: 1000, // 10%
-        active: true,
-    }];
-
-    let validator_address =
-        Address::from_slice(&validator_key.to_address()).map_err(|e| anyhow::anyhow!(e))?;
+    // Create validator info
+    let validators = vec![validator_info_from_keypair(&validator_keypair, 1_000_000)];
 
     println!("Validator address: {:?}", validator_address);
+    println!("Consensus: VRF + HotStuff + BLS");
     println!("Starting node...\n");
 
+    // Create hybrid consensus engine (VRF + HotStuff + BLS)
+    let consensus = Box::new(create_hybrid_consensus(
+        validators,
+        Some(&validator_keypair),
+        0.8,   // tau: 80% leader rate
+        100,   // epoch length: 100 slots
+    )?);
+
     // Create and run node
-    let mut node = Node::new("./data/node1", validators, Some(validator_key))?;
+    let mut node = Node::new(
+        "./data/node1",
+        consensus,
+        Some(validator_keypair.ed25519),
+    )?;
 
     // Add a test transaction
     let test_tx = Transaction {

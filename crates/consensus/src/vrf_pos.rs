@@ -48,16 +48,16 @@ impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
         let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
         let validators_map: HashMap<Address, ValidatorInfo> =
-            validators.into_iter().map(|v| (v.address, v)).collect();
+            validators.into_iter().map(|v| (v.pubkey.to_address(), v)).collect();
 
         VrfPosConsensus {
             epoch_randomness: H256::zero(), // Genesis randomness
             current_epoch: 0,
-            current_slot: Slot { number: 0 },
+            current_slot: 0,
             validators: validators_map,
             total_stake,
             tau,
-            finalized_slot: Slot { number: 0 },
+            finalized_slot: 0,
             epoch_length,
         }
     }
@@ -78,7 +78,7 @@ impl VrfPosConsensus {
         // Compute VRF input: η_e || slot
         let mut input = Vec::new();
         input.extend_from_slice(self.epoch_randomness.as_bytes());
-        input.extend_from_slice(&slot.number.to_le_bytes());
+        input.extend_from_slice(&slot.to_le_bytes());
 
         // Evaluate VRF
         let proof = vrf_keypair.prove(&input);
@@ -105,7 +105,7 @@ impl VrfPosConsensus {
         // Reconstruct VRF input
         let mut input = Vec::new();
         input.extend_from_slice(self.epoch_randomness.as_bytes());
-        input.extend_from_slice(&block.header.slot.number.to_le_bytes());
+        input.extend_from_slice(&block.header.slot.to_le_bytes());
 
         // Convert VRF proof from block
         let vrf_proof = VrfProof {
@@ -114,12 +114,13 @@ impl VrfPosConsensus {
         };
 
         // Verify VRF proof
-        aether_crypto_vrf::verify_proof(
-            &validator
-                .public_key
+        let vrf_pubkey: [u8; 32] = validator.pubkey
                 .as_bytes()
+                [..32]
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("invalid public key length"))?,
+                .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
+        aether_crypto_vrf::verify_proof(
+            &vrf_pubkey,
             &input,
             &vrf_proof,
         )?;
@@ -154,10 +155,10 @@ impl VrfPosConsensus {
 
     /// Advance to next slot
     pub fn advance_slot(&mut self) {
-        self.current_slot.number += 1;
+        self.current_slot += 1;
 
         // Check if we need to advance epoch
-        if self.current_slot.number % self.epoch_length == 0 {
+        if self.current_slot % self.epoch_length == 0 {
             // In production, would use VRF output from first block of previous epoch
             // For now, just hash current randomness
             let mut hasher = Sha256::new();
@@ -184,8 +185,9 @@ impl VrfPosConsensus {
 
     /// Add a validator to the set
     pub fn add_validator(&mut self, validator: ValidatorInfo) {
+        let address = validator.pubkey.to_address();
         self.total_stake += validator.stake;
-        self.validators.insert(validator.address, validator);
+        self.validators.insert(address, validator);
     }
 
     /// Update validator stake
@@ -218,10 +220,12 @@ mod tests {
     use aether_types::PublicKey;
 
     fn create_test_validator(stake: u128) -> ValidatorInfo {
+        let keypair = aether_crypto_primitives::Keypair::generate();
         ValidatorInfo {
-            address: Address::from_slice(&[1u8; 20]).unwrap(),
-            public_key: PublicKey::from_bytes(vec![2u8; 32]),
+            pubkey: PublicKey::from_bytes(keypair.public_key()),
             stake,
+            commission: 0,
+            active: true,
         }
     }
 
@@ -240,10 +244,10 @@ mod tests {
         let validators = vec![create_test_validator(1000)];
         let mut consensus = VrfPosConsensus::new(validators, 0.8, 10);
 
-        assert_eq!(consensus.current_slot().number, 0);
+        assert_eq!(consensus.current_slot(), 0);
 
         consensus.advance_slot();
-        assert_eq!(consensus.current_slot().number, 1);
+        assert_eq!(consensus.current_slot(), 1);
     }
 
     #[test]
@@ -269,10 +273,11 @@ mod tests {
         let consensus = VrfPosConsensus::new(validators.clone(), 0.8, 43200);
 
         let vrf_keypair = VrfKeypair::generate();
-        let slot = Slot { number: 1 };
+        let slot: Slot = 1;
+        let validator_addr = validators[0].pubkey.to_address();
 
         // With high stake, should be eligible for some slots
-        let result = consensus.is_eligible_leader(&vrf_keypair, slot, &validators[0].address);
+        let result = consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr);
 
         assert!(result.is_ok());
         // Probabilistic: might or might not be eligible for this specific slot
@@ -288,14 +293,15 @@ mod tests {
         let consensus = VrfPosConsensus::new(validators, 0.8, 43200);
 
         let vrf_keypair = VrfKeypair::generate();
+        let validator_addr = high_stake_validator.pubkey.to_address();
 
         let mut eligible_count = 0;
         let trials = 100;
 
         for slot_num in 0..trials {
-            let slot = Slot { number: slot_num };
+            let slot: Slot = slot_num;
             if let Ok(Some(_)) =
-                consensus.is_eligible_leader(&vrf_keypair, slot, &high_stake_validator.address)
+                consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr)
             {
                 eligible_count += 1;
             }
