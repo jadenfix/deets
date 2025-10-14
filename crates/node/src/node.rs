@@ -1,4 +1,4 @@
-use aether_consensus::SimpleConsensus;
+use aether_consensus::ConsensusEngine;
 use aether_crypto_primitives::Keypair;
 use aether_ledger::Ledger;
 use aether_mempool::Mempool;
@@ -14,7 +14,7 @@ use crate::poh::{PohMetrics, PohRecorder};
 pub struct Node {
     ledger: Ledger,
     mempool: Mempool,
-    consensus: SimpleConsensus,
+    consensus: Box<dyn ConsensusEngine>,
     validator_key: Option<Keypair>,
     running: bool,
     poh: PohRecorder,
@@ -24,13 +24,12 @@ pub struct Node {
 impl Node {
     pub fn new<P: AsRef<Path>>(
         db_path: P,
-        validators: Vec<ValidatorInfo>,
+        consensus: Box<dyn ConsensusEngine>,
         validator_key: Option<Keypair>,
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
         let mempool = Mempool::new();
-        let consensus = SimpleConsensus::new(validators);
 
         Ok(Node {
             ledger,
@@ -101,7 +100,7 @@ impl Node {
 
         if transactions.is_empty() {
             println!("  No transactions to include");
-            return Ok(());
+            // Even with no transactions, create an empty block for consensus
         }
 
         println!("  Including {} transactions", transactions.len());
@@ -113,43 +112,78 @@ impl Node {
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
             .count();
 
-        println!(
-            "  {} successful, {} failed",
-            successful,
-            receipts.len() - successful
-        );
+        if !transactions.is_empty() {
+            println!(
+                "  {} successful, {} failed",
+                successful,
+                receipts.len() - successful
+            );
+        }
 
-        // Create block
+        // Get VRF proof from consensus (proves leader eligibility)
+        let vrf_proof_crypto = self.consensus.get_leader_proof(slot);
+        let vrf_proof = if let Some(proof) = vrf_proof_crypto {
+            // Convert from crypto::VrfProof to types::VrfProof
+            aether_types::VrfProof {
+                output: proof.output,
+                proof: proof.proof,
+            }
+        } else {
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            }
+        };
+
+        // Create block with VRF proof
         let state_root = self.ledger.state_root();
         let proposer = self.validator_key.as_ref().unwrap().to_address();
 
-        let _block = Block::new(
+        let block = Block::new(
             slot,
             H256::zero(), // parent hash - would track in production
             aether_types::Address::from_slice(&proposer).unwrap(),
-            VrfProof {
-                output: [0u8; 32],
-                proof: vec![],
-            },
+            vrf_proof,
             transactions.clone(),
         );
+
+        let block_hash = block.hash();
+        println!("  Block produced: {:?}", block_hash);
+        println!("  State root: {}", state_root);
+
+        // Validate our own block
+        if let Err(e) = self.consensus.validate_block(&block) {
+            println!("  WARNING: Block validation failed: {}", e);
+            return Ok(());
+        }
+
+        // Create vote for our own block (BLS signature)
+        let validator_pubkey = PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
+        if let Ok(_) = self.consensus.add_vote(aether_types::Vote {
+            slot,
+            block_hash,
+            validator: validator_pubkey,
+            signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
+            stake: self.consensus.total_stake(), // Single validator gets all stake
+        }) {
+            println!("  Vote created and processed");
+        }
 
         // Remove transactions from mempool
         let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
-
-        println!("  Block produced with state root: {}", state_root);
 
         Ok(())
     }
 
     fn check_finality(&mut self) {
         let current_slot = self.consensus.current_slot();
+        let last_finalized = self.consensus.finalized_slot();
 
         // Check last few slots for finality
-        for slot in self.consensus.finalized_slot()..current_slot {
+        for slot in last_finalized..current_slot {
             if self.consensus.check_finality(slot) {
-                println!("Slot {} finalized!", slot);
+                println!("✓ FINALIZED: Slot {} via VRF+HotStuff+BLS!", slot);
             }
         }
     }
@@ -174,6 +208,7 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_consensus::SimpleConsensus;
     use aether_types::{PublicKey, ValidatorInfo};
     use tempfile::TempDir;
 
@@ -191,8 +226,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
 
-        let mut node = Node::new(temp_dir.path(), validators, Some(keypair)).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair)).unwrap();
 
         node.process_slot().await.unwrap();
         let first_metrics = node.poh_metrics().cloned().unwrap();

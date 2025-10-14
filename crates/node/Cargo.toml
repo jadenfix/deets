@@ -19,7 +19,13 @@ aether-ledger = { path = "../ledger" }
 aether-mempool = { path = "../mempool" }
 aether-types = { path = "../types" }
 aether-crypto-primitives = { path = "../crypto/primitives" }
+aether-crypto-bls = { path = "../crypto/bls" }
+aether-crypto-vrf = { path = "../crypto/vrf" }
 aether-state-storage = { path = "../state/storage" }
 
 [dev-dependencies]
 tempfile = "3"
+aether-crypto-bls = { path = "../crypto/bls" }
+aether-crypto-vrf = { path = "../crypto/vrf" }
+aether-runtime = { path = "../runtime" }
+aether-quic-transport = { path = "../networking/quic-transport" }

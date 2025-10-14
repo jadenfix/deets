@@ -308,9 +308,13 @@ name = "aether-node"
 version = "0.1.0"
 dependencies = [
  "aether-consensus",
+ "aether-crypto-bls",
  "aether-crypto-primitives",
+ "aether-crypto-vrf",
  "aether-ledger",
  "aether-mempool",
+ "aether-quic-transport",
+ "aether-runtime",
  "aether-state-storage",
  "aether-types",
  "anyhow",

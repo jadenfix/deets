@@ -1,6 +1,7 @@
 // Simplified consensus for initial implementation
 // Full VRF-PoS + HotStuff will be added progressively
 
+use crate::ConsensusEngine;
 use aether_types::{Block, PublicKey, Slot, ValidatorInfo, Vote};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
@@ -109,6 +110,40 @@ impl SimpleConsensus {
 
     pub fn total_stake(&self) -> u128 {
         self.validators.iter().map(|v| v.stake).sum()
+    }
+}
+
+impl ConsensusEngine for SimpleConsensus {
+    fn current_slot(&self) -> Slot {
+        self.current_slot
+    }
+
+    fn advance_slot(&mut self) {
+        self.advance_slot()
+    }
+
+    fn is_leader(&self, slot: Slot, validator_pubkey: &PublicKey) -> bool {
+        self.is_leader(slot, validator_pubkey)
+    }
+
+    fn validate_block(&self, block: &Block) -> Result<()> {
+        self.validate_block(block)
+    }
+
+    fn add_vote(&mut self, vote: Vote) -> Result<()> {
+        self.add_vote(vote)
+    }
+
+    fn check_finality(&mut self, slot: Slot) -> bool {
+        self.check_finality(slot)
+    }
+
+    fn finalized_slot(&self) -> Slot {
+        self.finalized_slot()
+    }
+
+    fn total_stake(&self) -> u128 {
+        self.total_stake()
     }
 }
 

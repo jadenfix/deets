@@ -1,0 +1,43 @@
+{
+  "dashboard": {
+    "title": "Aether Blockchain Overview",
+    "tags": ["aether", "blockchain"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "title": "Slots Finalized",
+        "targets": [{"expr": "rate(aether_consensus_slots_finalized[5m])"}],
+        "type": "graph"
+      },
+      {
+        "title": "Finality Latency (p95)",
+        "targets": [{"expr": "histogram_quantile(0.95, rate(aether_consensus_finality_latency_ms_bucket[5m]))"}],
+        "type": "graph"
+      },
+      {
+        "title": "Transactions Executed",
+        "targets": [{"expr": "rate(aether_runtime_tx_executed[1m])"}],
+        "type": "graph"
+      },
+      {
+        "title": "DA Reconstruction Success Rate",
+        "targets": [{"expr": "rate(aether_da_blocks_reconstructed_total[5m]) / (rate(aether_da_blocks_reconstructed_total[5m]) + rate(aether_da_reconstruction_failures_total[5m]))"}],
+        "type": "graph"
+      },
+      {
+        "title": "Network Bandwidth (Mbps)",
+        "targets": [
+          {"expr": "rate(aether_net_quic_bytes_sent_total[1m]) * 8 / 1000000", "legendFormat": "Out"},
+          {"expr": "rate(aether_net_quic_bytes_received_total[1m]) * 8 / 1000000", "legendFormat": "In"}
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Connected Peers",
+        "targets": [{"expr": "aether_net_peers_connected"}],
+        "type": "graph"
+      }
+    ]
+  }
+}
+

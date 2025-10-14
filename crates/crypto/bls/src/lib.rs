@@ -86,6 +86,6 @@ pub mod aggregate;
 pub mod keypair;
 pub mod verify;
 
-pub use aggregate::aggregate_signatures;
+pub use aggregate::{aggregate_public_keys, aggregate_signatures};
 pub use keypair::BlsKeypair;
 pub use verify::verify_aggregated;
