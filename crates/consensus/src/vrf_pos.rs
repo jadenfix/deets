@@ -17,7 +17,6 @@ use std::collections::HashMap;
 /// - tau (τ): Target leader rate (e.g., 0.8 = 80% of slots have a leader)
 /// - slot_time: 500ms per slot
 /// - epoch_length: Number of slots per epoch (e.g., 43200 = 6 hours at 500ms/slot)
-
 pub struct VrfPosConsensus {
     /// Current epoch randomness
     epoch_randomness: H256,
@@ -137,7 +136,7 @@ impl VrfPosConsensus {
     pub fn advance_epoch(&mut self, seed_block_vrf_output: [u8; 32]) {
         // Compute new epoch randomness
         let mut hasher = Sha256::new();
-        hasher.update(&seed_block_vrf_output);
+        hasher.update(seed_block_vrf_output);
         let new_randomness = hasher.finalize();
 
         self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
@@ -159,7 +158,7 @@ impl VrfPosConsensus {
             // For now, just hash current randomness
             let mut hasher = Sha256::new();
             hasher.update(self.epoch_randomness.as_bytes());
-            hasher.update(&self.current_epoch.to_le_bytes());
+            hasher.update(self.current_epoch.to_le_bytes());
             let new_randomness = hasher.finalize();
 
             self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();

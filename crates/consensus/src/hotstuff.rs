@@ -159,11 +159,8 @@ impl HotStuffConsensus {
         self.verify_vote(&vote)?;
 
         // Store vote
-        let phase_votes = self
-            .votes
-            .entry(vote.phase.clone())
-            .or_insert_with(HashMap::new);
-        let block_votes = phase_votes.entry(vote.block_hash).or_insert_with(Vec::new);
+        let phase_votes = self.votes.entry(vote.phase.clone()).or_default();
+        let block_votes = phase_votes.entry(vote.block_hash).or_default();
         block_votes.push(vote.clone());
 
         // Check for quorum (calculate stake and check threshold before any other borrows)
@@ -242,7 +239,7 @@ impl HotStuffConsensus {
         let mut msg = Vec::new();
         msg.extend_from_slice(block_hash.as_bytes());
         msg.extend_from_slice(&self.current_slot.to_le_bytes());
-        msg.extend_from_slice(&format!("{:?}", phase).as_bytes());
+        msg.extend_from_slice(format!("{:?}", phase).as_bytes());
 
         // Sign with BLS
         let signature = keypair.sign(&msg);
@@ -251,7 +248,7 @@ impl HotStuffConsensus {
             slot: self.current_slot,
             block_hash,
             phase,
-            validator: address.clone(),
+            validator: *address,
             validator_pubkey: validator.pubkey.clone(),
             stake: validator.stake,
             signature,
@@ -269,7 +266,7 @@ impl HotStuffConsensus {
         let mut msg = Vec::new();
         msg.extend_from_slice(vote.block_hash.as_bytes());
         msg.extend_from_slice(&vote.slot.to_le_bytes());
-        msg.extend_from_slice(&format!("{:?}", vote.phase).as_bytes());
+        msg.extend_from_slice(format!("{:?}", vote.phase).as_bytes());
 
         // Verify BLS signature
         let pubkey_bytes: [u8; 48] = validator.pubkey.as_bytes()[..48]

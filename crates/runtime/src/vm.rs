@@ -32,7 +32,9 @@ pub struct WasmVm {
     engine: Engine,
     gas_limit: u64,
     gas_used: u64,
+    #[allow(dead_code)]
     memory_limit: usize,
+    #[allow(dead_code)]
     stack_limit: usize,
     storage: HashMap<Vec<u8>, Vec<u8>>,
 }
@@ -65,20 +67,20 @@ impl WasmVm {
     pub fn new(gas_limit: u64) -> Result<Self> {
         // Create Wasmtime configuration for deterministic execution
         let mut config = Config::new();
-        
+
         // Enable fuel metering for gas
         config.consume_fuel(true);
-        
+
         // Deterministic execution settings
-        config.cranelift_nan_canonicalization(true);  // Canonical NaN representation
-        config.wasm_simd(false);  // Disable SIMD (platform-specific)
-        config.wasm_threads(false);  // Single-threaded execution
-        config.wasm_bulk_memory(true);  // Allow bulk memory operations
-        config.wasm_reference_types(false);  // Disable for simplicity
-        
+        config.cranelift_nan_canonicalization(true); // Canonical NaN representation
+        config.wasm_simd(false); // Disable SIMD (platform-specific)
+        config.wasm_threads(false); // Single-threaded execution
+        config.wasm_bulk_memory(true); // Allow bulk memory operations
+        config.wasm_reference_types(false); // Disable for simplicity
+
         // Create engine with deterministic config
         let engine = Engine::new(&config)?;
-        
+
         Ok(WasmVm {
             engine,
             gas_limit,
@@ -94,7 +96,7 @@ impl WasmVm {
         &mut self,
         wasm_bytes: &[u8],
         context: &ExecutionContext,
-        input: &[u8],
+        _input: &[u8],
     ) -> Result<ExecutionResult> {
         // Validate WASM module
         self.validate_wasm(wasm_bytes)?;
@@ -116,9 +118,10 @@ impl WasmVm {
 
         // Create store with state
         let mut store = Store::new(&self.engine, vm_state.clone());
-        
+
         // Set fuel (maps to gas)
-        store.add_fuel(context.gas_limit)
+        store
+            .set_fuel(context.gas_limit)
             .map_err(|e| anyhow::anyhow!("Failed to set fuel: {}", e))?;
 
         // Create linker and add host functions
@@ -126,7 +129,8 @@ impl WasmVm {
         self.link_host_functions(&mut linker, context)?;
 
         // Instantiate module
-        let instance = linker.instantiate(&mut store, &module)
+        let instance = linker
+            .instantiate(&mut store, &module)
             .map_err(|e| anyhow::anyhow!("Instantiation failed: {}", e))?;
 
         // Get the execute function
@@ -138,12 +142,14 @@ impl WasmVm {
         let memory = instance.get_memory(&mut store, "memory");
 
         // Execute the contract
-        let result_code = execute_func.call(&mut store, ())
+        let result_code = execute_func
+            .call(&mut store, ())
             .map_err(|e| anyhow::anyhow!("Execution failed: {}", e))?;
 
         // Get remaining fuel (gas used)
-        let fuel_remaining = store.fuel_consumed()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get fuel consumed"))?;
+        let fuel_remaining = store
+            .get_fuel()
+            .map_err(|e| anyhow::anyhow!("Failed to get fuel consumed: {}", e))?;
         let gas_used = context.gas_limit.saturating_sub(fuel_remaining);
 
         // Extract return data from memory (if available)
@@ -167,7 +173,7 @@ impl WasmVm {
         self.gas_used = gas_used;
 
         Ok(ExecutionResult {
-            success: result_code >= 0,  // 0 = success, positive = success with data length, negative = error
+            success: result_code >= 0, // 0 = success, positive = success with data length, negative = error
             gas_used,
             return_data,
             logs: final_state.logs.clone(),
@@ -175,30 +181,42 @@ impl WasmVm {
     }
 
     /// Link host functions into WASM environment
-    fn link_host_functions(&self, linker: &mut Linker<Arc<Mutex<VmState>>>, context: &ExecutionContext) -> Result<()> {
+    fn link_host_functions(
+        &self,
+        linker: &mut Linker<Arc<Mutex<VmState>>>,
+        context: &ExecutionContext,
+    ) -> Result<()> {
         // Get block number
         let block_num = context.block_number;
-        linker.func_wrap("env", "block_number", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
-            block_num as i64
-        })?;
+        linker.func_wrap(
+            "env",
+            "block_number",
+            move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 { block_num as i64 },
+        )?;
 
         // Get timestamp
         let ts = context.timestamp;
-        linker.func_wrap("env", "timestamp", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
-            ts as i64
-        })?;
+        linker.func_wrap(
+            "env",
+            "timestamp",
+            move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 { ts as i64 },
+        )?;
 
         // Get caller address (simplified - returns first 8 bytes as i64)
         let caller_bytes = context.caller.as_bytes()[0..8].try_into().unwrap();
         let caller_val = i64::from_le_bytes(caller_bytes);
-        linker.func_wrap("env", "caller", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
-            caller_val
-        })?;
+        linker.func_wrap(
+            "env",
+            "caller",
+            move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 { caller_val },
+        )?;
 
         // Storage read - reads a value from contract storage
         // Takes: key_ptr (i32), key_len (i32)
         // Returns: value as i64 (first 8 bytes, or 0 if not found)
-        linker.func_wrap("env", "storage_read", 
+        linker.func_wrap(
+            "env",
+            "storage_read",
             |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key_ptr: i32, key_len: i32| -> i64 {
                 // Charge gas
                 if charge_gas_from_state(&mut caller, 200).is_err() {
@@ -230,14 +248,21 @@ impl WasmVm {
                     }
                     None => 0,
                 }
-            }
+            },
         )?;
 
         // Storage write - writes a value to contract storage
         // Takes: key_ptr (i32), key_len (i32), value_ptr (i32), value_len (i32)
         // Returns: 0 on success, -1 on error
-        linker.func_wrap("env", "storage_write",
-            |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32| -> i32 {
+        linker.func_wrap(
+            "env",
+            "storage_write",
+            |mut caller: Caller<'_, Arc<Mutex<VmState>>>,
+             key_ptr: i32,
+             key_len: i32,
+             value_ptr: i32,
+             value_len: i32|
+             -> i32 {
                 // Charge base gas
                 if charge_gas_from_state(&mut caller, 5000).is_err() {
                     return -1; // Out of gas
@@ -257,7 +282,10 @@ impl WasmVm {
 
                 // Read value from memory
                 let mut value = vec![0u8; value_len as usize];
-                if memory.read(&caller, value_ptr as usize, &mut value).is_err() {
+                if memory
+                    .read(&caller, value_ptr as usize, &mut value)
+                    .is_err()
+                {
                     return -1;
                 }
 
@@ -274,14 +302,21 @@ impl WasmVm {
                 // Write to storage
                 state.storage.insert(key, value);
                 0 // Success
-            }
+            },
         )?;
 
         // Emit log - emits a log event
         // Takes: topics_ptr (i32), topics_count (i32), data_ptr (i32), data_len (i32)
         // Returns: 0 on success, -1 on error
-        linker.func_wrap("env", "emit_log",
-            |mut caller: Caller<'_, Arc<Mutex<VmState>>>, topics_ptr: i32, topics_count: i32, data_ptr: i32, data_len: i32| -> i32 {
+        linker.func_wrap(
+            "env",
+            "emit_log",
+            |mut caller: Caller<'_, Arc<Mutex<VmState>>>,
+             topics_ptr: i32,
+             topics_count: i32,
+             data_ptr: i32,
+             data_len: i32|
+             -> i32 {
                 // Charge gas (375 base + 8 per byte)
                 let gas_cost = 375 + (8 * data_len as u64);
                 if charge_gas_from_state(&mut caller, gas_cost).is_err() {
@@ -314,9 +349,9 @@ impl WasmVm {
                 // Store log
                 let mut state = caller.data().lock().unwrap();
                 state.logs.push(Log { topics, data });
-                
+
                 0 // Success
-            }
+            },
         )?;
 
         Ok(())
@@ -366,17 +401,26 @@ impl WasmVm {
 
 /// Helper to charge gas from within host functions
 fn charge_gas_from_state(caller: &mut Caller<'_, Arc<Mutex<VmState>>>, amount: u64) -> Result<()> {
-    let mut state = caller.data().lock().unwrap();
-    state.gas_used = state.gas_used.checked_add(amount)
-        .ok_or_else(|| anyhow::anyhow!("Gas overflow"))?;
-    
-    if state.gas_used > state.gas_limit {
-        bail!("Out of gas");
-    }
-    
+    // Check gas limit
+    {
+        let mut state = caller.data().lock().unwrap();
+        state.gas_used = state
+            .gas_used
+            .checked_add(amount)
+            .ok_or_else(|| anyhow::anyhow!("Gas overflow"))?;
+
+        if state.gas_used > state.gas_limit {
+            bail!("Out of gas");
+        }
+    } // Release lock
+
     // Also consume fuel in the store
-    let _ = caller.consume_fuel(amount);
-    
+    if let Ok(current_fuel) = caller.get_fuel() {
+        if current_fuel >= amount {
+            let _ = caller.set_fuel(current_fuel.saturating_sub(amount));
+        }
+    }
+
     Ok(())
 }
 
@@ -444,13 +488,16 @@ mod tests {
     fn test_execute_with_real_wasm() {
         // Create a minimal valid WASM module with an execute function
         // WASM binary format: magic + version + sections
-        let wasm = wat::parse_str(r#"
+        let wasm = wat::parse_str(
+            r#"
             (module
                 (func (export "execute") (result i32)
                     i32.const 0
                 )
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut vm = WasmVm::new(100_000).unwrap();
         let context = ExecutionContext {
@@ -471,7 +518,8 @@ mod tests {
     #[test]
     fn test_host_functions_accessible() {
         // Test that host functions are linked correctly
-        let wasm = wat::parse_str(r#"
+        let wasm = wat::parse_str(
+            r#"
             (module
                 (import "env" "block_number" (func $block_number (result i64)))
                 (import "env" "timestamp" (func $timestamp (result i64)))
@@ -483,7 +531,9 @@ mod tests {
                     i32.const 0
                 )
             )
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
 
         let mut vm = WasmVm::new(100_000).unwrap();
         let context = ExecutionContext {

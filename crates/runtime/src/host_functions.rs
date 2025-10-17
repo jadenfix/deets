@@ -46,7 +46,13 @@ impl HostFunctions {
         }
     }
 
-    pub fn with_context(gas_limit: u64, block_number: u64, timestamp: u64, caller: Address, contract_address: Address) -> Self {
+    pub fn with_context(
+        gas_limit: u64,
+        block_number: u64,
+        timestamp: u64,
+        caller: Address,
+        contract_address: Address,
+    ) -> Self {
         HostFunctions {
             storage: HashMap::new(),
             balances: HashMap::new(),
@@ -263,11 +269,11 @@ mod tests {
     fn test_context_functions() {
         let caller_addr = Address::from_slice(&[1u8; 20]).unwrap();
         let contract_addr = Address::from_slice(&[2u8; 20]).unwrap();
-        
+
         let mut host = HostFunctions::with_context(
             100_000,
-            42,           // block_number
-            1234567890,   // timestamp
+            42,         // block_number
+            1234567890, // timestamp
             caller_addr,
             contract_addr,
         );
@@ -286,7 +292,7 @@ mod tests {
         // Default context should have zero values
         assert_eq!(host.block_number().unwrap(), 0);
         assert_eq!(host.timestamp().unwrap(), 0);
-        
+
         let zero_addr = Address::from_slice(&[0u8; 20]).unwrap();
         assert_eq!(host.caller().unwrap(), zero_addr);
         assert_eq!(host.address().unwrap(), zero_addr);
@@ -296,9 +302,9 @@ mod tests {
     fn test_context_gas_charging() {
         let caller_addr = Address::from_slice(&[1u8; 20]).unwrap();
         let contract_addr = Address::from_slice(&[2u8; 20]).unwrap();
-        
+
         let mut host = HostFunctions::with_context(
-            100,  // Low gas limit
+            100, // Low gas limit
             42,
             1234567890,
             caller_addr,
@@ -306,16 +312,16 @@ mod tests {
         );
 
         // Each context call costs 2 gas
-        assert!(host.block_number().is_ok());  // 2 gas
+        assert!(host.block_number().is_ok()); // 2 gas
         assert_eq!(host.gas_used(), 2);
-        
-        assert!(host.timestamp().is_ok());     // 2 gas
+
+        assert!(host.timestamp().is_ok()); // 2 gas
         assert_eq!(host.gas_used(), 4);
-        
-        assert!(host.caller().is_ok());        // 2 gas
+
+        assert!(host.caller().is_ok()); // 2 gas
         assert_eq!(host.gas_used(), 6);
-        
-        assert!(host.address().is_ok());       // 2 gas
+
+        assert!(host.address().is_ok()); // 2 gas
         assert_eq!(host.gas_used(), 8);
     }
 }

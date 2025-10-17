@@ -186,7 +186,7 @@ impl HybridConsensus {
         let mut msg = Vec::new();
         msg.extend_from_slice(block_hash.as_bytes());
         msg.extend_from_slice(&self.current_slot.to_le_bytes());
-        msg.extend_from_slice(&format!("{:?}", phase).as_bytes());
+        msg.extend_from_slice(format!("{:?}", phase).as_bytes());
 
         // Sign with BLS
         let signature = bls_keypair.sign(&msg);
@@ -209,7 +209,7 @@ impl HybridConsensus {
 
         // Store vote
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
-        let votes = self.votes.entry(key.clone()).or_insert_with(Vec::new);
+        let votes = self.votes.entry(key.clone()).or_default();
         votes.push(vote.clone());
 
         // Check for quorum (2/3+ stake)
@@ -322,7 +322,7 @@ impl ConsensusEngine for HybridConsensus {
             // Update epoch randomness (simplified - use previous epoch hash)
             let mut hasher = Sha256::new();
             hasher.update(self.epoch_randomness.as_bytes());
-            hasher.update(&self.current_epoch.to_le_bytes());
+            hasher.update(self.current_epoch.to_le_bytes());
             let new_randomness = hasher.finalize();
 
             self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub struct SparseMerkleTree {
     root: H256,
     leaves: HashMap<Address, H256>,
-    dirty: bool,  // Track if root needs recomputation
+    dirty: bool, // Track if root needs recomputation
 }
 
 impl SparseMerkleTree {
@@ -17,12 +17,12 @@ impl SparseMerkleTree {
 
     pub fn update(&mut self, key: Address, value_hash: H256) {
         self.leaves.insert(key, value_hash);
-        self.dirty = true;  // Mark as dirty, defer recomputation
+        self.dirty = true; // Mark as dirty, defer recomputation
     }
 
     pub fn delete(&mut self, key: &Address) {
         self.leaves.remove(key);
-        self.dirty = true;  // Mark as dirty, defer recomputation
+        self.dirty = true; // Mark as dirty, defer recomputation
     }
 
     /// Batch update multiple keys at once (more efficient)
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_empty_tree() {
-        let tree = SparseMerkleTree::new();
+        let mut tree = SparseMerkleTree::new();
         assert_eq!(tree.root(), H256::zero());
     }
 
@@ -176,7 +176,7 @@ mod tests {
         // Root computed only once
         let root = tree.root();
         assert!(!tree.dirty);
-        
+
         // Second call returns cached value
         let root2 = tree.root();
         assert_eq!(root, root2);
@@ -189,7 +189,7 @@ mod tests {
         let addr = Address::from_slice(&[1u8; 20]).unwrap();
         let value = H256::from_slice(&[2u8; 32]).unwrap();
         tree.update(addr, value);
-        let _ = tree.root();  // Compute
+        let _ = tree.root(); // Compute
         assert!(!tree.dirty);
 
         // Delete should mark dirty

@@ -40,6 +40,19 @@ lint:
 fmt:
 	cargo fmt --all
 
+# Quick pre-commit check (format + clippy)
+check:
+	./scripts/quick-check.sh
+
+# Full pre-commit validation (format + clippy + tests)
+pre-commit:
+	./scripts/pre-commit-check.sh
+
+# Auto-fix formatting and clippy issues
+fix:
+	cargo fmt --all
+	cargo clippy --all-targets --all-features --fix --allow-dirty --allow-staged
+
 # Generate documentation
 docs:
 	cargo doc --no-deps --all
