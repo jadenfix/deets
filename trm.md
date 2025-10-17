@@ -1,7 +1,3 @@
-Alright—here’s a **deep, end-to-end technical roadmap** to take the AI-credits chain (Aether) from first commit → devnet → public testnet → production mainnet → global scale. It’s opinionated, implementation-ready, and broken into phases with deliverables, acceptance tests, SRE gates, and long-term scale tracks.
-
----
-
 # 1) Architecture Baseline (what we’re building)
 
 * **Consensus**: VRF-based PoS leader election (Ouroboros-style) + **2-chain BFT finality** (HotStuff-style) with **BLS12-381 aggregated votes**. Slot ≈ **500 ms**.
