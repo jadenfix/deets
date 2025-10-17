@@ -1,6 +1,8 @@
 use aether_types::{Address, H256};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use wasmtime::*;
 
 /// WASM Virtual Machine for Smart Contract Execution
 ///
@@ -17,21 +19,21 @@ use std::collections::HashMap;
 /// - No floating point (non-deterministic)
 /// - No SIMD (platform-specific)
 ///
-#[allow(dead_code)]
+/// State shared with WASM host functions
+#[derive(Clone)]
+pub struct VmState {
+    pub storage: HashMap<Vec<u8>, Vec<u8>>,
+    pub logs: Vec<Log>,
+    pub gas_used: u64,
+    pub gas_limit: u64,
+}
+
 pub struct WasmVm {
-    /// Gas limit for execution
+    engine: Engine,
     gas_limit: u64,
-
-    /// Gas used so far
     gas_used: u64,
-
-    /// Memory limit (bytes)
     memory_limit: usize,
-
-    /// Stack depth limit
     stack_limit: usize,
-
-    /// Host state (account storage)
     storage: HashMap<Vec<u8>, Vec<u8>>,
 }
 
@@ -60,14 +62,31 @@ pub struct Log {
 }
 
 impl WasmVm {
-    pub fn new(gas_limit: u64) -> Self {
-        WasmVm {
+    pub fn new(gas_limit: u64) -> Result<Self> {
+        // Create Wasmtime configuration for deterministic execution
+        let mut config = Config::new();
+        
+        // Enable fuel metering for gas
+        config.consume_fuel(true);
+        
+        // Deterministic execution settings
+        config.cranelift_nan_canonicalization(true);  // Canonical NaN representation
+        config.wasm_simd(false);  // Disable SIMD (platform-specific)
+        config.wasm_threads(false);  // Single-threaded execution
+        config.wasm_bulk_memory(true);  // Allow bulk memory operations
+        config.wasm_reference_types(false);  // Disable for simplicity
+        
+        // Create engine with deterministic config
+        let engine = Engine::new(&config)?;
+        
+        Ok(WasmVm {
+            engine,
             gas_limit,
             gas_used: 0,
             memory_limit: 16 * 1024 * 1024, // 16MB
             stack_limit: 1024,
             storage: HashMap::new(),
-        }
+        })
     }
 
     /// Execute WASM bytecode
@@ -80,46 +99,100 @@ impl WasmVm {
         // Validate WASM module
         self.validate_wasm(wasm_bytes)?;
 
-        // Charge gas for module instantiation
+        // Charge base gas for module instantiation
         self.charge_gas(1000)?;
 
-        // In production: use Wasmtime
-        // let engine = Engine::new(&config)?;
-        // let module = Module::new(&engine, wasm_bytes)?;
-        // let mut store = Store::new(&engine, ());
-        // store.add_fuel(context.gas_limit)?;
+        // Compile WASM module
+        let module = Module::new(&self.engine, wasm_bytes)
+            .map_err(|e| anyhow::anyhow!("WASM compilation failed: {}", e))?;
 
-        // For now: simplified execution
-        let result = self.execute_simplified(wasm_bytes, context, input)?;
+        // Create VM state for host functions
+        let vm_state = Arc::new(Mutex::new(VmState {
+            storage: self.storage.clone(),
+            logs: Vec::new(),
+            gas_used: self.gas_used,
+            gas_limit: context.gas_limit,
+        }));
 
-        Ok(result)
+        // Create store with state
+        let mut store = Store::new(&self.engine, vm_state.clone());
+        
+        // Set fuel (maps to gas)
+        store.add_fuel(context.gas_limit)
+            .map_err(|e| anyhow::anyhow!("Failed to set fuel: {}", e))?;
+
+        // Create linker and add host functions
+        let mut linker = Linker::new(&self.engine);
+        self.link_host_functions(&mut linker, context)?;
+
+        // Instantiate module
+        let instance = linker.instantiate(&mut store, &module)
+            .map_err(|e| anyhow::anyhow!("Instantiation failed: {}", e))?;
+
+        // Get the execute function
+        let execute_func = instance
+            .get_typed_func::<(), i32>(&mut store, "execute")
+            .map_err(|e| anyhow::anyhow!("No 'execute' export found: {}", e))?;
+
+        // Execute the contract
+        let result_code = execute_func.call(&mut store, ())
+            .map_err(|e| anyhow::anyhow!("Execution failed: {}", e))?;
+
+        // Get remaining fuel (gas used)
+        let fuel_remaining = store.fuel_consumed()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get fuel consumed"))?;
+        let gas_used = context.gas_limit.saturating_sub(fuel_remaining);
+
+        // Extract state from host functions
+        let final_state = vm_state.lock().unwrap();
+        self.storage = final_state.storage.clone();
+        self.gas_used = gas_used;
+
+        Ok(ExecutionResult {
+            success: result_code == 0,
+            gas_used,
+            return_data: vec![],  // TODO: Get from contract memory
+            logs: final_state.logs.clone(),
+        })
     }
 
-    /// Simplified execution (placeholder for Wasmtime integration)
-    fn execute_simplified(
-        &mut self,
-        _wasm_bytes: &[u8],
-        context: &ExecutionContext,
-        input: &[u8],
-    ) -> Result<ExecutionResult> {
-        // Charge gas for execution
-        self.charge_gas(1000 + input.len() as u64)?;
+    /// Link host functions into WASM environment
+    fn link_host_functions(&self, linker: &mut Linker<Arc<Mutex<VmState>>>, context: &ExecutionContext) -> Result<()> {
+        // Get block number
+        let block_num = context.block_number;
+        linker.func_wrap("env", "block_number", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
+            block_num as i64
+        })?;
 
-        if input.len() > self.memory_limit {
-            bail!("input exceeds memory limit");
-        }
+        // Get timestamp
+        let ts = context.timestamp;
+        linker.func_wrap("env", "timestamp", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
+            ts as i64
+        })?;
 
-        if context.gas_limit < self.gas_limit {
-            bail!("context gas limit below VM requirement");
-        }
+        // Get caller address (simplified - returns first 8 bytes as i64)
+        let caller_bytes = context.caller.as_bytes()[0..8].try_into().unwrap();
+        let caller_val = i64::from_le_bytes(caller_bytes);
+        linker.func_wrap("env", "caller", move |_caller: Caller<'_, Arc<Mutex<VmState>>>| -> i64 {
+            caller_val
+        })?;
 
-        // Simulate successful execution
-        Ok(ExecutionResult {
-            success: true,
-            gas_used: self.gas_used,
-            return_data: vec![1, 2, 3], // Placeholder
-            logs: vec![],
-        })
+        // Storage read (simplified)
+        linker.func_wrap("env", "storage_read", |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key: i32| -> i32 {
+            let state = caller.data().lock().unwrap();
+            // Charge gas
+            let _ = charge_gas_from_state(&mut caller, 200);
+            // Simplified: just return 0 for now
+            0
+        })?;
+
+        // Storage write (simplified)
+        linker.func_wrap("env", "storage_write", |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key: i32, value: i32| -> i32 {
+            let _ = charge_gas_from_state(&mut caller, 5000);
+            0
+        })?;
+
+        Ok(())
     }
 
     /// Validate WASM module
@@ -164,6 +237,22 @@ impl WasmVm {
     }
 }
 
+/// Helper to charge gas from within host functions
+fn charge_gas_from_state(caller: &mut Caller<'_, Arc<Mutex<VmState>>>, amount: u64) -> Result<()> {
+    let mut state = caller.data().lock().unwrap();
+    state.gas_used = state.gas_used.checked_add(amount)
+        .ok_or_else(|| anyhow::anyhow!("Gas overflow"))?;
+    
+    if state.gas_used > state.gas_limit {
+        bail!("Out of gas");
+    }
+    
+    // Also consume fuel in the store
+    let _ = caller.consume_fuel(amount);
+    
+    Ok(())
+}
+
 /// Gas costs for different operations (per spec)
 pub mod gas_costs {
     pub const BASE: u64 = 100;
@@ -181,14 +270,14 @@ mod tests {
 
     #[test]
     fn test_vm_creation() {
-        let vm = WasmVm::new(100_000);
+        let vm = WasmVm::new(100_000).unwrap();
         assert_eq!(vm.gas_limit, 100_000);
         assert_eq!(vm.gas_used, 0);
     }
 
     #[test]
     fn test_gas_charging() {
-        let mut vm = WasmVm::new(1000);
+        let mut vm = WasmVm::new(1000).unwrap();
 
         assert!(vm.charge_gas(500).is_ok());
         assert_eq!(vm.gas_used(), 500);
@@ -202,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_remaining_gas() {
-        let mut vm = WasmVm::new(1000);
+        let mut vm = WasmVm::new(1000).unwrap();
         vm.charge_gas(300).unwrap();
 
         assert_eq!(vm.remaining_gas(), 700);
@@ -210,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_wasm_validation() {
-        let vm = WasmVm::new(100_000);
+        let vm = WasmVm::new(100_000).unwrap();
 
         // Valid WASM header
         let valid_wasm = b"\0asm\x01\x00\x00\x00";
@@ -225,10 +314,18 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_basic() {
-        let mut vm = WasmVm::new(100_000);
+    fn test_execute_with_real_wasm() {
+        // Create a minimal valid WASM module with an execute function
+        // WASM binary format: magic + version + sections
+        let wasm = wat::parse_str(r#"
+            (module
+                (func (export "execute") (result i32)
+                    i32.const 0
+                )
+            )
+        "#).unwrap();
 
-        let wasm = b"\0asm\x01\x00\x00\x00"; // Minimal WASM
+        let mut vm = WasmVm::new(100_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -238,9 +335,40 @@ mod tests {
             timestamp: 1000,
         };
 
-        let result = vm.execute(wasm, &context, b"input").unwrap();
+        let result = vm.execute(&wasm, &context, b"input").unwrap();
 
         assert!(result.success);
         assert!(result.gas_used > 0);
+    }
+
+    #[test]
+    fn test_host_functions_accessible() {
+        // Test that host functions are linked correctly
+        let wasm = wat::parse_str(r#"
+            (module
+                (import "env" "block_number" (func $block_number (result i64)))
+                (import "env" "timestamp" (func $timestamp (result i64)))
+                (func (export "execute") (result i32)
+                    call $block_number
+                    drop
+                    call $timestamp
+                    drop
+                    i32.const 0
+                )
+            )
+        "#).unwrap();
+
+        let mut vm = WasmVm::new(100_000).unwrap();
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 100_000,
+            block_number: 42,
+            timestamp: 1234567890,
+        };
+
+        let result = vm.execute(&wasm, &context, b"input").unwrap();
+        assert!(result.success);
     }
 }

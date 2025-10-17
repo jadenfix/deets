@@ -11,3 +11,6 @@ thiserror.workspace = true
 wasmtime.workspace = true
 serde.workspace = true
 sha2 = "0.10"
+
+[dev-dependencies]
+wat = "1.0"
