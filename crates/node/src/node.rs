@@ -3,7 +3,7 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::Ledger;
 use aether_mempool::Mempool;
 use aether_state_storage::Storage;
-use aether_types::{Block, PublicKey, Slot, Transaction, ValidatorInfo, VrfProof, H256};
+use aether_types::{Block, PublicKey, Slot, Transaction, H256};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -158,14 +158,19 @@ impl Node {
         }
 
         // Create vote for our own block (BLS signature)
-        let validator_pubkey = PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
-        if let Ok(_) = self.consensus.add_vote(aether_types::Vote {
-            slot,
-            block_hash,
-            validator: validator_pubkey,
-            signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
-            stake: self.consensus.total_stake(), // Single validator gets all stake
-        }) {
+        let validator_pubkey =
+            PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
+        if self
+            .consensus
+            .add_vote(aether_types::Vote {
+                slot,
+                block_hash,
+                validator: validator_pubkey,
+                signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
+                stake: self.consensus.total_stake(), // Single validator gets all stake
+            })
+            .is_ok()
+        {
             println!("  Vote created and processed");
         }
 
@@ -192,7 +197,7 @@ impl Node {
         self.running = false;
     }
 
-    pub fn get_state_root(&self) -> H256 {
+    pub fn get_state_root(&mut self) -> H256 {
         self.ledger.state_root()
     }
 

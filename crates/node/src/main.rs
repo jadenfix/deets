@@ -1,6 +1,5 @@
-use aether_crypto_primitives::Keypair;
 use aether_node::{create_hybrid_consensus, validator_info_from_keypair, Node, ValidatorKeypair};
-use aether_types::{Address, PublicKey, Signature, Transaction};
+use aether_types::{Address, Signature, Transaction};
 use std::collections::HashSet;
 
 #[tokio::main]
@@ -24,16 +23,12 @@ async fn main() -> anyhow::Result<()> {
     let consensus = Box::new(create_hybrid_consensus(
         validators,
         Some(&validator_keypair),
-        0.8,   // tau: 80% leader rate
-        100,   // epoch length: 100 slots
+        0.8, // tau: 80% leader rate
+        100, // epoch length: 100 slots
     )?);
 
     // Create and run node
-    let mut node = Node::new(
-        "./data/node1",
-        consensus,
-        Some(validator_keypair.ed25519),
-    )?;
+    let mut node = Node::new("./data/node1", consensus, Some(validator_keypair.ed25519))?;
 
     // Add a test transaction
     let test_tx = Transaction {

@@ -1,10 +1,7 @@
-use aether_crypto_bls::{
-    aggregate_public_keys, aggregate_signatures, verify_aggregated, BlsKeypair,
-};
+use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, H256};
 use anyhow::{bail, Result};
-use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// HotStuff 2-Chain BFT Consensus
 ///
@@ -101,8 +98,10 @@ impl HotStuffConsensus {
         my_address: Option<Address>,
     ) -> Self {
         let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
-        let validators_map: HashMap<Address, ValidatorInfo> =
-            validators.into_iter().map(|v| (v.pubkey.to_address(), v)).collect();
+        let validators_map: HashMap<Address, ValidatorInfo> = validators
+            .into_iter()
+            .map(|v| (v.pubkey.to_address(), v))
+            .collect();
 
         HotStuffConsensus {
             current_phase: Phase::Propose,
@@ -160,11 +159,8 @@ impl HotStuffConsensus {
         self.verify_vote(&vote)?;
 
         // Store vote
-        let phase_votes = self
-            .votes
-            .entry(vote.phase.clone())
-            .or_insert_with(HashMap::new);
-        let block_votes = phase_votes.entry(vote.block_hash).or_insert_with(Vec::new);
+        let phase_votes = self.votes.entry(vote.phase.clone()).or_default();
+        let block_votes = phase_votes.entry(vote.block_hash).or_default();
         block_votes.push(vote.clone());
 
         // Check for quorum (calculate stake and check threshold before any other borrows)
@@ -208,10 +204,7 @@ impl HotStuffConsensus {
                         {
                             // Finalize!
                             self.finalized_slot = parent_slot;
-                            println!(
-                                "FINALIZED slot {} block {:?}",
-                                parent_slot, vote.block_hash
-                            );
+                            println!("FINALIZED slot {} block {:?}", parent_slot, vote.block_hash);
                         }
                     }
 
@@ -246,7 +239,7 @@ impl HotStuffConsensus {
         let mut msg = Vec::new();
         msg.extend_from_slice(block_hash.as_bytes());
         msg.extend_from_slice(&self.current_slot.to_le_bytes());
-        msg.extend_from_slice(&format!("{:?}", phase).as_bytes());
+        msg.extend_from_slice(format!("{:?}", phase).as_bytes());
 
         // Sign with BLS
         let signature = keypair.sign(&msg);
@@ -255,7 +248,7 @@ impl HotStuffConsensus {
             slot: self.current_slot,
             block_hash,
             phase,
-            validator: address.clone(),
+            validator: *address,
             validator_pubkey: validator.pubkey.clone(),
             stake: validator.stake,
             signature,
@@ -273,17 +266,13 @@ impl HotStuffConsensus {
         let mut msg = Vec::new();
         msg.extend_from_slice(vote.block_hash.as_bytes());
         msg.extend_from_slice(&vote.slot.to_le_bytes());
-        msg.extend_from_slice(&format!("{:?}", vote.phase).as_bytes());
+        msg.extend_from_slice(format!("{:?}", vote.phase).as_bytes());
 
         // Verify BLS signature
         let pubkey_bytes: [u8; 48] = validator.pubkey.as_bytes()[..48]
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid pubkey length"))?;
-        aether_crypto_bls::keypair::verify(
-            &pubkey_bytes,
-            &msg,
-            &vote.signature,
-        )?;
+        aether_crypto_bls::keypair::verify(&pubkey_bytes, &msg, &vote.signature)?;
 
         Ok(())
     }
@@ -321,6 +310,7 @@ impl HotStuffConsensus {
     }
 
     /// Check if stake reaches 2/3 quorum
+    #[cfg(test)]
     fn has_quorum(&self, stake: u128) -> bool {
         stake * 3 >= self.total_stake * 2
     }
@@ -406,11 +396,6 @@ mod tests {
     fn test_vote_counting() {
         let validators = create_test_validators(3);
         let consensus = HotStuffConsensus::new(validators.clone(), None, None);
-
-        // Test stake calculation for quorum
-        let stake1 = 1000u128;
-        let stake2 = 2000u128;
-        let total = stake1 + stake2;
 
         // 2/3 of 3000 = 2000, so we need >= 2000 for quorum
         assert!(!consensus.has_quorum(1999));

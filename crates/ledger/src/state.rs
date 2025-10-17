@@ -5,7 +5,6 @@ use aether_types::{
     Account, Address, Transaction, TransactionReceipt, TransactionStatus, Utxo, UtxoId, H256,
 };
 use anyhow::{anyhow, bail, Result};
-use std::collections::HashMap;
 
 pub struct Ledger {
     storage: Storage,
@@ -25,13 +24,14 @@ impl Ledger {
 
     fn load_state_root(&mut self) -> Result<()> {
         if let Some(_root_bytes) = self.storage.get(CF_METADATA, b"state_root")? {
-            // In production, would reconstruct tree from stored nodes
-            // For now, just note the root exists
+            // Rebuild Merkle tree from all accounts in storage
+            // This is expensive but only happens once during initialization
+            self.rebuild_merkle_tree_from_storage()?;
         }
         Ok(())
     }
 
-    pub fn state_root(&self) -> H256 {
+    pub fn state_root(&mut self) -> H256 {
         self.merkle_tree.root()
     }
 
@@ -118,7 +118,7 @@ impl Ledger {
         let mut batch = StorageBatch::new();
 
         // Update sender account
-        self.update_account_in_batch(&mut batch, sender_account)?;
+        self.update_account_in_batch(&mut batch, sender_account.clone())?;
 
         // Delete consumed UTxOs
         for input in &tx.inputs {
@@ -146,8 +146,10 @@ impl Ledger {
         // Commit batch
         self.storage.write_batch(batch)?;
 
-        // Update Merkle tree
-        self.recompute_state_root()?;
+        // Update Merkle tree incrementally (only changed account)
+        let account_hash = self.hash_account(&sender_account);
+        self.merkle_tree
+            .update(sender_account.address, account_hash);
 
         Ok(TransactionReceipt {
             tx_hash,
@@ -167,24 +169,24 @@ impl Ledger {
         Ok(())
     }
 
-    fn recompute_state_root(&mut self) -> Result<()> {
-        // Iterate all accounts and update Merkle tree
-        let mut accounts = HashMap::new();
+    /// Rebuild Merkle tree from storage (used during initialization/recovery)
+    /// This is expensive and should only be called when loading state from disk.
+    fn rebuild_merkle_tree_from_storage(&mut self) -> Result<()> {
+        // Collect all accounts from storage
+        let mut accounts = Vec::new();
         for item in self.storage.iterator(CF_ACCOUNTS)? {
             let (key_bytes, value_bytes) = item;
             if key_bytes.len() == 20 {
                 let address = Address::from_slice(&key_bytes).map_err(|e| anyhow!(e))?;
                 let account: Account = bincode::deserialize(&value_bytes)?;
                 let account_hash = self.hash_account(&account);
-                accounts.insert(address, account_hash);
+                accounts.push((address, account_hash));
             }
         }
 
-        // Rebuild Merkle tree
+        // Rebuild tree with batch update (more efficient)
         self.merkle_tree = SparseMerkleTree::new();
-        for (address, hash) in accounts {
-            self.merkle_tree.update(address, hash);
-        }
+        self.merkle_tree.batch_update(accounts);
 
         // Store new root
         let root = self.merkle_tree.root();

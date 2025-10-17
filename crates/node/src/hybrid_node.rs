@@ -48,7 +48,11 @@ pub fn create_hybrid_consensus(
     epoch_length: u64,
 ) -> Result<HybridConsensus> {
     let (my_vrf, my_bls, my_addr) = if let Some(kp) = my_keypair {
-        (Some(kp.vrf.clone()), Some(kp.bls.clone()), Some(kp.address()))
+        (
+            Some(kp.vrf.clone()),
+            Some(kp.bls.clone()),
+            Some(kp.address()),
+        )
     } else {
         (None, None, None)
     };
@@ -76,6 +80,7 @@ pub fn validator_info_from_keypair(keypair: &ValidatorKeypair, stake: u128) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_consensus::ConsensusEngine;
 
     #[test]
     fn test_validator_keypair_generation() {

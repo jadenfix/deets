@@ -58,7 +58,10 @@ fn phase1_bls_vote_aggregation() {
 
     let verified =
         verify_aggregated(&aggregated_pk, message, &aggregated_sig).expect("verify aggregated");
-    assert!(verified, "aggregated BLS signature should verify for the combined key");
+    assert!(
+        verified,
+        "aggregated BLS signature should verify for the combined key"
+    );
 }
 
 #[test]
@@ -76,7 +79,8 @@ fn phase1_simple_consensus_finality() {
         })
         .collect();
 
-    let validator_infos: Vec<ValidatorInfo> = validators.iter().map(|(_, info)| info.clone()).collect();
+    let validator_infos: Vec<ValidatorInfo> =
+        validators.iter().map(|(_, info)| info.clone()).collect();
     let mut consensus = SimpleConsensus::new(validator_infos.clone());
 
     consensus.advance_slot();
@@ -112,7 +116,7 @@ fn phase1_wasm_runtime_executes_minimal_contract() {
         timestamp: 1_000,
     };
 
-    let mut vm = WasmVm::new(10_000);
+    let mut vm = WasmVm::new(10_000).expect("VM creation succeeds");
     let result = vm
         .execute(wasm, &context, b"input")
         .expect("WASM execution succeeds");
