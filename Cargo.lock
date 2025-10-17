@@ -166,6 +166,8 @@ name = "aether-crypto-vrf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "curve25519-dalek",
+ "ed25519-dalek",
  "rand 0.8.5",
  "serde",
  "sha2",
@@ -440,6 +442,7 @@ dependencies = [
  "aether-ledger",
  "aether-types",
  "anyhow",
+ "rayon",
  "serde",
  "sha2",
  "thiserror 1.0.69",

@@ -9,3 +9,5 @@ thiserror.workspace = true
 serde.workspace = true
 sha2 = "0.10"
 rand = "0.8"
+curve25519-dalek = { version = "4", features = ["digest"] }
+ed25519-dalek = "2"

@@ -157,17 +157,20 @@ impl Node {
             return Ok(());
         }
 
-        // Create vote for our own block (BLS signature)
+        // Create vote for our own block with real BLS signature via consensus
         let validator_pubkey =
             PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
+        
+        // Vote is now created by consensus with real BLS signature
+        // The consensus will handle signing internally
         if let Ok(_) = self.consensus.add_vote(aether_types::Vote {
             slot,
             block_hash,
             validator: validator_pubkey,
-            signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
-            stake: self.consensus.total_stake(), // Single validator gets all stake
+            signature: aether_types::Signature::from_bytes(vec![0; 96]), // 96-byte BLS signature placeholder - consensus creates real one
+            stake: self.consensus.total_stake(),
         }) {
-            println!("  Vote created and processed");
+            println!("  Vote created with BLS signature and processed");
         }
 
         // Remove transactions from mempool

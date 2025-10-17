@@ -223,26 +223,38 @@ impl HybridConsensus {
             let qc = self.aggregate_votes(&votes_to_aggregate)?;
             self.qcs.insert(key, qc.clone());
 
-            // Handle phase transitions
+            // Handle phase transitions and finality
             match self.current_phase {
+                Phase::Propose => {
+                    // Quorum on proposal, advance to prevote
+                    println!("  QC formed in Propose phase, advancing to Prevote");
+                    self.advance_phase();
+                }
                 Phase::Prevote => {
                     // Lock on this block
                     self.locked_block = Some(vote.block_hash);
                     self.locked_slot = vote.slot;
+                    println!("  QC formed in Prevote phase, locked block {:?}, advancing to Precommit", vote.block_hash);
+                    self.advance_phase();
                 }
                 Phase::Precommit => {
-                    // Check 2-chain rule
+                    // Check 2-chain rule for finality
                     if let Some(parent_slot) = vote.slot.checked_sub(1) {
                         let prevote_key = (parent_slot, Phase::Prevote, vote.block_hash);
                         if self.qcs.contains_key(&prevote_key) {
-                            // Finalize parent block!
+                            // Finalize parent block via 2-chain rule!
                             self.finalized_slot = parent_slot;
-                            println!("FINALIZED slot {} block {:?}", parent_slot, vote.block_hash);
+                            println!("  FINALIZED slot {} block {:?} via 2-chain", parent_slot, vote.block_hash);
                         }
                     }
                     self.committed_slot = vote.slot;
+                    println!("  QC formed in Precommit phase, advancing to Commit");
+                    self.advance_phase();
                 }
-                _ => {}
+                Phase::Commit => {
+                    // Commit phase complete, ready for next slot
+                    println!("  QC formed in Commit phase, slot {} complete", vote.slot);
+                }
             }
 
             return Ok(Some(qc));

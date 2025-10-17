@@ -70,12 +70,12 @@ impl WasmVm {
         }
     }
 
-    /// Execute WASM bytecode
+    /// Execute WASM bytecode using Wasmtime
     pub fn execute(
         &mut self,
         wasm_bytes: &[u8],
         context: &ExecutionContext,
-        input: &[u8],
+        _input: &[u8],
     ) -> Result<ExecutionResult> {
         // Validate WASM module
         self.validate_wasm(wasm_bytes)?;
@@ -83,43 +83,67 @@ impl WasmVm {
         // Charge gas for module instantiation
         self.charge_gas(1000)?;
 
-        // In production: use Wasmtime
-        // let engine = Engine::new(&config)?;
-        // let module = Module::new(&engine, wasm_bytes)?;
-        // let mut store = Store::new(&engine, ());
-        // store.add_fuel(context.gas_limit)?;
+        // Wasmtime integration with fuel metering
+        use wasmtime::*;
 
-        // For now: simplified execution
-        let result = self.execute_simplified(wasm_bytes, context, input)?;
+        // Configure engine for deterministic execution
+        let mut config = Config::new();
+        config.consume_fuel(true); // Enable fuel metering
+        config.wasm_simd(false); // Disable SIMD (non-deterministic)
+        config.wasm_threads(false); // Disable threads
+        config.wasm_bulk_memory(true);
+        config.wasm_multi_value(true);
 
-        Ok(result)
-    }
+        let engine = Engine::new(&config)?;
+        let module = Module::new(&engine, wasm_bytes)?;
 
-    /// Simplified execution (placeholder for Wasmtime integration)
-    fn execute_simplified(
-        &mut self,
-        _wasm_bytes: &[u8],
-        context: &ExecutionContext,
-        input: &[u8],
-    ) -> Result<ExecutionResult> {
-        // Charge gas for execution
-        self.charge_gas(1000 + input.len() as u64)?;
+        // Create store with fuel limit
+        let mut store = Store::new(&engine, ());
+        store.set_fuel(context.gas_limit)?;
 
-        if input.len() > self.memory_limit {
-            bail!("input exceeds memory limit");
+        // Create linker for host functions
+        let mut linker = Linker::new(&engine);
+        
+        // Add minimal host functions (can be expanded)
+        linker.func_wrap("env", "abort", |_: i32, _: i32, _: i32, _: i32| {
+            // Contract abort - we handle this gracefully
+        })?;
+
+        // Instantiate module
+        let instance = linker.instantiate(&mut store, &module)?;
+
+        // Get the main function (typically "main" or "execute")
+        let main_fn = instance
+            .get_typed_func::<(), ()>(&mut store, "main")
+            .or_else(|_| instance.get_typed_func::<(), ()>(&mut store, "execute"))?;
+
+        // Execute with fuel tracking
+        let result = main_fn.call(&mut store, ());
+
+        // Get fuel consumed
+        let fuel_consumed = context.gas_limit - store.get_fuel()?;
+        self.gas_used += fuel_consumed;
+
+        match result {
+            Ok(_) => Ok(ExecutionResult {
+                success: true,
+                gas_used: self.gas_used,
+                return_data: Vec::new(), // Could extract from memory
+                logs: vec![],
+            }),
+            Err(e) => {
+                // Check if error is out-of-fuel
+                if e.to_string().contains("fuel") {
+                    bail!("out of gas");
+                }
+                Ok(ExecutionResult {
+                    success: false,
+                    gas_used: self.gas_used,
+                    return_data: format!("execution failed: {}", e).into_bytes(),
+                    logs: vec![],
+                })
+            }
         }
-
-        if context.gas_limit < self.gas_limit {
-            bail!("context gas limit below VM requirement");
-        }
-
-        // Simulate successful execution
-        Ok(ExecutionResult {
-            success: true,
-            gas_used: self.gas_used,
-            return_data: vec![1, 2, 3], // Placeholder
-            logs: vec![],
-        })
     }
 
     /// Validate WASM module

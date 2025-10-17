@@ -16,6 +16,8 @@
 // ENDPOINT: http://localhost:8545
 // ============================================================================
 
+pub mod backend;
 pub mod server;
 
+pub use backend::NodeRpcBackend;
 pub use server::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, JsonRpcServer, RpcBackend};

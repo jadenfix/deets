@@ -11,3 +11,4 @@ thiserror.workspace = true
 wasmtime.workspace = true
 serde.workspace = true
 sha2 = "0.10"
+rayon = "1.8"

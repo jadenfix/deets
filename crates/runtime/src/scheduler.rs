@@ -109,22 +109,20 @@ impl ParallelScheduler {
         false
     }
 
-    /// Execute batches in parallel
-    pub fn execute_parallel<F>(&self, batches: Vec<Vec<Transaction>>, mut executor: F) -> Result<()>
+    /// Execute batches in parallel using Rayon
+    /// Each batch is executed sequentially (they have dependencies),
+    /// but within each batch transactions execute in parallel
+    pub fn execute_parallel<F>(&self, batches: Vec<Vec<Transaction>>, executor: F) -> Result<()>
     where
-        F: FnMut(&Transaction) -> Result<()>,
+        F: Fn(&Transaction) -> Result<()> + Sync + Send,
     {
+        use rayon::prelude::*;
+
         // Execute each batch sequentially (batches have dependencies)
-        // Within each batch, transactions can run in parallel
-
+        // Within each batch, transactions run in parallel
         for batch in batches {
-            // In production: use rayon
-            // batch.par_iter().try_for_each(|tx| executor(tx))?;
-
-            // For now: sequential within batch
-            for tx in &batch {
-                executor(tx)?;
-            }
+            // Parallel execution within batch using rayon
+            batch.par_iter().try_for_each(|tx| executor(tx))?;
         }
 
         Ok(())

@@ -1,7 +1,11 @@
 mod config;
+mod genesis;
 mod io;
 mod jobs;
 mod keys;
+mod peers;
+mod run;
+mod snapshots;
 mod staking;
 mod status;
 mod transfers;
@@ -10,8 +14,12 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::config::load_config;
+use crate::genesis::InitGenesisCommand;
 use crate::jobs::JobCommands;
 use crate::keys::KeyCommands;
+use crate::peers::PeersCommand;
+use crate::run::RunCommand;
+use crate::snapshots::SnapshotsCommand;
 use crate::staking::StakeCommand;
 use crate::status::StatusCommand;
 use crate::transfers::TransferCommand;
@@ -31,8 +39,16 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Initialize genesis configuration
+    InitGenesis(InitGenesisCommand),
+    /// Run an Aether node
+    Run(RunCommand),
     /// Inspect chain configuration and local defaults
     Status(StatusCommand),
+    /// Query connected peers
+    Peers(PeersCommand),
+    /// Manage state snapshots
+    Snapshots(SnapshotsCommand),
     /// Generate or inspect key material
     Keys {
         #[command(subcommand)]
@@ -66,7 +82,11 @@ async fn run() -> Result<()> {
     let resolved = load_config(config_path)?;
 
     match cli.command {
+        Commands::InitGenesis(cmd) => cmd.execute(&resolved).await?,
+        Commands::Run(cmd) => cmd.execute(&resolved).await?,
         Commands::Status(cmd) => cmd.execute(&resolved).await?,
+        Commands::Peers(cmd) => cmd.execute(&resolved).await?,
+        Commands::Snapshots(cmd) => cmd.execute(&resolved).await?,
         Commands::Keys { command } => command.execute(&resolved).await?,
         Commands::Transfer(cmd) => cmd.execute(&resolved).await?,
         Commands::Stake { command } => command.execute(&resolved).await?,
