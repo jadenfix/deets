@@ -134,6 +134,9 @@ impl WasmVm {
             .get_typed_func::<(), i32>(&mut store, "execute")
             .map_err(|e| anyhow::anyhow!("No 'execute' export found: {}", e))?;
 
+        // Get memory for reading return data
+        let memory = instance.get_memory(&mut store, "memory");
+
         // Execute the contract
         let result_code = execute_func.call(&mut store, ())
             .map_err(|e| anyhow::anyhow!("Execution failed: {}", e))?;
@@ -143,15 +146,30 @@ impl WasmVm {
             .ok_or_else(|| anyhow::anyhow!("Failed to get fuel consumed"))?;
         let gas_used = context.gas_limit.saturating_sub(fuel_remaining);
 
+        // Extract return data from memory (if available)
+        let return_data = if let Some(mem) = memory {
+            // Contract can write return data to a known location (e.g., first 1KB)
+            // For now, read first 32 bytes if result_code indicates success with data
+            if result_code > 0 && result_code <= 1024 {
+                let mut data = vec![0u8; result_code as usize];
+                mem.read(&store, 0, &mut data).unwrap_or(());
+                data
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
         // Extract state from host functions
         let final_state = vm_state.lock().unwrap();
         self.storage = final_state.storage.clone();
         self.gas_used = gas_used;
 
         Ok(ExecutionResult {
-            success: result_code == 0,
+            success: result_code >= 0,  // 0 = success, positive = success with data length, negative = error
             gas_used,
-            return_data: vec![],  // TODO: Get from contract memory
+            return_data,
             logs: final_state.logs.clone(),
         })
     }
@@ -177,20 +195,129 @@ impl WasmVm {
             caller_val
         })?;
 
-        // Storage read (simplified)
-        linker.func_wrap("env", "storage_read", |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key: i32| -> i32 {
-            let state = caller.data().lock().unwrap();
-            // Charge gas
-            let _ = charge_gas_from_state(&mut caller, 200);
-            // Simplified: just return 0 for now
-            0
-        })?;
+        // Storage read - reads a value from contract storage
+        // Takes: key_ptr (i32), key_len (i32)
+        // Returns: value as i64 (first 8 bytes, or 0 if not found)
+        linker.func_wrap("env", "storage_read", 
+            |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key_ptr: i32, key_len: i32| -> i64 {
+                // Charge gas
+                if charge_gas_from_state(&mut caller, 200).is_err() {
+                    return -1; // Out of gas
+                }
 
-        // Storage write (simplified)
-        linker.func_wrap("env", "storage_write", |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key: i32, value: i32| -> i32 {
-            let _ = charge_gas_from_state(&mut caller, 5000);
-            0
-        })?;
+                // Get memory
+                let memory = match caller.get_export("memory") {
+                    Some(Extern::Memory(mem)) => mem,
+                    _ => return -1,
+                };
+
+                // Read key from memory
+                let mut key = vec![0u8; key_len as usize];
+                if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
+                    return -1;
+                }
+
+                // Read from storage
+                let state = caller.data().lock().unwrap();
+                match state.storage.get(&key) {
+                    Some(value) => {
+                        // Return first 8 bytes as i64
+                        if value.len() >= 8 {
+                            i64::from_le_bytes(value[0..8].try_into().unwrap())
+                        } else {
+                            0
+                        }
+                    }
+                    None => 0,
+                }
+            }
+        )?;
+
+        // Storage write - writes a value to contract storage
+        // Takes: key_ptr (i32), key_len (i32), value_ptr (i32), value_len (i32)
+        // Returns: 0 on success, -1 on error
+        linker.func_wrap("env", "storage_write",
+            |mut caller: Caller<'_, Arc<Mutex<VmState>>>, key_ptr: i32, key_len: i32, value_ptr: i32, value_len: i32| -> i32 {
+                // Charge base gas
+                if charge_gas_from_state(&mut caller, 5000).is_err() {
+                    return -1; // Out of gas
+                }
+
+                // Get memory
+                let memory = match caller.get_export("memory") {
+                    Some(Extern::Memory(mem)) => mem,
+                    _ => return -1,
+                };
+
+                // Read key from memory
+                let mut key = vec![0u8; key_len as usize];
+                if memory.read(&caller, key_ptr as usize, &mut key).is_err() {
+                    return -1;
+                }
+
+                // Read value from memory
+                let mut value = vec![0u8; value_len as usize];
+                if memory.read(&caller, value_ptr as usize, &mut value).is_err() {
+                    return -1;
+                }
+
+                // Check if new key (charge extra)
+                let mut state = caller.data().lock().unwrap();
+                if !state.storage.contains_key(&key) {
+                    drop(state); // Release lock before charging
+                    if charge_gas_from_state(&mut caller, 20000).is_err() {
+                        return -1; // Out of gas for new slot
+                    }
+                    state = caller.data().lock().unwrap();
+                }
+
+                // Write to storage
+                state.storage.insert(key, value);
+                0 // Success
+            }
+        )?;
+
+        // Emit log - emits a log event
+        // Takes: topics_ptr (i32), topics_count (i32), data_ptr (i32), data_len (i32)
+        // Returns: 0 on success, -1 on error
+        linker.func_wrap("env", "emit_log",
+            |mut caller: Caller<'_, Arc<Mutex<VmState>>>, topics_ptr: i32, topics_count: i32, data_ptr: i32, data_len: i32| -> i32 {
+                // Charge gas (375 base + 8 per byte)
+                let gas_cost = 375 + (8 * data_len as u64);
+                if charge_gas_from_state(&mut caller, gas_cost).is_err() {
+                    return -1;
+                }
+
+                // Get memory
+                let memory = match caller.get_export("memory") {
+                    Some(Extern::Memory(mem)) => mem,
+                    _ => return -1,
+                };
+
+                // Read topics (each topic is 32 bytes)
+                let mut topics = Vec::new();
+                for i in 0..topics_count {
+                    let mut topic_bytes = [0u8; 32];
+                    let offset = (topics_ptr + i * 32) as usize;
+                    if memory.read(&caller, offset, &mut topic_bytes).is_err() {
+                        return -1;
+                    }
+                    topics.push(H256::from_slice(&topic_bytes).unwrap());
+                }
+
+                // Read data
+                let mut data = vec![0u8; data_len as usize];
+                if memory.read(&caller, data_ptr as usize, &mut data).is_err() {
+                    return -1;
+                }
+
+                // Store log
+                let mut state = caller.data().lock().unwrap();
+                state.logs.push(Log { topics, data });
+                
+                0 // Success
+            }
+        )?;
 
         Ok(())
     }
