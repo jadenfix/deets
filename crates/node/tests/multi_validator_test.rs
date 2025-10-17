@@ -1,7 +1,7 @@
 // Multi-validator integration test for Phase 1
 // Tests HotStuff consensus with BLS aggregation across 4+ validators
 
-use aether_consensus::HybridConsensus;
+use aether_consensus::{ConsensusEngine, HybridConsensus};
 use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
 use aether_crypto_vrf::VrfKeypair;
@@ -46,7 +46,7 @@ fn test_four_validator_consensus() {
     for slot in 0..10 {
         // Each validator checks if they're the leader
         for (i, engine) in engines.iter_mut().enumerate() {
-            if let Some(vrf_proof) = engine.check_my_eligibility(slot) {
+            if let Some(_vrf_proof) = engine.check_my_eligibility(slot) {
                 println!("Slot {}: Validator {} is leader", slot, i);
                 
                 // Leader proposes block

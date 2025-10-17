@@ -5,7 +5,6 @@ use aether_types::{
     Account, Address, Transaction, TransactionReceipt, TransactionStatus, Utxo, UtxoId, H256,
 };
 use anyhow::{anyhow, bail, Result};
-use std::collections::HashMap;
 
 pub struct Ledger {
     storage: Storage,

@@ -130,7 +130,7 @@ quinn = "0.10"
 libp2p = { version = "0.53", features = ["gossipsub", "identify", "kad", "noise", "tcp", "quic"] }
 
 # Storage
-rocksdb = "0.21"
+rocksdb = { version = "0.21", features = [] }
 
 # WASM runtime
 wasmtime = "16"

@@ -196,7 +196,7 @@ impl Node {
         self.running = false;
     }
 
-    pub fn get_state_root(&self) -> H256 {
+    pub fn get_state_root(&mut self) -> H256 {
         self.ledger.state_root()
     }
 
