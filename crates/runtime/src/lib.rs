@@ -37,9 +37,13 @@
 // ============================================================================
 
 pub mod host_functions;
+pub mod ledger_state;
+pub mod runtime_state;
 pub mod scheduler;
 pub mod vm;
 
 pub use host_functions::HostFunctions;
+pub use ledger_state::LedgerRuntimeState;
+pub use runtime_state::{MockRuntimeState, RuntimeState};
 pub use scheduler::ParallelScheduler;
 pub use vm::{gas_costs, ExecutionContext, ExecutionResult, Log, WasmVm};

@@ -9,7 +9,7 @@
 // ============================================================================
 
 use aether_crypto_vrf::VrfProof;
-use aether_types::{Block, PublicKey, Slot, Vote};
+use aether_types::{Block, PublicKey, Slot, Vote, H256};
 use anyhow::Result;
 
 /// Unified interface for all consensus engines
@@ -41,6 +41,14 @@ pub trait ConsensusEngine: Send + Sync {
     /// Get VRF proof for leader eligibility (if supported)
     fn get_leader_proof(&self, _slot: Slot) -> Option<VrfProof> {
         None
+    }
+
+    /// Create a vote for the given block hash, if this node is a validator.
+    /// Implementations should sign the vote using the consensus-specific scheme
+    /// (BLS for HybridConsensus, ed25519 for simple consensus) and return it so
+    /// callers can broadcast/process it locally.
+    fn create_vote(&self, _block_hash: H256) -> Result<Option<Vote>> {
+        Ok(None)
     }
 }
 

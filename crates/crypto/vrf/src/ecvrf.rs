@@ -354,7 +354,7 @@ mod tests {
     fn test_vrf_wrong_key_fails() {
         let keypair1 = VrfKeypair::generate();
         let keypair2 = VrfKeypair::generate();
-        
+
         let input = b"test input";
         let proof = keypair1.prove(input);
 

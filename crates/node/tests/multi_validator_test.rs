@@ -13,7 +13,7 @@ fn test_four_validator_consensus() {
     let mut validators = Vec::new();
     let mut bls_keys = Vec::new();
     let mut vrf_keys = Vec::new();
-    
+
     for _ in 0..4 {
         let keypair = Keypair::generate();
         let validator = ValidatorInfo {
@@ -33,8 +33,8 @@ fn test_four_validator_consensus() {
             let addr = validators[i].pubkey.to_address();
             HybridConsensus::new(
                 validators.clone(),
-                0.8,  // tau
-                100,  // epoch_length
+                0.8, // tau
+                100, // epoch_length
                 Some(vrf_keys[i].clone()),
                 Some(bls_keys[i].clone()),
                 Some(addr),
@@ -48,22 +48,22 @@ fn test_four_validator_consensus() {
         for (i, engine) in engines.iter_mut().enumerate() {
             if let Some(_vrf_proof) = engine.check_my_eligibility(slot) {
                 println!("Slot {}: Validator {} is leader", slot, i);
-                
+
                 // Leader proposes block
                 // Other validators vote
                 // Check quorum formation
-                
+
                 // In a real test, we'd:
                 // 1. Create and broadcast block
                 // 2. Collect votes from all validators
                 // 3. Verify QC formation
                 // 4. Advance HotStuff phases
                 // 5. Verify finality after 2-chain
-                
+
                 break;
             }
         }
-        
+
         // Advance all validators to next slot
         for engine in &mut engines {
             engine.advance_slot();
@@ -112,17 +112,23 @@ fn test_quorum_formation() {
 
     // 3 out of 4 validators (3000 stake) forms quorum
     let voting_stake = 3000u128;
-    assert!(voting_stake * 3 >= total_stake * 2, "3/4 validators should form quorum");
+    assert!(
+        voting_stake * 3 >= total_stake * 2,
+        "3/4 validators should form quorum"
+    );
 
     // 2 out of 4 validators (2000 stake) does NOT form quorum
     let voting_stake = 2000u128;
-    assert!(voting_stake * 3 < total_stake * 2, "2/4 validators should NOT form quorum");
+    assert!(
+        voting_stake * 3 < total_stake * 2,
+        "2/4 validators should NOT form quorum"
+    );
 }
 
 #[test]
 fn test_bls_signature_aggregation() {
     // Test BLS signature aggregation with 4 validators
-    use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures};
+    use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, verify_aggregated};
 
     let message = b"test block hash";
     let mut signatures = Vec::new();
@@ -133,10 +139,10 @@ fn test_bls_signature_aggregation() {
         let keypair = BlsKeypair::generate();
         let sig = keypair.sign(message);
         let pk = keypair.public_key();
-        
+
         assert_eq!(sig.len(), 96, "BLS signature should be 96 bytes");
         assert_eq!(pk.len(), 48, "BLS public key should be 48 bytes");
-        
+
         signatures.push(sig);
         pubkeys.push(pk);
     }
@@ -148,7 +154,16 @@ fn test_bls_signature_aggregation() {
     assert_eq!(agg_sig.len(), 96, "Aggregated signature should be 96 bytes");
     assert_eq!(agg_pk.len(), 48, "Aggregated public key should be 48 bytes");
 
-    println!("BLS aggregation test passed: 4 signatures → 1 signature");
+    let verified =
+        verify_aggregated(&agg_pk, message, &agg_sig).expect("verification should succeed");
+    assert!(
+        verified,
+        "Aggregated signature must verify for matching message"
+    );
+
+    println!(
+        "BLS aggregation test passed: 4 signatures → 1 signature with successful verification"
+    );
 }
 
 #[test]
@@ -161,46 +176,23 @@ fn test_hotstuff_phase_transitions() {
         active: true,
     }];
 
-    let mut consensus = HybridConsensus::new(
-        validators,
-        0.8,
-        100,
-        None,
-        None,
-        None,
-    );
+    let mut consensus = HybridConsensus::new(validators, 0.8, 100, None, None, None);
 
     // Initial phase should be Propose
-    assert_eq!(
-        format!("{:?}", consensus.current_phase()),
-        "Propose"
-    );
+    assert_eq!(format!("{:?}", consensus.current_phase()), "Propose");
 
     // Advance through phases
     consensus.advance_phase();
-    assert_eq!(
-        format!("{:?}", consensus.current_phase()),
-        "Prevote"
-    );
+    assert_eq!(format!("{:?}", consensus.current_phase()), "Prevote");
 
     consensus.advance_phase();
-    assert_eq!(
-        format!("{:?}", consensus.current_phase()),
-        "Precommit"
-    );
+    assert_eq!(format!("{:?}", consensus.current_phase()), "Precommit");
 
     consensus.advance_phase();
-    assert_eq!(
-        format!("{:?}", consensus.current_phase()),
-        "Commit"
-    );
+    assert_eq!(format!("{:?}", consensus.current_phase()), "Commit");
 
     consensus.advance_phase();
-    assert_eq!(
-        format!("{:?}", consensus.current_phase()),
-        "Propose"
-    );
+    assert_eq!(format!("{:?}", consensus.current_phase()), "Propose");
 
     println!("HotStuff phase transition test passed");
 }
-

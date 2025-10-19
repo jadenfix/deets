@@ -91,9 +91,12 @@ members = [
     "crates/tools/scorecard",
     "crates/tools/indexer",
     "crates/tools/loadgen",
-    
+
     # AI Mesh
     "ai-mesh/runtime",
+    
+    # Phase 2 integration test harness
+    "crates/phase2-tests",
     # "ai-mesh/router",
     # "ai-mesh/receipts",
     # "ai-mesh/attestation",

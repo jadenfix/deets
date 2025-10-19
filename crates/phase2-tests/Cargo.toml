@@ -1,0 +1,22 @@
+[package]
+name = "phase2-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aether-ledger = { path = "../../crates/ledger" }
+aether-runtime = { path = "../../crates/runtime" }
+aether-state-snapshots = { path = "../../crates/state/snapshots" }
+aether-state-storage = { path = "../../crates/state/storage" }
+aether-types = { path = "../../crates/types" }
+bincode = { workspace = true }
+tempfile = "3"
+wat = "1.0"
+
+[[test]]
+name = "phase2_integration"
+path = "../../tests/phase2_integration.rs"
+
+[[test]]
+name = "determinism_test"
+path = "../../tests/determinism_test.rs"

@@ -166,7 +166,7 @@ impl HybridConsensus {
     }
 
     /// Create a vote for a block (BLS signature)
-    pub fn create_vote(&self, block_hash: H256, phase: Phase) -> Result<Option<Vote>> {
+    fn create_vote_for_phase(&self, block_hash: H256, phase: Phase) -> Result<Option<Vote>> {
         let bls_keypair = match &self.my_bls_keypair {
             Some(kp) => kp,
             None => return Ok(None), // Not a validator
@@ -234,7 +234,10 @@ impl HybridConsensus {
                     // Lock on this block
                     self.locked_block = Some(vote.block_hash);
                     self.locked_slot = vote.slot;
-                    println!("  QC formed in Prevote phase, locked block {:?}, advancing to Precommit", vote.block_hash);
+                    println!(
+                        "  QC formed in Prevote phase, locked block {:?}, advancing to Precommit",
+                        vote.block_hash
+                    );
                     self.advance_phase();
                 }
                 Phase::Precommit => {
@@ -244,7 +247,10 @@ impl HybridConsensus {
                         if self.qcs.contains_key(&prevote_key) {
                             // Finalize parent block via 2-chain rule!
                             self.finalized_slot = parent_slot;
-                            println!("  FINALIZED slot {} block {:?} via 2-chain", parent_slot, vote.block_hash);
+                            println!(
+                                "  FINALIZED slot {} block {:?} via 2-chain",
+                                parent_slot, vote.block_hash
+                            );
                         }
                     }
                     self.committed_slot = vote.slot;
@@ -394,12 +400,19 @@ impl ConsensusEngine for HybridConsensus {
     fn get_leader_proof(&self, slot: Slot) -> Option<VrfProof> {
         self.check_my_eligibility(slot)
     }
+
+    fn create_vote(&self, block_hash: H256) -> Result<Option<Vote>> {
+        // Use the current phase so the signature commits to the state machine.
+        self.create_vote_for_phase(block_hash, self.current_phase.clone())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto_bls::BlsKeypair;
     use aether_crypto_primitives::Keypair;
+    use aether_crypto_vrf::VrfKeypair;
 
     fn create_test_validator(stake: u128) -> ValidatorInfo {
         let keypair = Keypair::generate();
@@ -454,5 +467,40 @@ mod tests {
         // Total stake = 3000
         // Quorum = 2/3 = 2000
         assert_eq!(consensus.total_stake, 3000);
+    }
+
+    #[test]
+    fn create_vote_returns_signed_bls_vote() {
+        let ed_keypair = Keypair::generate();
+        let validator_info = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(ed_keypair.public_key()),
+            stake: 1_000,
+            commission: 0,
+            active: true,
+        };
+
+        let address = validator_info.pubkey.to_address();
+        let vrf_keypair = VrfKeypair::generate();
+        let consensus = HybridConsensus::new(
+            vec![validator_info],
+            0.8,
+            100,
+            Some(vrf_keypair),
+            Some(BlsKeypair::generate()),
+            Some(address),
+        );
+
+        let block_hash = H256::from_slice(&[42u8; 32]).unwrap();
+        let vote = consensus
+            .create_vote(block_hash)
+            .expect("vote creation should succeed")
+            .expect("validator should be able to sign");
+
+        assert_eq!(vote.block_hash, block_hash);
+        assert_eq!(vote.signature.as_bytes().len(), 96);
+        assert!(
+            vote.signature.as_bytes().iter().any(|byte| *byte != 0),
+            "BLS signature should not be all zeros"
+        );
     }
 }

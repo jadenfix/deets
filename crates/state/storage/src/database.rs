@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub const CF_ACCOUNTS: &str = "accounts";
 pub const CF_UTXOS: &str = "utxos";
 pub const CF_MERKLE: &str = "merkle_nodes";
+pub const CF_CONTRACT_STORAGE: &str = "contract_storage";
 pub const CF_BLOCKS: &str = "blocks";
 pub const CF_RECEIPTS: &str = "receipts";
 pub const CF_METADATA: &str = "metadata";
@@ -33,6 +34,7 @@ impl Storage {
             ColumnFamilyDescriptor::new(CF_ACCOUNTS, Options::default()),
             ColumnFamilyDescriptor::new(CF_UTXOS, Options::default()),
             ColumnFamilyDescriptor::new(CF_MERKLE, Options::default()),
+            ColumnFamilyDescriptor::new(CF_CONTRACT_STORAGE, Options::default()),
             ColumnFamilyDescriptor::new(CF_BLOCKS, Options::default()),
             ColumnFamilyDescriptor::new(CF_RECEIPTS, Options::default()),
             ColumnFamilyDescriptor::new(CF_METADATA, Options::default()),
@@ -87,6 +89,14 @@ impl Storage {
             .iterator_cf(cf_handle, rocksdb::IteratorMode::Start)
             .map(|item| item.unwrap());
         Ok(Box::new(iter))
+    }
+}
+
+impl Clone for Storage {
+    fn clone(&self) -> Self {
+        Storage {
+            db: Arc::clone(&self.db),
+        }
     }
 }
 

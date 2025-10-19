@@ -59,6 +59,12 @@ impl fmt::Debug for H160 {
     }
 }
 
+impl fmt::Display for H160 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "0x{}", hex::encode(self.0))
+    }
+}
+
 pub type Address = H160;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,129 +1,87 @@
 # Aether: The AI Credits Superchain
 
 > **Turn verifiable AI compute into programmable money.**  
-> Aether fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed.
+> We are closing out Phase 2 of the roadmap by wiring the ledger, runtime, snapshots, and tooling together so Phase 3 program work can begin.
 
 ---
 
-## Why Aether
+## Phase 2 Snapshot (October 2025)
 
-- **Blazing Throughput** — QUIC transport, Turbine-style sharding, and batch crypto verification deliver >100k Ed25519 sig/s and 1.7k BLS verifications/s in acceptance tests.
-- **Provable AI** — Native support for verifiable inference pipelines: VRF leader election, KZG trace challenges, secure TEE attestations, and programmable staking/reputation.
-- **Security First** — Phase 6 security suite ships with full STRIDE/LINDDUN threat model, TLA+ consensus proofs, KES key rotation, and a remote signer architecture fit for HSM/KMS.
-- **Production Observability** — Prometheus metrics, Grafana-ready dashboards, alerting rules, and per-phase acceptance suites wired straight into CI.
-- **Developer Velocity** — Modular Rust workspace (47+ crates), clean APIs, and ready-to-run scripts for every phase of the roadmap.
+- Ledger-backed runtime execution (`LedgerRuntimeState`) applies contract storage, balance deltas, and logs atomically.
+- Chain store and receipt persistence (`crates/ledger/src/chain_store.rs`) power end-to-end integration coverage.
+- Compressed snapshots import/export round-trip ledger state into fresh stores.
+- Deterministic execution guards check ledger ordering and WASM gas usage.
+- CLI smoke flow (keygen → status → transfer → job post → delegate) keeps developer ergonomics healthy.
+- `scripts/phase2_acceptance_test.sh` bundles the entire stack into a single gate that now passes locally.
 
----
-
-## Product Pillars
-
-### 1. High-Performance Ledger
-- eUTxO++ hybrid state model with Sparse Merkle commitments
-- Fee-prioritized mempool with RBF and QoS scheduling
-- RocksDB storage tuned for high-write, low-latency workloads
-
-### 2. Secure Consensus
-- VRF-driven leader election (Ed25519 + VRF proofs)
-- HotStuff-inspired finality with BLS aggregation
-- Comprehensive slashing protection via remote signer design
-
-### 3. Verifiable AI Mesh
-- Deterministic containers for reproducible inference
-- TEE attestation pipeline (SEV-SNP / TDX simulation)
-- KZG-backed trace commitments and challenge flows
-- Reputation and staking programs purpose-built for AI providers
-
-### 4. Observability & Automation
-- Metrics for consensus, DA, networking, runtime, and AI jobs
-- Alert rules covering finality, throughput, packet loss, and peer health
-- CI matrix that enforces lint + acceptance suites for Phases 1–6
+Phase 1 remains green via `scripts/quick-check.sh`. Phases 3–7 intentionally stay untouched until Phase 2 merges.
 
 ---
 
-## Proof It Works
+## Key Components (Delivered)
 
-| Phase | Acceptance Highlights | Script |
-|-------|----------------------|--------|
-| 1 | Ledger, consensus, and mempool unit suites | `./scripts/run_phase1_acceptance.sh` |
-| 2 | Economics & system programs (staking, AMM, AIC, job escrow) | `./scripts/run_phase2_acceptance.sh` |
-| 3 | AI mesh stack (runtime, TEE, VCR, KZG, reputation) | `./scripts/run_phase3_acceptance.sh` |
-| 4 | Performance benches (Ed25519, BLS, Turbine, snapshots) | `./scripts/run_phase4_acceptance.sh` |
-| 5 | Metrics exporter + QUIC instrumentation | `./scripts/run_phase5_acceptance.sh` |
-| 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
-| 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
+- **Consensus scaffolding** – Hybrid VRF + HotStuff framework with validator accounting (`crates/consensus`).
+- **Ledger core** – UTxO + account hybrid ledger, batch signature verification, contract storage helpers (`crates/ledger`).
+- **Runtime** – Scheduler, Wasm VM, host functions, and the new ledger-backed runtime state (`crates/runtime`).
+- **State services** – RocksDB-backed storage, Sparse Merkle tree, compressed snapshot pipeline (`crates/state/*`).
+- **Tooling** – Minimal CLI (`crates/tools/cli`) plus determinism and cross-crate integration suites under `tests/`.
 
-GitHub Actions fans out across all six suites to keep every subsystem green.
+See `progress.md` for a living status board with links into each deliverable.
 
 ---
 
-## Build the Future
+## Validating the Build
+
+Run the Phase 2 acceptance harness:
 
 ```bash
-# Clone
+./scripts/phase2_acceptance_test.sh
+```
+
+The script enforces formatting, builds the workspace, runs targeted crate suites, exercises the cross-crate integration tests, checks determinism, and finishes with the CLI smoke test. All steps succeed on `feature/phase2-testing`.
+
+For a faster Phase 1 sanity sweep:
+
+```bash
+./scripts/quick-check.sh
+```
+
+---
+
+## Developer Workflow
+
+```bash
+# Clone the repo
 git clone https://github.com/jadenfix/deets.git
 cd deets
 
-# Fast sanity checks
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-./scripts/run_phase4_acceptance.sh   # performance snapshot
+# Compile everything
+cargo build --workspace
 
-# Run a node
-cargo run --release --bin aether-node
+# Run the cross-crate regression
+cargo test --test phase2_integration
+
+# Run determinism guardrails
+cargo test --test determinism_test
 ```
 
-Need data availability or AI job telemetry? Export Prometheus metrics instantly:
-
-```bash
-cargo run -p aether-metrics
-# -> visit http://localhost:9090/metrics
-```
+Both integration suites rely on temporary in-process ledgers and require no external services.
 
 ---
 
-## Architecture at a Glance
+## Roadmap (Next Up)
 
-```
-┌─────────────────────────────┐
-│          Clients            │
-│ RPC, SDK, dashboards        │
-├──────────────┬──────────────┤
-│  QUIC + gRPC │ GossipSub     │
-├──────────────┴──────────────┤
-│       Networking Layer      │
-│ Turbine shreds, DA proofs   │
-├─────────────────────────────┤
-│  Consensus & Execution      │
-│ VRF leader election         │
-│ HotStuff votes (BLS)        │
-│ eUTxO++ parallel runtime    │
-├─────────────────────────────┤
-│    AI Mesh & Programs       │
-│ Job escrow, staking, AMM    │
-│ Reputation & VCR validators │
-├─────────────────────────────┤
-│     Storage & Snapshots     │
-│ RocksDB, SMT, archive node  │
-└─────────────────────────────┘
-```
+1. Merge the Phase 2 branch after review and CI wiring.
+2. Scope Phase 3 (staking, governance, AMM, job escrow logic backed by the new runtime plumbing).
+3. Expand CI to include `scripts/phase2_acceptance_test.sh` and sketch program-level acceptance tests.
 
-Dive deeper in:
-- [`overview.md`](./overview.md) – architecture narrative  
-- [`trm.md`](./trm.md) – seven-phase technical roadmap  
-- [`docs/security/REMOTE_SIGNER.md`](./docs/security/REMOTE_SIGNER.md) – hardened key management
-
----
-
-## Roadmap
-
-- **Phase 7 – Developer Ecosystem**: TypeScript/Python SDKs, wallet integrations, launchpad tooling
-- **Mainnet Readiness**: Formal audits, fuzzing campaigns, comprehensive slashing protection
-- **AI Marketplace**: On-chain order books for inference jobs, SLA-backed payment channels
-
-Stay tuned on our community channels (coming soon) to capture devnet access and validator slots the moment they open.
+For the full seven-phase roadmap and architectural context, check:
+- `overview.md`
+- `trm.md`
+- `IMPLEMENTATION_ROADMAP.md`
 
 ---
 
 ## License
 
-Apache 2.0 – Build, fork, and deploy with confidence.
+Apache 2.0 – build, fork, and deploy with confidence.

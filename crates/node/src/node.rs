@@ -1,10 +1,13 @@
 use aether_consensus::ConsensusEngine;
 use aether_crypto_primitives::Keypair;
-use aether_ledger::Ledger;
+use aether_ledger::{ChainStore, Ledger};
 use aether_mempool::Mempool;
 use aether_state_storage::Storage;
-use aether_types::{Block, PublicKey, Slot, Transaction, H256};
+use aether_types::{
+    Block, PublicKey, Slot, Transaction, TransactionReceipt, TransactionStatus, H256,
+};
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::time;
@@ -19,6 +22,7 @@ pub struct Node {
     running: bool,
     poh: PohRecorder,
     last_poh_metrics: Option<PohMetrics>,
+    chain_store: ChainStore,
 }
 
 impl Node {
@@ -30,6 +34,7 @@ impl Node {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
         let mempool = Mempool::new();
+        let chain_store = ChainStore::new(ledger.storage());
 
         Ok(Node {
             ledger,
@@ -39,6 +44,7 @@ impl Node {
             running: false,
             poh: PohRecorder::new(),
             last_poh_metrics: None,
+            chain_store,
         })
     }
 
@@ -106,10 +112,13 @@ impl Node {
         println!("  Including {} transactions", transactions.len());
 
         // Apply transactions to ledger
-        let receipts = self.ledger.apply_block_transactions(&transactions)?;
+        let mut receipts = self
+            .ledger
+            .apply_block_transactions(&transactions)
+            .context("failed to execute transactions for block")?;
         let successful = receipts
             .iter()
-            .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
+            .filter(|r| matches!(r.status, TransactionStatus::Success))
             .count();
 
         if !transactions.is_empty() {
@@ -119,6 +128,12 @@ impl Node {
                 receipts.len() - successful
             );
         }
+
+        let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
+        let transactions_root = compute_transactions_root(&transactions);
+        let receipts_root =
+            compute_receipts_root(&receipts).context("failed to compute receipts root")?;
+        let state_root = self.ledger.state_root();
 
         // Get VRF proof from consensus (proves leader eligibility)
         let vrf_proof_crypto = self.consensus.get_leader_proof(slot);
@@ -136,10 +151,9 @@ impl Node {
         };
 
         // Create block with VRF proof
-        let state_root = self.ledger.state_root();
         let proposer = self.validator_key.as_ref().unwrap().to_address();
 
-        let block = Block::new(
+        let mut block = Block::new(
             slot,
             H256::zero(), // parent hash - would track in production
             aether_types::Address::from_slice(&proposer).unwrap(),
@@ -147,9 +161,19 @@ impl Node {
             transactions.clone(),
         );
 
+        block.header.state_root = state_root;
+        block.header.transactions_root = transactions_root;
+        block.header.receipts_root = receipts_root;
+
         let block_hash = block.hash();
         println!("  Block produced: {:?}", block_hash);
         println!("  State root: {}", state_root);
+
+        for receipt in receipts.iter_mut() {
+            receipt.block_hash = block_hash;
+            receipt.slot = slot;
+            receipt.state_root = state_root;
+        }
 
         // Validate our own block
         if let Err(e) = self.consensus.validate_block(&block) {
@@ -157,24 +181,20 @@ impl Node {
             return Ok(());
         }
 
-        // Create vote for our own block with real BLS signature via consensus
-        let validator_pubkey =
-            PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
-        
-        // Vote is now created by consensus with real BLS signature
-        // The consensus will handle signing internally
-        if let Ok(_) = self.consensus.add_vote(aether_types::Vote {
-            slot,
-            block_hash,
-            validator: validator_pubkey,
-            signature: aether_types::Signature::from_bytes(vec![0; 96]), // 96-byte BLS signature placeholder - consensus creates real one
-            stake: self.consensus.total_stake(),
-        }) {
-            println!("  Vote created with BLS signature and processed");
+        self.chain_store
+            .store_block(&block, &receipts)
+            .context("failed to persist block and receipts")?;
+
+        // Ask the consensus engine to produce a signed vote for this block.
+        if let Some(mut vote) = self.consensus.create_vote(block_hash)? {
+            // Defensive: ensure vote references the block we just produced.
+            vote.slot = slot;
+            vote.block_hash = block_hash;
+            self.consensus.add_vote(vote)?;
+            println!("  Vote created with consensus signing and processed");
         }
 
         // Remove transactions from mempool
-        let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
 
         Ok(())
@@ -207,6 +227,56 @@ impl Node {
     pub fn poh_metrics(&self) -> Option<&PohMetrics> {
         self.last_poh_metrics.as_ref()
     }
+}
+
+fn compute_transactions_root(transactions: &[Transaction]) -> H256 {
+    let hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
+    merkle_root(hashes)
+}
+
+fn compute_receipts_root(receipts: &[TransactionReceipt]) -> Result<H256> {
+    let mut leaves = Vec::with_capacity(receipts.len());
+
+    for receipt in receipts {
+        let mut normalized = receipt.clone();
+        normalized.block_hash = H256::zero();
+
+        let encoded = bincode::serialize(&normalized)
+            .context("failed to serialize receipt during receipts root computation")?;
+        leaves.push(hash_data(&encoded));
+    }
+
+    Ok(merkle_root(leaves))
+}
+
+fn hash_data(bytes: &[u8]) -> H256 {
+    let digest = Sha256::digest(bytes);
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(digest.as_slice());
+    H256(arr)
+}
+
+fn merkle_root(mut leaves: Vec<H256>) -> H256 {
+    if leaves.is_empty() {
+        return H256::zero();
+    }
+
+    while leaves.len() > 1 {
+        let mut next = Vec::with_capacity((leaves.len() + 1) / 2);
+        for pair in leaves.chunks(2) {
+            let mut combined = Vec::with_capacity(64);
+            combined.extend_from_slice(pair[0].as_bytes());
+            if pair.len() == 2 {
+                combined.extend_from_slice(pair[1].as_bytes());
+            } else {
+                combined.extend_from_slice(pair[0].as_bytes());
+            }
+            next.push(hash_data(&combined));
+        }
+        leaves = next;
+    }
+
+    leaves.pop().unwrap()
 }
 
 #[cfg(test)]

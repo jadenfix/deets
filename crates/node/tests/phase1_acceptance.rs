@@ -8,7 +8,7 @@ use aether_crypto_bls::{verify_aggregated, BlsKeypair};
 use aether_crypto_primitives::Keypair;
 use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair};
 use aether_quic_transport::{connection::QuicConnection, QuicEndpoint};
-use aether_runtime::{ExecutionContext, ParallelScheduler, WasmVm};
+use aether_runtime::{ExecutionContext, MockRuntimeState, ParallelScheduler, WasmVm};
 use aether_types::{
     Address, PublicKey, Signature, Slot, Transaction, UtxoOutput, ValidatorInfo, Vote, H160, H256,
 };
@@ -106,7 +106,8 @@ fn phase1_simple_consensus_finality() {
 
 #[test]
 fn phase1_wasm_runtime_executes_minimal_contract() {
-    let wasm = b"\0asm\x01\x00\x00\x00";
+    let wasm = wat::parse_str("(module (memory (export \"memory\") 1) (func (export \"main\")))")
+        .expect("valid wasm");
     let context = ExecutionContext {
         contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
         caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -117,8 +118,9 @@ fn phase1_wasm_runtime_executes_minimal_contract() {
     };
 
     let mut vm = WasmVm::new(10_000);
+    let mut state = MockRuntimeState::new();
     let result = vm
-        .execute(wasm, &context, b"input")
+        .execute(&wasm, &context, b"input", &mut state)
         .expect("WASM execution succeeds");
 
     assert!(result.success);

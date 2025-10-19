@@ -1,10 +1,12 @@
 use aether_crypto_primitives::ed25519;
 use aether_state_merkle::SparseMerkleTree;
-use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
+use aether_state_storage::{
+    Storage, StorageBatch, CF_ACCOUNTS, CF_CONTRACT_STORAGE, CF_METADATA, CF_UTXOS,
+};
 use aether_types::{
     Account, Address, Transaction, TransactionReceipt, TransactionStatus, Utxo, UtxoId, H256,
 };
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
 pub struct Ledger {
     storage: Storage,
@@ -20,6 +22,10 @@ impl Ledger {
 
         ledger.load_state_root()?;
         Ok(ledger)
+    }
+
+    pub fn storage(&self) -> Storage {
+        self.storage.clone()
     }
 
     fn load_state_root(&mut self) -> Result<()> {
@@ -148,7 +154,8 @@ impl Ledger {
 
         // Update Merkle tree incrementally (only changed account)
         let account_hash = self.hash_account(&sender_account);
-        self.merkle_tree.update(sender_account.address, account_hash);
+        self.merkle_tree
+            .update(sender_account.address, account_hash);
 
         Ok(TransactionReceipt {
             tx_hash,
@@ -253,6 +260,105 @@ impl Ledger {
 
         Ok(receipts)
     }
+
+    pub fn get_contract_storage(&self, contract: &Address, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let composite = contract_storage_key(contract, key);
+        self.storage
+            .get(CF_CONTRACT_STORAGE, &composite)
+            .context("failed to read contract storage value")
+    }
+
+    pub fn set_contract_storage(
+        &mut self,
+        contract: &Address,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<()> {
+        let composite = contract_storage_key(contract, &key);
+        self.storage
+            .put(CF_CONTRACT_STORAGE, &composite, &value)
+            .context("failed to write contract storage value")
+    }
+
+    pub fn apply_balance_delta(&mut self, address: &Address, delta: i128) -> Result<Account> {
+        if delta == 0 {
+            return self.get_or_create_account(address);
+        }
+
+        let mut account = self.get_or_create_account(address)?;
+        if delta < 0 {
+            let amount = (-delta) as u128;
+            if account.balance < amount {
+                bail!("balance underflow for address {:?}", address);
+            }
+            account.balance -= amount;
+        } else {
+            account.balance = account
+                .balance
+                .checked_add(delta as u128)
+                .ok_or_else(|| anyhow!("balance overflow for address {:?}", address))?;
+        }
+
+        self.persist_account(&account)?;
+        Ok(account)
+    }
+
+    pub fn update_account_storage_root(&mut self, address: &Address) -> Result<Account> {
+        let mut account = self.get_or_create_account(address)?;
+        account.storage_root = self.compute_contract_storage_root(address)?;
+        self.persist_account(&account)?;
+        Ok(account)
+    }
+
+    fn persist_account(&mut self, account: &Account) -> Result<()> {
+        let mut batch = StorageBatch::new();
+        self.update_account_in_batch(&mut batch, account.clone())?;
+        self.storage.write_batch(batch)?;
+
+        let account_hash = self.hash_account(account);
+        self.merkle_tree.update(account.address, account_hash);
+        Ok(())
+    }
+
+    fn compute_contract_storage_root(&self, contract: &Address) -> Result<H256> {
+        use sha2::{Digest, Sha256};
+
+        let prefix = contract.as_bytes();
+        let mut entry_hashes = Vec::new();
+
+        for (key_bytes, value_bytes) in self.storage.iterator(CF_CONTRACT_STORAGE)? {
+            if !key_bytes.starts_with(prefix) {
+                continue;
+            }
+
+            let key_suffix = &key_bytes[prefix.len()..];
+            let mut leaf_hasher = Sha256::new();
+            leaf_hasher.update(key_suffix);
+            leaf_hasher.update(value_bytes.as_ref());
+            entry_hashes.push(leaf_hasher.finalize().to_vec());
+        }
+
+        if entry_hashes.is_empty() {
+            return Ok(H256::zero());
+        }
+
+        entry_hashes.sort();
+
+        let mut root_hasher = Sha256::new();
+        for hash in entry_hashes {
+            root_hasher.update(&hash);
+        }
+
+        let digest = root_hasher.finalize();
+        H256::from_slice(&digest).map_err(|_| anyhow!("invalid storage root hash"))
+    }
+}
+
+fn contract_storage_key(contract: &Address, key: &[u8]) -> Vec<u8> {
+    let mut composite = Vec::with_capacity(contract.as_bytes().len() + key.len());
+    composite.extend_from_slice(contract.as_bytes());
+    composite.extend_from_slice(key);
+    composite
 }
 
 #[cfg(test)]
