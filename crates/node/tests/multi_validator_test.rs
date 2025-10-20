@@ -76,7 +76,7 @@ fn test_four_validator_consensus() {
 #[test]
 fn test_quorum_formation() {
     // Test that 2/3+ stake forms valid quorum
-    let validators = vec![
+    let validators = [
         ValidatorInfo {
             pubkey: PublicKey::from_bytes(Keypair::generate().public_key()),
             stake: 1000,

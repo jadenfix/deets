@@ -53,7 +53,7 @@ fn contract_storage_and_chain_store_cooperate() {
         state_root: ledger.state_root(),
     };
     chain_store
-        .store_block(&block, &[receipt.clone()])
+        .store_block(&block, std::slice::from_ref(&receipt))
         .expect("block stored");
 
     let fetched = chain_store

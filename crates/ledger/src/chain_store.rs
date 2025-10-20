@@ -152,7 +152,7 @@ mod tests {
         let receipt = sample_receipt(tx_hash, block_hash, block.header.slot);
 
         store
-            .store_block(&block, &[receipt.clone()])
+            .store_block(&block, std::slice::from_ref(&receipt))
             .expect("store block");
 
         let fetched_block = store

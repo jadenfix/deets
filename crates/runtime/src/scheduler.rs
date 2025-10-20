@@ -120,9 +120,10 @@ impl ParallelScheduler {
 
         // Execute each batch sequentially (batches have dependencies)
         // Within each batch, transactions run in parallel
+        let exec = &executor;
         for batch in batches {
             // Parallel execution within batch using rayon
-            batch.par_iter().try_for_each(|tx| executor(tx))?;
+            batch.par_iter().try_for_each(exec)?;
         }
 
         Ok(())

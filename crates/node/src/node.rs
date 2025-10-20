@@ -262,7 +262,7 @@ fn merkle_root(mut leaves: Vec<H256>) -> H256 {
     }
 
     while leaves.len() > 1 {
-        let mut next = Vec::with_capacity((leaves.len() + 1) / 2);
+        let mut next = Vec::with_capacity(leaves.len().div_ceil(2));
         for pair in leaves.chunks(2) {
             let mut combined = Vec::with_capacity(64);
             combined.extend_from_slice(pair[0].as_bytes());

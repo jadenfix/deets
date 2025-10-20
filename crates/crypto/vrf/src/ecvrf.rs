@@ -20,7 +20,6 @@ use sha2::{Digest, Sha512};
 /// 3. Generate NIZK proof (c, s) proving discrete log
 /// 4. Output = hash(gamma)
 /// 5. Proof = (gamma, c, s)
-
 const SUITE: u8 = 0x04; // ECVRF-EDWARDS25519-SHA512-ELL2
 
 #[derive(Clone, Debug)]
@@ -168,7 +167,7 @@ fn edwards_from_verifying_key(public: &VerifyingKey) -> EdwardsPoint {
 fn hash_to_curve(input: &[u8], public: &VerifyingKey) -> EdwardsPoint {
     // ECVRF-EDWARDS25519-SHA512-ELL2 hash-to-curve
     let mut hasher = Sha512::new();
-    hasher.update(&[SUITE, 0x01]); // suite_string || 0x01
+    hasher.update([SUITE, 0x01]); // suite_string || 0x01
     hasher.update(public.as_bytes());
     hasher.update(input);
     let hash = hasher.finalize();
@@ -179,7 +178,7 @@ fn hash_to_curve(input: &[u8], public: &VerifyingKey) -> EdwardsPoint {
     point_bytes[31] &= 0x7F; // Clear sign bit
 
     let compressed = curve25519_dalek::edwards::CompressedEdwardsY(point_bytes);
-    compressed.decompress().unwrap_or(EdwardsPoint::default()) * Scalar::from(8u8)
+    compressed.decompress().unwrap_or_default() * Scalar::from(8u8)
 }
 
 fn nonce_generation(secret: &SigningKey, h: &EdwardsPoint) -> Scalar {
@@ -198,7 +197,7 @@ fn challenge_generation(
     k_h: &EdwardsPoint,
 ) -> Scalar {
     let mut hasher = Sha512::new();
-    hasher.update(&[SUITE, 0x02]); // suite_string || 0x02
+    hasher.update([SUITE, 0x02]); // suite_string || 0x02
     hasher.update(public.as_bytes());
     hasher.update(h.compress().as_bytes());
     hasher.update(gamma.compress().as_bytes());
@@ -213,7 +212,7 @@ fn challenge_generation(
 
 fn proof_to_hash(gamma: &EdwardsPoint) -> [u8; 32] {
     let mut hasher = Sha512::new();
-    hasher.update(&[SUITE, 0x03]); // suite_string || 0x03
+    hasher.update([SUITE, 0x03]); // suite_string || 0x03
     hasher.update(gamma.compress().as_bytes());
     let hash = hasher.finalize();
 

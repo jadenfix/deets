@@ -6,6 +6,10 @@ use anyhow::{anyhow, Result};
 
 use crate::runtime_state::RuntimeState;
 
+type ContractKey = (Address, Vec<u8>);
+type StorageUpdate = (Vec<u8>, Vec<u8>);
+type EventLog = (Address, Vec<H256>, Vec<u8>);
+
 /// Ledger-backed Runtime State
 ///
 /// Provides contract execution with access to persistent blockchain state.
@@ -13,9 +17,9 @@ use crate::runtime_state::RuntimeState;
 pub struct LedgerRuntimeState<'a> {
     ledger: &'a mut Ledger,
     base_state_root: H256,
-    pending_storage: HashMap<(Address, Vec<u8>), Vec<u8>>,
+    pending_storage: HashMap<ContractKey, Vec<u8>>,
     pending_balances: HashMap<Address, i128>,
-    logs: Vec<(Address, Vec<H256>, Vec<u8>)>,
+    logs: Vec<EventLog>,
 }
 
 impl<'a> LedgerRuntimeState<'a> {
@@ -32,7 +36,7 @@ impl<'a> LedgerRuntimeState<'a> {
 
     /// Commit all pending changes to the ledger.
     /// This applies storage writes, balance deltas, and returns collected logs.
-    pub fn commit(mut self) -> Result<Vec<(Address, Vec<H256>, Vec<u8>)>> {
+    pub fn commit(mut self) -> Result<Vec<EventLog>> {
         self.apply_storage_writes()?;
         self.apply_balance_deltas()?;
         Ok(self.logs)
@@ -53,7 +57,7 @@ impl<'a> LedgerRuntimeState<'a> {
             return Ok(());
         }
 
-        let mut by_contract: HashMap<Address, Vec<(Vec<u8>, Vec<u8>)>> = HashMap::new();
+        let mut by_contract: HashMap<Address, Vec<StorageUpdate>> = HashMap::new();
         for ((contract, key), value) in self.pending_storage.drain() {
             by_contract.entry(contract).or_default().push((key, value));
         }

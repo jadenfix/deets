@@ -435,6 +435,7 @@ version = "0.1.0"
 dependencies = [
  "aether-consensus",
  "aether-crypto-primitives",
+ "aether-crypto-vrf",
  "aether-ledger",
  "aether-mempool",
  "aether-state-storage",

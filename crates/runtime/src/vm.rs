@@ -140,11 +140,7 @@ impl WasmVm {
                     .ok()
             });
 
-        let call_result = if let Some(main_fn) = main_fn {
-            Some(main_fn.call(&mut store, ()))
-        } else {
-            None
-        };
+        let call_result = main_fn.map(|main_fn| main_fn.call(&mut store, ()));
 
         let fuel_remaining = store.get_fuel()?;
         let fuel_consumed = context.gas_limit.saturating_sub(fuel_remaining);

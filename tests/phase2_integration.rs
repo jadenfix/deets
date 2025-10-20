@@ -69,7 +69,7 @@ fn end_to_end_state_roundtrip_across_components() {
         state_root: ledger.state_root(),
     };
     chain_store
-        .store_block(&block, &[receipt.clone()])
+        .store_block(&block, std::slice::from_ref(&receipt))
         .expect("block persisted");
 
     // Snapshot the state and import into a fresh storage instance.

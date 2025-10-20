@@ -181,8 +181,9 @@ impl RpcBackend for NodeRpcBackend {
 mod tests {
     use super::*;
     use aether_crypto_primitives::Keypair;
+    use aether_crypto_vrf::VrfProof as CryptoVrfProof;
     use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS};
-    use aether_types::{Account, PublicKey, Signature, TransactionStatus, Vote, VrfProof};
+    use aether_types::{Account, PublicKey, Signature, Vote};
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -238,7 +239,7 @@ mod tests {
             self.total_stake
         }
 
-        fn get_leader_proof(&self, _slot: u64) -> Option<VrfProof> {
+        fn get_leader_proof(&self, _slot: u64) -> Option<CryptoVrfProof> {
             None
         }
 
@@ -252,7 +253,6 @@ mod tests {
         temp_dir: TempDir,
         ledger: Arc<RwLock<Ledger>>,
         mempool: Arc<RwLock<Mempool>>,
-        consensus: Arc<RwLock<Box<dyn ConsensusEngine>>>,
         chain_store: Arc<ChainStore>,
     }
 
@@ -281,7 +281,6 @@ mod tests {
                 temp_dir,
                 ledger: ledger_arc,
                 mempool: mempool_arc,
-                consensus: consensus_arc,
                 chain_store: chain_store_arc,
             },
         )
@@ -365,7 +364,7 @@ mod tests {
             8,
             H256::zero(),
             proposer,
-            VrfProof {
+            aether_types::VrfProof {
                 output: [0u8; 32],
                 proof: vec![],
             },

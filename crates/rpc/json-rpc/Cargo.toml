@@ -22,3 +22,4 @@ aether-mempool = { path = "../../mempool" }
 tempfile = "3"
 aether-state-storage = { path = "../../state/storage" }
 aether-crypto-primitives = { path = "../../crypto/primitives" }
+aether-crypto-vrf = { path = "../../crypto/vrf" }
