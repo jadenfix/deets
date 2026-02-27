@@ -83,28 +83,71 @@ cargo run -p aether-metrics
 
 ## Architecture at a Glance
 
-```
-┌─────────────────────────────┐
-│          Clients            │
-│ RPC, SDK, dashboards        │
-├──────────────┬──────────────┤
-│  QUIC + gRPC │ GossipSub     │
-├──────────────┴──────────────┤
-│       Networking Layer      │
-│ Turbine shreds, DA proofs   │
-├─────────────────────────────┤
-│  Consensus & Execution      │
-│ VRF leader election         │
-│ HotStuff votes (BLS)        │
-│ eUTxO++ parallel runtime    │
-├─────────────────────────────┤
-│    AI Mesh & Programs       │
-│ Job escrow, staking, AMM    │
-│ Reputation & VCR validators │
-├─────────────────────────────┤
-│     Storage & Snapshots     │
-│ RocksDB, SMT, archive node  │
-└─────────────────────────────┘
+```mermaid
+graph TD
+    %% Styling
+    classDef client fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef network fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef core fill:#dfd,stroke:#333,stroke-width:2px;
+    classDef storage fill:#ddd,stroke:#333,stroke-width:2px;
+    classDef aimesh fill:#fbf,stroke:#333,stroke-width:2px;
+
+    %% Components
+    subgraph Clients["1. Interface Layer"]
+        RPC[RPC Server / gRPC]
+        SDK[Python & TS Client SDKs]
+        Apps[Web Explorer / Wallet]
+    end
+    class RPC,SDK,Apps client
+
+    subgraph Network["2. Network & Transport"]
+        TCP(GossipSub)
+        QUIC(QUIC Transport)
+        Turbine(Turbine Shredding / Data Availability)
+    end
+    class TCP,QUIC,Turbine network
+
+    subgraph Consensus["3. Execution & Consensus"]
+        VRF{VRF PoS<br/>Leader Election}
+        HotStuff[HotStuff 2-chain<br/>BLS Finality]
+        Mempool[(Priority Mempool)]
+        Runtime[eUTxO++ Parallel Execution]
+    end
+    class VRF,HotStuff,Mempool,Runtime core
+
+    subgraph AIMesh["4. Verifiable AI Network"]
+        JobEscrow((Smart Contract:<br/>Job Escrow))
+        TEE[Off-chain TEE execution]
+        KZG[KZG Trace Verification]
+        Reputation((Smart Contract:<br/>Node Reputation))
+    end
+    class JobEscrow,TEE,KZG,Reputation aimesh
+
+    subgraph State["5. Storage"]
+        Merkle[(Sparse Merkle Tree)]
+        DB[(RocksDB Column Store)]
+    end
+    class Merkle,DB storage
+
+    %% Flow
+    Apps -->|Transactions| SDK
+    SDK -->|API format| RPC
+    RPC -->|Propagate| QUIC
+    RPC -->|Subscribe/Publish| TCP
+    QUIC --> Mempool
+    
+    Mempool --> VRF
+    VRF -->|Block Proposal| Runtime
+    Runtime -->|State validation| HotStuff
+    HotStuff -->|Broadcast state| Turbine
+    
+    Runtime -->|AI job funded| JobEscrow
+    JobEscrow -->|Task Assignment| TEE
+    TEE -->|Submit result + VCR proof| KZG
+    KZG -->|Verify execution| Reputation
+    
+    HotStuff -->|Finalized tx outcomes| Merkle
+    Merkle -->|Persistence| DB
 ```
 
 Dive deeper in:
