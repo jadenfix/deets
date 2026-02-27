@@ -44,12 +44,12 @@ pub trait ConsensusEngine: Send + Sync {
     }
 }
 
-pub mod simple;
 pub mod hotstuff;
-pub mod vrf_pos;
 pub mod hybrid;
+pub mod simple;
+pub mod vrf_pos;
 
-pub use simple::SimpleConsensus;
 pub use hotstuff::HotStuffConsensus;
-pub use vrf_pos::VrfPosConsensus;
 pub use hybrid::HybridConsensus;
+pub use simple::SimpleConsensus;
+pub use vrf_pos::VrfPosConsensus;

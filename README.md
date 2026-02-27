@@ -1,7 +1,7 @@
-# Aether: The AI Credits Superchain
+# Aether: The Open-Source AI Credits Superchain
 
 > **Turn verifiable AI compute into programmable money.**  
-> Aether fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed.
+> Aether is a community-driven, open-source blockchain project that fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed. We are building the foundational infrastructure for a decentralized AI economy.
 
 ---
 
@@ -51,11 +51,6 @@
 | 5 | Metrics exporter + QUIC instrumentation | `./scripts/run_phase5_acceptance.sh` |
 | 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
 | 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
-
-**✅ State of the Repository**: 
-As of the latest commit, **the entire mono-repo test suite operates with ZERO failing tests and ZERO `clippy` linter warnings.** 
-- **109+ Rust unit and integration tests** passing cleanly.
-- **Node.js/TypeScript Functional tests** (SDK, explorer, and wallet) passing successfully.
 
 GitHub Actions fans out across all six suites to keep every subsystem green.
 
@@ -129,6 +124,18 @@ Stay tuned on our community channels (coming soon) to capture devnet access and 
 
 ---
 
+## Open Source community & Contributing
+
+Aether is proudly **open-source** and thrives on community contributions. Whether you are a Rust systems engineer, a cryptography researcher, a TypeScript UI developer, or an enthusiast writing documentation, there is a place for you here.
+
+- **Found a bug?** Open an issue to let us know.
+- **Have an idea?** Start a discussion or open a PR.
+- **Want to help?** Look for issues labeled `good first issue` or `help wanted`.
+
+Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) (coming soon) for more details on our codebase structure, how we review PRs, and our community code of conduct.
+
+---
+
 ## License
 
-Apache 2.0 – Build, fork, and deploy with confidence.
+MIT License – Build, fork, and deploy with confidence. See the [LICENSE](./LICENSE) file for more details.

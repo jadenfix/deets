@@ -1,6 +1,4 @@
-use aether_crypto_bls::{
-    aggregate_public_keys, aggregate_signatures, BlsKeypair,
-};
+use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, H256};
 use anyhow::{bail, Result};
 
@@ -101,8 +99,10 @@ impl HotStuffConsensus {
         my_address: Option<Address>,
     ) -> Self {
         let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
-        let validators_map: HashMap<Address, ValidatorInfo> =
-            validators.into_iter().map(|v| (v.pubkey.to_address(), v)).collect();
+        let validators_map: HashMap<Address, ValidatorInfo> = validators
+            .into_iter()
+            .map(|v| (v.pubkey.to_address(), v))
+            .collect();
 
         HotStuffConsensus {
             current_phase: Phase::Propose,
@@ -160,10 +160,7 @@ impl HotStuffConsensus {
         self.verify_vote(&vote)?;
 
         // Store vote
-        let phase_votes = self
-            .votes
-            .entry(vote.phase.clone())
-            .or_default();
+        let phase_votes = self.votes.entry(vote.phase.clone()).or_default();
         let block_votes = phase_votes.entry(vote.block_hash).or_default();
         block_votes.push(vote.clone());
 
@@ -208,10 +205,7 @@ impl HotStuffConsensus {
                         {
                             // Finalize!
                             self.finalized_slot = parent_slot;
-                            println!(
-                                "FINALIZED slot {} block {:?}",
-                                parent_slot, vote.block_hash
-                            );
+                            println!("FINALIZED slot {} block {:?}", parent_slot, vote.block_hash);
                         }
                     }
 
@@ -279,11 +273,7 @@ impl HotStuffConsensus {
         let pubkey_bytes: [u8; 48] = validator.pubkey.as_bytes()[..48]
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid pubkey length"))?;
-        aether_crypto_bls::keypair::verify(
-            &pubkey_bytes,
-            &msg,
-            &vote.signature,
-        )?;
+        aether_crypto_bls::keypair::verify(&pubkey_bytes, &msg, &vote.signature)?;
 
         Ok(())
     }
@@ -319,7 +309,6 @@ impl HotStuffConsensus {
             aggregated_pubkey: agg_pk,
         })
     }
-
 
     /// Check if stake reaches 2/3 quorum
     #[allow(dead_code)]
