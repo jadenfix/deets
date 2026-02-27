@@ -1,6 +1,5 @@
-use aether_crypto_primitives::Keypair;
 use aether_node::{create_hybrid_consensus, validator_info_from_keypair, Node, ValidatorKeypair};
-use aether_types::{Address, PublicKey, Signature, Transaction};
+use aether_types::{Address, Signature, Transaction};
 use std::collections::HashSet;
 
 #[tokio::main]
