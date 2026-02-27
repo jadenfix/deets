@@ -5,16 +5,9 @@
 // ============================================================================
 
 use aether_consensus::{ConsensusEngine, HybridConsensus};
-use aether_crypto_bls::BlsKeypair;
-use aether_crypto_primitives::Keypair;
-use aether_crypto_vrf::VrfKeypair;
-use aether_ledger::Ledger;
-use aether_mempool::Mempool;
 use aether_node::{create_hybrid_consensus, validator_info_from_keypair, ValidatorKeypair};
-use aether_state_storage::Storage;
-use aether_types::{Block, PublicKey, Slot, Transaction, ValidatorInfo, H256};
+use aether_types::{Block, Slot, ValidatorInfo, H256};
 use std::sync::{Arc, Mutex};
-use tempfile::TempDir;
 
 /// Simulated validator node for devnet testing
 struct ValidatorNode {
@@ -241,8 +234,6 @@ async fn phase1_single_validator_finality() {
                 };
 
                 if consensus.add_vote(vote).is_ok() {
-                    let finalized_before = consensus.finalized_slot();
-
                     // Check finality
                     if consensus.check_finality(slot) {
                         finalized_count += 1;

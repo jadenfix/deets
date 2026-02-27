@@ -398,11 +398,6 @@ mod tests {
         let validators = create_test_validators(3);
         let consensus = HotStuffConsensus::new(validators.clone(), None, None);
 
-        // Test stake calculation for quorum
-        let stake1 = 1000u128;
-        let stake2 = 2000u128;
-        let total = stake1 + stake2;
-
         // 2/3 of 3000 = 2000, so we need >= 2000 for quorum
         assert!(!consensus.has_quorum(1999));
         assert!(consensus.has_quorum(2000));

@@ -72,6 +72,37 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run --release --bin aether-node
 ```
 
+### Quick CLI Commands
+
+```bash
+# Lint/format/check in parallel
+./cli-format
+
+# Balanced test run (Rust + JS/TS lanes)
+./cli-test
+
+# Rust-only test mode
+./cli-test --rust-only
+
+# Devnet docker stack (default target)
+./cli-build
+./cli-up
+./cli-down
+
+# Test docker stack
+./cli-build --test
+./cli-up --test
+./cli-down --test --volumes
+```
+
+| Command | Purpose | Useful Flags |
+|---------|---------|--------------|
+| `./cli-test` | Runs Rust test suite and JS/TS tests, with lanes in parallel. | `--rust-only`, `--no-doc` |
+| `./cli-format` | Runs `fmt`, `clippy`, and `check` in parallel lanes. | `--help` |
+| `./cli-build` | Builds Docker images for compose stack. | `--test` |
+| `./cli-up` | Starts compose stack with `up --build -d`. | `--test` |
+| `./cli-down` | Stops compose stack with `down`. | `--test`, `--volumes` |
+
 Need data availability or AI job telemetry? Export Prometheus metrics instantly:
 
 ```bash

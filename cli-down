@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+usage() {
+  cat <<'EOF'
+Usage: ./cli-down [--test] [--volumes] [--help]
+
+Stop and remove a Docker compose stack.
+
+Options:
+  --test      Target docker-compose.test.yml instead of devnet compose.
+  --volumes   Also remove anonymous and named volumes (compose down -v).
+  --help      Show this help text.
+EOF
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required command: $cmd" >&2
+    exit 1
+  fi
+}
+
+TEST_STACK=0
+REMOVE_VOLUMES=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --test)
+      TEST_STACK=1
+      shift
+      ;;
+    --volumes)
+      REMOVE_VOLUMES=1
+      shift
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+COMPOSE_FILE="deploy/docker/docker-compose.yml"
+STACK_NAME="devnet"
+if [[ "$TEST_STACK" -eq 1 ]]; then
+  COMPOSE_FILE="docker-compose.test.yml"
+  STACK_NAME="test"
+fi
+
+require_cmd docker
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose plugin is not available." >&2
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon is unavailable. Start Docker Desktop (or the daemon) and retry." >&2
+  exit 1
+fi
+
+cmd=(docker compose -f "$COMPOSE_FILE" down)
+if [[ "$REMOVE_VOLUMES" -eq 1 ]]; then
+  cmd+=(-v)
+fi
+
+echo "Stopping ${STACK_NAME} stack (${COMPOSE_FILE})..."
+"${cmd[@]}"
+echo "Docker stack is down."
