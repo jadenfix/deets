@@ -1,7 +1,7 @@
-# Aether: The AI Credits Superchain
+# Aether: The Open-Source AI Credits Superchain
 
 > **Turn verifiable AI compute into programmable money.**  
-> Aether fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed.
+> Aether is a community-driven, open-source blockchain project that fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed. We are building the foundational infrastructure for a decentralized AI economy.
 
 ---
 
@@ -72,6 +72,37 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run --release --bin aether-node
 ```
 
+### Quick CLI Commands
+
+```bash
+# Lint/format/check in parallel
+./cli-format
+
+# Balanced test run (Rust + JS/TS lanes)
+./cli-test
+
+# Rust-only test mode
+./cli-test --rust-only
+
+# Devnet docker stack (default target)
+./cli-build
+./cli-up
+./cli-down
+
+# Test docker stack
+./cli-build --test
+./cli-up --test
+./cli-down --test --volumes
+```
+
+| Command | Purpose | Useful Flags |
+|---------|---------|--------------|
+| `./cli-test` | Runs Rust test suite and JS/TS tests, with lanes in parallel. | `--rust-only`, `--no-doc` |
+| `./cli-format` | Runs `fmt`, `clippy`, and `check` in parallel lanes. | `--help` |
+| `./cli-build` | Builds Docker images for compose stack. | `--test` |
+| `./cli-up` | Starts compose stack with `up --build -d`. | `--test` |
+| `./cli-down` | Stops compose stack with `down`. | `--test`, `--volumes` |
+
 Need data availability or AI job telemetry? Export Prometheus metrics instantly:
 
 ```bash
@@ -83,28 +114,71 @@ cargo run -p aether-metrics
 
 ## Architecture at a Glance
 
-```
-┌─────────────────────────────┐
-│          Clients            │
-│ RPC, SDK, dashboards        │
-├──────────────┬──────────────┤
-│  QUIC + gRPC │ GossipSub     │
-├──────────────┴──────────────┤
-│       Networking Layer      │
-│ Turbine shreds, DA proofs   │
-├─────────────────────────────┤
-│  Consensus & Execution      │
-│ VRF leader election         │
-│ HotStuff votes (BLS)        │
-│ eUTxO++ parallel runtime    │
-├─────────────────────────────┤
-│    AI Mesh & Programs       │
-│ Job escrow, staking, AMM    │
-│ Reputation & VCR validators │
-├─────────────────────────────┤
-│     Storage & Snapshots     │
-│ RocksDB, SMT, archive node  │
-└─────────────────────────────┘
+```mermaid
+graph TD
+    %% Styling
+    classDef client fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef network fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef core fill:#dfd,stroke:#333,stroke-width:2px;
+    classDef storage fill:#ddd,stroke:#333,stroke-width:2px;
+    classDef aimesh fill:#fbf,stroke:#333,stroke-width:2px;
+
+    %% Components
+    subgraph Clients["1. Interface Layer"]
+        RPC[RPC Server / gRPC]
+        SDK[Python & TS Client SDKs]
+        Apps[Web Explorer / Wallet]
+    end
+    class RPC,SDK,Apps client
+
+    subgraph Network["2. Network & Transport"]
+        TCP(GossipSub)
+        QUIC(QUIC Transport)
+        Turbine(Turbine Shredding / Data Availability)
+    end
+    class TCP,QUIC,Turbine network
+
+    subgraph Consensus["3. Execution & Consensus"]
+        VRF{VRF PoS<br/>Leader Election}
+        HotStuff[HotStuff 2-chain<br/>BLS Finality]
+        Mempool[(Priority Mempool)]
+        Runtime[eUTxO++ Parallel Execution]
+    end
+    class VRF,HotStuff,Mempool,Runtime core
+
+    subgraph AIMesh["4. Verifiable AI Network"]
+        JobEscrow((Smart Contract:<br/>Job Escrow))
+        TEE[Off-chain TEE execution]
+        KZG[KZG Trace Verification]
+        Reputation((Smart Contract:<br/>Node Reputation))
+    end
+    class JobEscrow,TEE,KZG,Reputation aimesh
+
+    subgraph State["5. Storage"]
+        Merkle[(Sparse Merkle Tree)]
+        DB[(RocksDB Column Store)]
+    end
+    class Merkle,DB storage
+
+    %% Flow
+    Apps -->|Transactions| SDK
+    SDK -->|API format| RPC
+    RPC -->|Propagate| QUIC
+    RPC -->|Subscribe/Publish| TCP
+    QUIC --> Mempool
+    
+    Mempool --> VRF
+    VRF -->|Block Proposal| Runtime
+    Runtime -->|State validation| HotStuff
+    HotStuff -->|Broadcast state| Turbine
+    
+    Runtime -->|AI job funded| JobEscrow
+    JobEscrow -->|Task Assignment| TEE
+    TEE -->|Submit result + VCR proof| KZG
+    KZG -->|Verify execution| Reputation
+    
+    HotStuff -->|Finalized tx outcomes| Merkle
+    Merkle -->|Persistence| DB
 ```
 
 Dive deeper in:
@@ -124,6 +198,18 @@ Stay tuned on our community channels (coming soon) to capture devnet access and 
 
 ---
 
+## Open Source community & Contributing
+
+Aether is proudly **open-source** and thrives on community contributions. Whether you are a Rust systems engineer, a cryptography researcher, a TypeScript UI developer, or an enthusiast writing documentation, there is a place for you here.
+
+- **Found a bug?** Open an issue to let us know.
+- **Have an idea?** Start a discussion or open a PR.
+- **Want to help?** Look for issues labeled `good first issue` or `help wanted`.
+
+Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) (coming soon) for more details on our codebase structure, how we review PRs, and our community code of conduct.
+
+---
+
 ## License
 
-Apache 2.0 – Build, fork, and deploy with confidence.
+MIT License – Build, fork, and deploy with confidence. See the [LICENSE](./LICENSE) file for more details.

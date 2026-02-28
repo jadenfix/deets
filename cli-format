@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+usage() {
+  cat <<'EOF'
+Usage: ./cli-format [--help]
+
+Runs formatting/lint/check lanes in parallel:
+  - cargo fmt --all -- --check
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo check --all-features --workspace
+EOF
+}
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing required command: $cmd" >&2
+    exit 1
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+require_cmd cargo
+
+lane_names=()
+lane_pids=()
+lane_logs=()
+lane_statuses=()
+
+cleanup() {
+  local pid
+  for pid in "${lane_pids[@]:-}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
+run_fmt_lane() {
+  echo "[fmt] Running cargo fmt check..."
+  cargo fmt --all -- --check
+}
+
+run_clippy_lane() {
+  echo "[clippy] Running clippy..."
+  cargo clippy --all-targets --all-features -- -D warnings
+}
+
+run_check_lane() {
+  echo "[check] Running cargo check..."
+  cargo check --all-features --workspace
+}
+
+start_lane() {
+  local lane_name="$1"
+  local lane_fn="$2"
+  local lane_log
+
+  lane_log="$(mktemp)"
+  lane_names+=("$lane_name")
+  lane_logs+=("$lane_log")
+
+  (
+    "$lane_fn"
+  ) >"$lane_log" 2>&1 &
+
+  lane_pids+=("$!")
+}
+
+trap cleanup INT TERM
+
+echo "Starting lint/format/check lanes..."
+start_lane "fmt" run_fmt_lane
+start_lane "clippy" run_clippy_lane
+start_lane "check" run_check_lane
+
+overall_status=0
+for i in "${!lane_pids[@]}"; do
+  if wait "${lane_pids[$i]}"; then
+    lane_statuses+=("0")
+  else
+    lane_statuses+=("$?")
+    overall_status=1
+  fi
+done
+
+for i in "${!lane_names[@]}"; do
+  echo
+  echo "===== ${lane_names[$i]} lane output ====="
+  cat "${lane_logs[$i]}"
+done
+
+echo
+echo "Lint lane summary:"
+for i in "${!lane_names[@]}"; do
+  if [[ "${lane_statuses[$i]}" -eq 0 ]]; then
+    echo "  [PASS] ${lane_names[$i]}"
+  else
+    echo "  [FAIL] ${lane_names[$i]} (exit ${lane_statuses[$i]})"
+  fi
+done
+
+rm -f "${lane_logs[@]}"
+exit "$overall_status"

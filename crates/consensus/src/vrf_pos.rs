@@ -1,6 +1,6 @@
 use aether_crypto_vrf::{check_leader_eligibility, VrfKeypair, VrfProof};
-use aether_types::{Address, Block, Slot, ValidatorInfo, VrfProof as TypesVrfProof, H256};
-use anyhow::{bail, Result};
+use aether_types::{Address, Block, Slot, ValidatorInfo, H256};
+use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -17,7 +17,6 @@ use std::collections::HashMap;
 /// - tau (τ): Target leader rate (e.g., 0.8 = 80% of slots have a leader)
 /// - slot_time: 500ms per slot
 /// - epoch_length: Number of slots per epoch (e.g., 43200 = 6 hours at 500ms/slot)
-
 pub struct VrfPosConsensus {
     /// Current epoch randomness
     epoch_randomness: H256,
@@ -47,8 +46,10 @@ pub struct VrfPosConsensus {
 impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
         let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
-        let validators_map: HashMap<Address, ValidatorInfo> =
-            validators.into_iter().map(|v| (v.pubkey.to_address(), v)).collect();
+        let validators_map: HashMap<Address, ValidatorInfo> = validators
+            .into_iter()
+            .map(|v| (v.pubkey.to_address(), v))
+            .collect();
 
         VrfPosConsensus {
             epoch_randomness: H256::zero(), // Genesis randomness
@@ -114,16 +115,10 @@ impl VrfPosConsensus {
         };
 
         // Verify VRF proof
-        let vrf_pubkey: [u8; 32] = validator.pubkey
-                .as_bytes()
-                [..32]
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
-        aether_crypto_vrf::verify_proof(
-            &vrf_pubkey,
-            &input,
-            &vrf_proof,
-        )?;
+        let vrf_pubkey: [u8; 32] = validator.pubkey.as_bytes()[..32]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
+        aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)?;
 
         // Check eligibility threshold
         let eligible = check_leader_eligibility(
@@ -141,7 +136,7 @@ impl VrfPosConsensus {
     pub fn advance_epoch(&mut self, seed_block_vrf_output: [u8; 32]) {
         // Compute new epoch randomness
         let mut hasher = Sha256::new();
-        hasher.update(&seed_block_vrf_output);
+        hasher.update(seed_block_vrf_output);
         let new_randomness = hasher.finalize();
 
         self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
@@ -163,7 +158,7 @@ impl VrfPosConsensus {
             // For now, just hash current randomness
             let mut hasher = Sha256::new();
             hasher.update(self.epoch_randomness.as_bytes());
-            hasher.update(&self.current_epoch.to_le_bytes());
+            hasher.update(self.current_epoch.to_le_bytes());
             let new_randomness = hasher.finalize();
 
             self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
@@ -300,9 +295,7 @@ mod tests {
 
         for slot_num in 0..trials {
             let slot: Slot = slot_num;
-            if let Ok(Some(_)) =
-                consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr)
-            {
+            if let Ok(Some(_)) = consensus.is_eligible_leader(&vrf_keypair, slot, &validator_addr) {
                 eligible_count += 1;
             }
         }

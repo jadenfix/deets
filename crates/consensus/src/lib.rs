@@ -9,7 +9,7 @@
 // ============================================================================
 
 use aether_crypto_vrf::VrfProof;
-use aether_types::{Block, PublicKey, Slot, ValidatorInfo, Vote};
+use aether_types::{Block, PublicKey, Slot, Vote};
 use anyhow::Result;
 
 /// Unified interface for all consensus engines
@@ -39,17 +39,17 @@ pub trait ConsensusEngine: Send + Sync {
     fn total_stake(&self) -> u128;
 
     /// Get VRF proof for leader eligibility (if supported)
-    fn get_leader_proof(&self, slot: Slot) -> Option<VrfProof> {
+    fn get_leader_proof(&self, _slot: Slot) -> Option<VrfProof> {
         None
     }
 }
 
-pub mod simple;
 pub mod hotstuff;
-pub mod vrf_pos;
 pub mod hybrid;
+pub mod simple;
+pub mod vrf_pos;
 
-pub use simple::SimpleConsensus;
 pub use hotstuff::HotStuffConsensus;
-pub use vrf_pos::VrfPosConsensus;
 pub use hybrid::HybridConsensus;
+pub use simple::SimpleConsensus;
+pub use vrf_pos::VrfPosConsensus;
