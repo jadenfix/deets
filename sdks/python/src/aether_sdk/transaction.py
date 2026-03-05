@@ -33,8 +33,12 @@ class Transaction:
         ensure_positive_int(self.nonce + 1, field="nonce + 1")  # nonce can be 0
         if len(self.signature) < 66:
             raise ValueError("signature must be at least 64 bytes (hex)")
+        if not self.reads:
+            self.reads.append(self.sender)
         if not self.writes:
-            self.writes.append(self.recipient)
+            self.writes.append(self.sender)
+            if self.recipient != self.sender:
+                self.writes.append(self.recipient)
 
     def hash(self) -> str:
         payload = {
@@ -51,3 +55,18 @@ class Transaction:
         }
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode())
         return "0x" + digest.hexdigest()
+
+    def to_rpc_transaction(self) -> dict:
+        return {
+            "nonce": self.nonce,
+            "sender": self.sender,
+            "sender_public_key": self.sender_public_key,
+            "recipient": self.recipient,
+            "amount": str(self.amount),
+            "fee": str(self.fee),
+            "gas_limit": self.gas_limit,
+            "memo": self.memo,
+            "reads": self.reads,
+            "writes": self.writes,
+            "signature": self.signature,
+        }

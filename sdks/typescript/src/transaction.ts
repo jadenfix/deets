@@ -29,8 +29,11 @@ export class Transaction {
     this.gasLimit = fields.gasLimit;
     this.memo = fields.memo;
     this.signature = fields.signature;
-    this.reads = [];
-    this.writes = [fields.recipient];
+    this.reads = [fields.sender];
+    this.writes =
+      fields.sender === fields.recipient
+        ? [fields.sender]
+        : [fields.sender, fields.recipient];
   }
 
   hash(): string {
@@ -65,6 +68,22 @@ export class Transaction {
       signature: this.signature,
       reads: this.reads,
       writes: this.writes,
+    };
+  }
+
+  toRpcTransaction() {
+    return {
+      nonce: this.nonce,
+      sender: this.sender,
+      sender_public_key: this.senderPublicKey,
+      recipient: this.recipient,
+      amount: this.amount.toString(),
+      fee: this.fee.toString(),
+      gas_limit: this.gasLimit,
+      memo: this.memo,
+      reads: this.reads,
+      writes: this.writes,
+      signature: this.signature,
     };
   }
 }

@@ -3,6 +3,8 @@ use aether_crypto_primitives::ed25519;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+pub const TRANSFER_PROGRAM_ID: H256 = H256([1u8; 32]);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transaction {
     pub nonce: u64,
@@ -30,6 +32,13 @@ pub struct UtxoOutput {
     pub amount: u128,
     pub owner: PublicKey,
     pub script_hash: Option<H256>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TransferPayload {
+    pub recipient: Address,
+    pub amount: u128,
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

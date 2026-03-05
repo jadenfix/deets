@@ -26,4 +26,7 @@ pub use account::{Account, Utxo};
 pub use block::{AggregatedVote, Block, BlockHeader, VrfProof};
 pub use consensus::{EpochInfo, ValidatorInfo, Vote};
 pub use primitives::{Address, Epoch, PublicKey, Signature, Slot, H160, H256};
-pub use transaction::{Transaction, TransactionReceipt, TransactionStatus, UtxoId, UtxoOutput};
+pub use transaction::{
+    Transaction, TransactionReceipt, TransactionStatus, TransferPayload, UtxoId, UtxoOutput,
+    TRANSFER_PROGRAM_ID,
+};

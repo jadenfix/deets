@@ -2,7 +2,8 @@ use aether_crypto_primitives::ed25519;
 use aether_state_merkle::SparseMerkleTree;
 use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
 use aether_types::{
-    Account, Address, Transaction, TransactionReceipt, TransactionStatus, Utxo, UtxoId, H256,
+    Account, Address, Transaction, TransactionReceipt, TransactionStatus, TransferPayload, Utxo,
+    UtxoId, H256, TRANSFER_PROGRAM_ID,
 };
 use anyhow::{anyhow, bail, Result};
 use std::collections::HashMap;
@@ -76,6 +77,11 @@ impl Ledger {
             }
         }
 
+        let transfer_payload = self.decode_transfer_payload(tx)?;
+        if transfer_payload.is_some() && (!tx.inputs.is_empty() || !tx.outputs.is_empty()) {
+            bail!("transfer program transactions cannot mix UTxO inputs/outputs");
+        }
+
         // Validate sender account
         let mut sender_account = self.get_or_create_account(&tx.sender)?;
         if sender_account.nonce != tx.nonce {
@@ -86,14 +92,34 @@ impl Ledger {
             );
         }
 
-        // Check sender has enough balance for fee
-        if sender_account.balance < tx.fee {
-            bail!("insufficient balance for fee");
+        let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
+        let total_debit = tx
+            .fee
+            .checked_add(transfer_amount)
+            .ok_or_else(|| anyhow!("fee + transfer amount overflow"))?;
+        if sender_account.balance < total_debit {
+            bail!("insufficient balance for fee and transfer amount");
         }
 
-        // Deduct fee
-        sender_account.balance -= tx.fee;
+        sender_account.balance -= total_debit;
         sender_account.nonce += 1;
+
+        let mut recipient_account: Option<Account> = None;
+        if let Some(payload) = &transfer_payload {
+            if payload.recipient == tx.sender {
+                sender_account.balance = sender_account
+                    .balance
+                    .checked_add(payload.amount)
+                    .ok_or_else(|| anyhow!("sender balance overflow"))?;
+            } else {
+                let mut recipient = self.get_or_create_account(&payload.recipient)?;
+                recipient.balance = recipient
+                    .balance
+                    .checked_add(payload.amount)
+                    .ok_or_else(|| anyhow!("recipient balance overflow"))?;
+                recipient_account = Some(recipient);
+            }
+        }
 
         // Process UTxO inputs (consume them)
         let mut total_input = 0u128;
@@ -119,6 +145,9 @@ impl Ledger {
 
         // Update sender account
         self.update_account_in_batch(&mut batch, sender_account)?;
+        if let Some(account) = recipient_account {
+            self.update_account_in_batch(&mut batch, account)?;
+        }
 
         // Delete consumed UTxOs
         for input in &tx.inputs {
@@ -158,6 +187,23 @@ impl Ledger {
             logs: vec![],
             state_root: self.state_root(),
         })
+    }
+
+    fn decode_transfer_payload(&self, tx: &Transaction) -> Result<Option<TransferPayload>> {
+        if tx.program_id != Some(TRANSFER_PROGRAM_ID) {
+            return Ok(None);
+        }
+        if tx.data.is_empty() {
+            bail!("transfer program payload is empty");
+        }
+
+        let payload: TransferPayload = bincode::deserialize(&tx.data)
+            .map_err(|e| anyhow!("invalid transfer payload encoding: {e}"))?;
+        if payload.amount == 0 {
+            bail!("transfer amount must be greater than zero");
+        }
+
+        Ok(Some(payload))
     }
 
     fn update_account_in_batch(&self, batch: &mut StorageBatch, account: Account) -> Result<()> {
@@ -258,7 +304,7 @@ impl Ledger {
 mod tests {
     use super::*;
     use aether_crypto_primitives::Keypair;
-    use aether_types::{PublicKey, Signature};
+    use aether_types::{PublicKey, Signature, TransferPayload, TRANSFER_PROGRAM_ID};
     use std::collections::HashSet;
     use tempfile::TempDir;
 
@@ -368,5 +414,55 @@ mod tests {
         if let TransactionStatus::Failed { reason } = &receipts[1].status {
             assert!(reason.contains("invalid signature"));
         }
+    }
+
+    #[test]
+    fn transfer_program_moves_balance_between_accounts() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let sender_key = Keypair::generate();
+        let sender = Address::from_slice(&sender_key.to_address()).unwrap();
+        let recipient = Address::from_slice(&[9u8; 20]).unwrap();
+
+        let mut seed_batch = StorageBatch::new();
+        seed_batch.put(
+            CF_ACCOUNTS,
+            sender.as_bytes().to_vec(),
+            bincode::serialize(&Account::with_balance(sender, 100_000)).unwrap(),
+        );
+        ledger.storage.write_batch(seed_batch).unwrap();
+
+        let payload = TransferPayload {
+            recipient,
+            amount: 1_500,
+            memo: Some("ledger test".to_string()),
+        };
+        let mut tx = Transaction {
+            nonce: 0,
+            sender,
+            sender_pubkey: PublicKey::from_bytes(sender_key.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: Some(TRANSFER_PROGRAM_ID),
+            data: bincode::serialize(&payload).unwrap(),
+            gas_limit: 21_000,
+            fee: 400,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(sender_key.sign(hash.as_bytes()));
+
+        let receipt = ledger.apply_transaction(&tx).unwrap();
+        assert!(matches!(receipt.status, TransactionStatus::Success));
+
+        let sender_after = ledger.get_account(&sender).unwrap().unwrap();
+        let recipient_after = ledger.get_account(&recipient).unwrap().unwrap();
+        assert_eq!(sender_after.nonce, 1);
+        assert_eq!(sender_after.balance, 98_100);
+        assert_eq!(recipient_after.balance, 1_500);
     }
 }
