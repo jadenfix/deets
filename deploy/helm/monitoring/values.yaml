@@ -1,0 +1,85 @@
+prometheus:
+  enabled: true
+  server:
+    retention: 30d
+    resources:
+      requests:
+        cpu: "1"
+        memory: "4Gi"
+      limits:
+        cpu: "2"
+        memory: "8Gi"
+    persistentVolume:
+      size: 50Gi
+  serverFiles:
+    alerting_rules.yml:
+      groups:
+        - name: aether.rules
+          rules:
+            - alert: FinalityLatencyHigh
+              expr: aether_consensus_finality_latency_seconds > 5
+              for: 2m
+              labels:
+                severity: critical
+              annotations:
+                summary: "Finality latency exceeds 5s"
+            - alert: LowPeerCount
+              expr: aether_p2p_peers_connected < 3
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "Peer count below 3"
+            - alert: HighPacketLoss
+              expr: aether_da_packet_loss_ratio > 0.2
+              for: 3m
+              labels:
+                severity: warning
+              annotations:
+                summary: "DA packet loss exceeds 20%"
+            - alert: ThroughputLow
+              expr: aether_runtime_tps < 1000
+              for: 5m
+              labels:
+                severity: warning
+              annotations:
+                summary: "TPS below 1000"
+  extraScrapeConfigs: |
+    - job_name: aether-validators
+      kubernetes_sd_configs:
+        - role: pod
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: "true"
+        - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: (.+);(.+)
+          replacement: $1:$2
+
+grafana:
+  enabled: true
+  # Inject via --set grafana.adminPassword=<value> or values override.
+  adminPassword: ""
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: aether
+          orgId: 1
+          folder: Aether
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/aether
+  dashboardsConfigMaps:
+    aether: aether-grafana-dashboards
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
