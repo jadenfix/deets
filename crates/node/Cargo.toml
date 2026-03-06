@@ -12,6 +12,8 @@ tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 serde.workspace = true
+bincode.workspace = true
+serde_json.workspace = true
 blake3.workspace = true
 
 aether-consensus = { path = "../consensus" }
@@ -21,6 +23,7 @@ aether-types = { path = "../types" }
 aether-crypto-primitives = { path = "../crypto/primitives" }
 aether-crypto-bls = { path = "../crypto/bls" }
 aether-crypto-vrf = { path = "../crypto/vrf" }
+aether-rpc-json = { path = "../rpc/json-rpc" }
 aether-state-storage = { path = "../state/storage" }
 
 [dev-dependencies]
