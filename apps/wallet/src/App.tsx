@@ -1,9 +1,12 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 import { AetherClient } from "@aether/sdk";
 import { Card, Metric, Section } from "@aether/ui";
 
-const client = new AetherClient("https://rpc.aether.local");
+const RPC_ENDPOINT =
+  (globalThis as { __AETHER_RPC_ENDPOINT__?: string }).__AETHER_RPC_ENDPOINT__ ??
+  "http://127.0.0.1:8545";
+const client = new AetherClient(RPC_ENDPOINT);
 
 interface TransferPreview {
   txHash: string;
@@ -11,6 +14,8 @@ interface TransferPreview {
   recipient: string;
   amount: string;
   fee: string;
+  slot: number | null;
+  mode: "live" | "offline";
 }
 
 interface JobPreview {
@@ -27,28 +32,62 @@ const DEMO_SIGNATURE = "0x" + "bb".repeat(64);
 const DEMO_RECIPIENT = "0x8b0b54d2248a3a5617b6bd8a2fd4cc8ebc0f2e90";
 
 export function App() {
-  const transferPreview = useMemo<TransferPreview>(() => {
-    const tx = client
-      .transfer()
-      .to(DEMO_RECIPIENT)
-      .amount(750_000n)
-      .memo("wallet demo")
-      .fee(2_750_000n)
-      .gasLimit(650_000)
-      .build({
-        sender: DEMO_SENDER,
-        senderPublicKey: DEMO_PUBLIC_KEY,
-        signature: DEMO_SIGNATURE,
-        nonce: 7
-      });
+  const [transferPreview, setTransferPreview] = useState<TransferPreview | null>(null);
+  const [networkStatus, setNetworkStatus] = useState("Connecting to local RPC...");
 
-    const response = client.submit(tx);
-    return {
-      txHash: response.txHash,
-      sender: DEMO_SENDER,
-      recipient: DEMO_RECIPIENT,
-      amount: "750,000 AIC",
-      fee: "2,750,000 lamports"
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTransferPreview() {
+      const tx = client
+        .transfer()
+        .to(DEMO_RECIPIENT)
+        .amount(750_000n)
+        .memo("wallet demo")
+        .fee(2_750_000n)
+        .gasLimit(650_000)
+        .build({
+          sender: DEMO_SENDER,
+          senderPublicKey: DEMO_PUBLIC_KEY,
+          signature: DEMO_SIGNATURE,
+          nonce: 7,
+        });
+
+      try {
+        const slot = await client.getSlotNumber();
+        if (cancelled) {
+          return;
+        }
+        setNetworkStatus("Live JSON-RPC (preview mode)");
+        setTransferPreview({
+          txHash: tx.hash(),
+          sender: DEMO_SENDER,
+          recipient: DEMO_RECIPIENT,
+          amount: "750,000 AIC",
+          fee: "2,750,000 lamports",
+          slot,
+          mode: "live",
+        });
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        setNetworkStatus("RPC unavailable (showing offline preview)");
+        setTransferPreview({
+          txHash: tx.hash(),
+          sender: DEMO_SENDER,
+          recipient: DEMO_RECIPIENT,
+          amount: "750,000 AIC",
+          fee: "2,750,000 lamports",
+          slot: null,
+          mode: "offline",
+        });
+      }
+    }
+
+    loadTransferPreview();
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -84,8 +123,19 @@ export function App() {
       <Card title="Wallet Overview" subtitle="Phase 7 SDK wiring">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "12px" }}>
           <Metric label="Default Endpoint" value={client.getEndpoint()} />
-          <Metric label="Demo Sender" value={`${transferPreview.sender.slice(0, 10)}…`} />
-          <Metric label="Transfer Hash" value={transferPreview.txHash.slice(0, 12) + "…"} />
+          <Metric label="Network Mode" value={networkStatus} />
+          <Metric
+            label="Demo Sender"
+            value={`${(transferPreview?.sender ?? DEMO_SENDER).slice(0, 10)}…`}
+          />
+          <Metric
+            label="Transfer Hash"
+            value={transferPreview ? transferPreview.txHash.slice(0, 12) + "…" : "pending"}
+          />
+          <Metric
+            label="Current Slot"
+            value={transferPreview?.slot != null ? String(transferPreview.slot) : "n/a"}
+          />
         </div>
       </Card>
 
@@ -93,11 +143,15 @@ export function App() {
         <Section title="Details">
           <dl style={{ display: "grid", gap: "4px", gridTemplateColumns: "auto 1fr", color: "#e5ecff" }}>
             <dt>Recipient</dt>
-            <dd style={{ margin: 0 }}>{transferPreview.recipient}</dd>
+            <dd style={{ margin: 0 }}>{transferPreview?.recipient ?? DEMO_RECIPIENT}</dd>
             <dt>Amount</dt>
-            <dd style={{ margin: 0 }}>{transferPreview.amount}</dd>
+            <dd style={{ margin: 0 }}>{transferPreview?.amount ?? "750,000 AIC"}</dd>
             <dt>Fee</dt>
-            <dd style={{ margin: 0 }}>{transferPreview.fee}</dd>
+            <dd style={{ margin: 0 }}>{transferPreview?.fee ?? "2,750,000 lamports"}</dd>
+            <dt>Submit Path</dt>
+            <dd style={{ margin: 0 }}>
+              {transferPreview?.mode === "live" ? "manual submit only" : "local fallback"}
+            </dd>
           </dl>
         </Section>
       </Card>

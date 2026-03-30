@@ -1,4 +1,4 @@
-import type { ValidatorInfo } from "../data/mock.js";
+import type { ValidatorInfo } from "../types.js";
 
 interface Props {
   validators: ValidatorInfo[];

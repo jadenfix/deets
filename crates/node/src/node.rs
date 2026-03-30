@@ -1,10 +1,14 @@
 use aether_consensus::ConsensusEngine;
+use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
 use aether_ledger::Ledger;
 use aether_mempool::Mempool;
 use aether_state_storage::Storage;
-use aether_types::{Block, PublicKey, Slot, Transaction, H256};
+use aether_types::{
+    Account, Address, Block, PublicKey, Slot, Transaction, TransactionReceipt, H256,
+};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::time;
@@ -16,9 +20,15 @@ pub struct Node {
     mempool: Mempool,
     consensus: Box<dyn ConsensusEngine>,
     validator_key: Option<Keypair>,
+    bls_key: Option<BlsKeypair>,
     running: bool,
     poh: PohRecorder,
     last_poh_metrics: Option<PohMetrics>,
+    latest_block_hash: H256,
+    latest_block_slot: Option<Slot>,
+    blocks_by_slot: HashMap<Slot, H256>,
+    blocks_by_hash: HashMap<H256, Block>,
+    receipts: HashMap<H256, TransactionReceipt>,
 }
 
 impl Node {
@@ -26,6 +36,7 @@ impl Node {
         db_path: P,
         consensus: Box<dyn ConsensusEngine>,
         validator_key: Option<Keypair>,
+        bls_key: Option<BlsKeypair>,
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
@@ -36,9 +47,15 @@ impl Node {
             mempool,
             consensus,
             validator_key,
+            bls_key,
             running: false,
             poh: PohRecorder::new(),
             last_poh_metrics: None,
+            latest_block_hash: H256::zero(),
+            latest_block_slot: None,
+            blocks_by_slot: HashMap::new(),
+            blocks_by_hash: HashMap::new(),
+            receipts: HashMap::new(),
         })
     }
 
@@ -56,18 +73,22 @@ impl Node {
         println!("Starting slot: {}", self.consensus.current_slot());
 
         while self.running {
-            self.process_slot().await?;
+            self.tick()?;
 
             // Wait for slot duration (500ms)
             time::sleep(Duration::from_millis(500)).await;
-
-            self.consensus.advance_slot();
         }
 
         Ok(())
     }
 
-    async fn process_slot(&mut self) -> Result<()> {
+    pub fn tick(&mut self) -> Result<()> {
+        self.process_slot()?;
+        self.consensus.advance_slot();
+        Ok(())
+    }
+
+    fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
 
         let metrics = self.poh.tick(Instant::now());
@@ -106,7 +127,7 @@ impl Node {
         println!("  Including {} transactions", transactions.len());
 
         // Apply transactions to ledger
-        let receipts = self.ledger.apply_block_transactions(&transactions)?;
+        let mut receipts = self.ledger.apply_block_transactions(&transactions)?;
         let successful = receipts
             .iter()
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
@@ -141,7 +162,7 @@ impl Node {
 
         let block = Block::new(
             slot,
-            H256::zero(), // parent hash - would track in production
+            self.latest_block_hash,
             aether_types::Address::from_slice(&proposer).unwrap(),
             vrf_proof,
             transactions.clone(),
@@ -160,19 +181,41 @@ impl Node {
         // Create vote for our own block (BLS signature)
         let validator_pubkey =
             PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
-        if self
-            .consensus
-            .add_vote(aether_types::Vote {
-                slot,
-                block_hash,
-                validator: validator_pubkey,
-                signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
-                stake: self.consensus.total_stake(), // Single validator gets all stake
-            })
-            .is_ok()
-        {
-            println!("  Vote created and processed");
+
+        // Sign vote with BLS keypair for valid aggregation
+        let vote_msg = {
+            let mut msg = Vec::new();
+            msg.extend_from_slice(block_hash.as_bytes());
+            msg.extend_from_slice(&slot.to_le_bytes());
+            msg
+        };
+        let vote_sig = if let Some(bls) = &self.bls_key {
+            bls.sign(&vote_msg)
+        } else {
+            vec![0u8; 96]
+        };
+
+        match self.consensus.add_vote(aether_types::Vote {
+            slot,
+            block_hash,
+            validator: validator_pubkey,
+            signature: aether_types::Signature::from_bytes(vote_sig),
+            stake: self.consensus.total_stake(), // Single validator gets all stake
+        }) {
+            Ok(()) => println!("  Vote created and processed"),
+            Err(e) => println!("  Vote failed: {e}"),
         }
+
+        for receipt in &mut receipts {
+            receipt.block_hash = block_hash;
+            receipt.slot = slot;
+            self.receipts.insert(receipt.tx_hash, receipt.clone());
+        }
+
+        self.latest_block_hash = block_hash;
+        self.latest_block_slot = Some(slot);
+        self.blocks_by_slot.insert(slot, block_hash);
+        self.blocks_by_hash.insert(block_hash, block);
 
         // Remove transactions from mempool
         let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
@@ -208,6 +251,41 @@ impl Node {
     pub fn poh_metrics(&self) -> Option<&PohMetrics> {
         self.last_poh_metrics.as_ref()
     }
+
+    pub fn current_slot(&self) -> Slot {
+        self.consensus.current_slot()
+    }
+
+    pub fn finalized_slot(&self) -> Slot {
+        self.consensus.finalized_slot()
+    }
+
+    pub fn latest_block_slot(&self) -> Option<Slot> {
+        self.latest_block_slot
+    }
+
+    pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
+        self.ledger.seed_account(address, balance)
+    }
+
+    pub fn get_block_by_slot(&self, slot: Slot) -> Option<Block> {
+        self.blocks_by_slot
+            .get(&slot)
+            .and_then(|hash| self.blocks_by_hash.get(hash))
+            .cloned()
+    }
+
+    pub fn get_block_by_hash(&self, hash: H256) -> Option<Block> {
+        self.blocks_by_hash.get(&hash).cloned()
+    }
+
+    pub fn get_transaction_receipt(&self, tx_hash: H256) -> Option<TransactionReceipt> {
+        self.receipts.get(&tx_hash).cloned()
+    }
+
+    pub fn get_account(&self, address: Address) -> Result<Option<Account>> {
+        self.ledger.get_account(&address)
+    }
 }
 
 #[cfg(test)]
@@ -226,20 +304,20 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn updates_poh_metrics_each_slot() {
+    #[test]
+    fn updates_poh_metrics_each_slot() {
         let temp_dir = TempDir::new().unwrap();
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
 
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair)).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
 
-        node.process_slot().await.unwrap();
+        node.process_slot().unwrap();
         let first_metrics = node.poh_metrics().cloned().unwrap();
         assert_eq!(first_metrics.tick_count, 1);
 
-        node.process_slot().await.unwrap();
+        node.process_slot().unwrap();
         let second_metrics = node.poh_metrics().cloned().unwrap();
         assert!(second_metrics.tick_count >= 2);
         assert!(second_metrics.average_duration_ms >= 0.0);

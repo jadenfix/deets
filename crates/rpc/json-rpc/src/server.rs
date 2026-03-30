@@ -1,7 +1,11 @@
-use aether_types::{Address, Block, TransactionReceipt, H256};
+use aether_types::{
+    Address, Block, PublicKey, Signature, Transaction, TransactionReceipt, TransferPayload, H256,
+    TRANSFER_PROGRAM_ID,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use warp::{Filter, Reply};
@@ -32,6 +36,25 @@ pub struct JsonRpcError {
     pub data: Option<Value>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct RpcTransferRequest {
+    nonce: u64,
+    sender: String,
+    #[serde(alias = "senderPublicKey")]
+    sender_public_key: String,
+    recipient: String,
+    amount: Value,
+    fee: Value,
+    #[serde(alias = "gasLimit")]
+    gas_limit: u64,
+    memo: Option<String>,
+    #[serde(default)]
+    reads: Vec<String>,
+    #[serde(default)]
+    writes: Vec<String>,
+    signature: String,
+}
+
 pub trait RpcBackend: Send + Sync {
     fn send_raw_transaction(&self, tx_bytes: Vec<u8>) -> Result<H256>;
     fn get_block_by_number(&self, block_number: u64, full_tx: bool) -> Result<Option<Block>>;
@@ -41,6 +64,12 @@ pub trait RpcBackend: Send + Sync {
     fn get_account(&self, address: Address, block_ref: Option<String>) -> Result<Option<Value>>;
     fn get_slot_number(&self) -> Result<u64>;
     fn get_finalized_slot(&self) -> Result<u64>;
+    fn get_latest_block_slot(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
+        Err(anyhow::anyhow!("airdrop not supported"))
+    }
 }
 
 pub struct JsonRpcServer<B: RpcBackend> {
@@ -69,7 +98,12 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(warp::path("health"))
             .map(|| warp::reply::json(&json!({"status": "ok"})));
 
-        let routes = rpc.or(health);
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["POST", "GET", "OPTIONS"])
+            .allow_headers(vec!["content-type"]);
+
+        let routes = rpc.or(health).with(cors);
 
         println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
         warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
@@ -98,6 +132,7 @@ async fn process_rpc_request<B: RpcBackend>(
 ) -> JsonRpcResponse {
     let result = match req.method.as_str() {
         "aeth_sendRawTransaction" => handle_send_raw_transaction(&req.params, backend).await,
+        "aeth_sendTransaction" => handle_send_transaction(&req.params, backend).await,
         "aeth_getBlockByNumber" => handle_get_block_by_number(&req.params, backend).await,
         "aeth_getBlockByHash" => handle_get_block_by_hash(&req.params, backend).await,
         "aeth_getTransactionReceipt" => handle_get_transaction_receipt(&req.params, backend).await,
@@ -105,6 +140,7 @@ async fn process_rpc_request<B: RpcBackend>(
         "aeth_getAccount" => handle_get_account(&req.params, backend).await,
         "aeth_getSlotNumber" => handle_get_slot_number(backend).await,
         "aeth_getFinalizedSlot" => handle_get_finalized_slot(backend).await,
+        "aeth_requestAirdrop" => handle_request_airdrop(&req.params, backend).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -164,6 +200,90 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
     Ok(json!(format!("{:?}", tx_hash)))
 }
 
+async fn handle_send_transaction<B: RpcBackend>(
+    params: &[Value],
+    backend: Arc<RwLock<B>>,
+) -> Result<Value, JsonRpcError> {
+    if params.is_empty() {
+        return Err(JsonRpcError {
+            code: -32602,
+            message: "Missing parameter: transaction".to_string(),
+            data: None,
+        });
+    }
+
+    let transfer: RpcTransferRequest =
+        serde_json::from_value(params[0].clone()).map_err(|e| JsonRpcError {
+            code: -32602,
+            message: format!("Invalid transaction payload: {e}"),
+            data: None,
+        })?;
+
+    let sender = parse_address(&transfer.sender, "sender")?;
+    let sender_pubkey = parse_hex_bytes(&transfer.sender_public_key, "sender_public_key")?;
+    let sender_pubkey = PublicKey::from_bytes(sender_pubkey);
+    let signature = Signature::from_bytes(parse_hex_bytes(&transfer.signature, "signature")?);
+    let recipient = parse_address(&transfer.recipient, "recipient")?;
+    let amount = parse_u128_value(&transfer.amount, "amount")?;
+    let fee = parse_u128_value(&transfer.fee, "fee")?;
+    let mut reads = parse_address_set(&transfer.reads, "reads")?;
+    let mut writes = parse_address_set(&transfer.writes, "writes")?;
+    reads.insert(sender);
+    writes.insert(sender);
+    writes.insert(recipient);
+
+    if sender_pubkey.to_address() != sender {
+        return Err(JsonRpcError {
+            code: -32602,
+            message: "sender does not match sender_public_key".to_string(),
+            data: None,
+        });
+    }
+
+    let payload = TransferPayload {
+        recipient,
+        amount,
+        memo: transfer.memo,
+    };
+    let data = bincode::serialize(&payload).map_err(|e| JsonRpcError {
+        code: -32000,
+        message: format!("Failed to encode transfer payload: {e}"),
+        data: None,
+    })?;
+
+    let tx = Transaction {
+        nonce: transfer.nonce,
+        sender,
+        sender_pubkey,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        reads,
+        writes,
+        program_id: Some(TRANSFER_PROGRAM_ID),
+        data,
+        gas_limit: transfer.gas_limit,
+        fee,
+        signature,
+    };
+
+    let tx_bytes = bincode::serialize(&tx).map_err(|e| JsonRpcError {
+        code: -32000,
+        message: format!("Failed to encode transaction: {e}"),
+        data: None,
+    })?;
+
+    let backend = backend.read().await;
+    let tx_hash = backend
+        .send_raw_transaction(tx_bytes)
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Transaction rejected: {e}"),
+            data: None,
+        })?;
+
+    Ok(json!(format!("{:?}", tx_hash)))
+}
+
 async fn handle_get_block_by_number<B: RpcBackend>(
     params: &[Value],
     backend: Arc<RwLock<B>>,
@@ -186,11 +306,19 @@ async fn handle_get_block_by_number<B: RpcBackend>(
 
     let block_number = if block_ref == "latest" {
         let backend = backend.read().await;
-        backend.get_slot_number().map_err(|e| JsonRpcError {
+        if let Some(slot) = backend.get_latest_block_slot().map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to get latest slot: {}", e),
+            message: format!("Failed to get latest block slot: {}", e),
             data: None,
-        })?
+        })? {
+            slot
+        } else {
+            backend.get_slot_number().map_err(|e| JsonRpcError {
+                code: -32000,
+                message: format!("Failed to get latest slot: {}", e),
+                data: None,
+            })?
+        }
     } else {
         block_ref.parse::<u64>().map_err(|_| JsonRpcError {
             code: -32602,
@@ -209,6 +337,52 @@ async fn handle_get_block_by_number<B: RpcBackend>(
         })?;
 
     Ok(json!(block))
+}
+
+fn parse_address(value: &str, field: &str) -> Result<Address, JsonRpcError> {
+    let bytes = parse_hex_bytes(value, field)?;
+    Address::from_slice(&bytes).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid {field} length: {e}"),
+        data: None,
+    })
+}
+
+fn parse_address_set(values: &[String], field: &str) -> Result<HashSet<Address>, JsonRpcError> {
+    let mut out = HashSet::new();
+    for value in values {
+        let addr = parse_address(value, field)?;
+        out.insert(addr);
+    }
+    Ok(out)
+}
+
+fn parse_hex_bytes(value: &str, field: &str) -> Result<Vec<u8>, JsonRpcError> {
+    hex::decode(value.trim_start_matches("0x")).map_err(|e| JsonRpcError {
+        code: -32602,
+        message: format!("Invalid {field} hex: {e}"),
+        data: None,
+    })
+}
+
+fn parse_u128_value(value: &Value, field: &str) -> Result<u128, JsonRpcError> {
+    match value {
+        Value::String(s) => s.parse::<u128>().map_err(|e| JsonRpcError {
+            code: -32602,
+            message: format!("Invalid {field}: {e}"),
+            data: None,
+        }),
+        Value::Number(n) => n.as_u64().map(u128::from).ok_or_else(|| JsonRpcError {
+            code: -32602,
+            message: format!("Invalid {field}: expected unsigned integer"),
+            data: None,
+        }),
+        _ => Err(JsonRpcError {
+            code: -32602,
+            message: format!("Invalid {field}: expected string or number"),
+            data: None,
+        }),
+    }
 }
 
 async fn handle_get_block_by_hash<B: RpcBackend>(
@@ -385,6 +559,36 @@ async fn handle_get_finalized_slot<B: RpcBackend>(
     Ok(json!(slot))
 }
 
+async fn handle_request_airdrop<B: RpcBackend>(
+    params: &[Value],
+    backend: Arc<RwLock<B>>,
+) -> Result<Value, JsonRpcError> {
+    if params.len() < 2 {
+        return Err(JsonRpcError {
+            code: -32602,
+            message: "Missing parameters: [address, amount]".to_string(),
+            data: None,
+        });
+    }
+
+    let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
+        code: -32602,
+        message: "Invalid address".to_string(),
+        data: None,
+    })?;
+    let address = parse_address(addr_hex, "address")?;
+    let amount = parse_u128_value(&params[1], "amount")?;
+
+    let backend = backend.read().await;
+    backend.request_airdrop(address, amount).map_err(|e| JsonRpcError {
+        code: -32000,
+        message: format!("Airdrop failed: {}", e),
+        data: None,
+    })?;
+
+    Ok(json!({"success": true}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +654,35 @@ mod tests {
             jsonrpc: "2.0".to_string(),
             method: "aeth_getSlotNumber".to_string(),
             params: vec![],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        assert!(response.result.is_some());
+        assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_send_transaction_payload() {
+        let backend = Arc::new(RwLock::new(MockBackend));
+        let sender_pubkey = PublicKey::from_bytes(vec![7u8; 32]);
+        let sender = sender_pubkey.to_address();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_sendTransaction".to_string(),
+            params: vec![json!({
+                "nonce": 1,
+                "sender": format!("{:?}", sender),
+                "sender_public_key": format!("0x{}", hex::encode(sender_pubkey.as_bytes())),
+                "recipient": format!("0x{}", "11".repeat(20)),
+                "amount": "1000",
+                "fee": "2000000",
+                "gas_limit": 500000,
+                "memo": "rpc test",
+                "reads": [],
+                "writes": [],
+                "signature": format!("0x{}", "22".repeat(64))
+            })],
             id: json!(1),
         };
 

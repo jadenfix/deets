@@ -10,6 +10,7 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@aether/sdk": "file:../../sdks/typescript",
     "@aether/ui": "file:../../packages/ui",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

@@ -1,4 +1,4 @@
-import type { JobInfo } from "../data/mock.js";
+import type { JobInfo } from "../types.js";
 
 interface Props {
   jobs: JobInfo[];

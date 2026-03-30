@@ -6,7 +6,7 @@ import { JobsList } from "./components/JobsList.js";
 import { ValidatorsTable } from "./components/ValidatorsTable.js";
 
 export function App() {
-  const { stats, validators, jobs } = useExplorerData();
+  const { stats, validators, jobs, source } = useExplorerData();
 
   return (
     <div style={{
@@ -19,6 +19,7 @@ export function App() {
     }}>
       <Card title="Network Overview" subtitle="Phase 7 rollout">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "12px" }}>
+          <Metric label="Data Source" value={source === "live" ? "Live RPC" : "Mock fallback"} />
           <Metric label="Slot Time" value={`${stats.slotTimeMs} ms`} hint="p95" />
           <Metric label="Finality Lag" value={`${stats.finalityLagSlots} slots`} />
           <Metric label="Throughput" value={`${stats.tps.toLocaleString()} TPS`} />

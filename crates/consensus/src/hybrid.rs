@@ -217,6 +217,23 @@ impl HybridConsensus {
         let has_quorum = voted_stake * 3 >= self.total_stake * 2;
 
         if has_quorum {
+            // Single-validator fast path: skip BLS aggregation & phase transitions
+            if self.validators.len() == 1 {
+                let qc = QuorumCertificate {
+                    slot: vote.slot,
+                    block_hash: vote.block_hash,
+                    phase: self.current_phase.clone(),
+                    total_stake: vote.stake,
+                    signers: vec![vote.validator.to_address()],
+                    aggregated_signature: vote.signature.as_bytes().to_vec(),
+                    aggregated_pubkey: vec![],
+                };
+                self.qcs.insert(key, qc.clone());
+                self.committed_slot = vote.slot;
+                self.finalized_slot = vote.slot;
+                return Ok(Some(qc));
+            }
+
             // Clone votes for aggregation to avoid borrow conflicts
             let votes_to_aggregate = votes.clone();
             // Create QC

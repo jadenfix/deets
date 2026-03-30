@@ -46,3 +46,21 @@ export interface SubmitResponse {
   txHash: string;
   accepted: boolean;
 }
+
+export interface RpcBlock {
+  header: {
+    slot: number;
+    timestamp: number;
+    proposer?: unknown;
+  };
+  transactions: unknown[];
+}
+
+export interface RpcReceipt {
+  tx_hash: unknown;
+  block_hash: unknown;
+  slot: number;
+  status: unknown;
+}
+
+export type RpcAccountState = Record<string, unknown>;

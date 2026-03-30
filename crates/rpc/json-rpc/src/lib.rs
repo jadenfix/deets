@@ -5,6 +5,7 @@
 //
 // METHODS:
 // - aeth_sendRawTransaction: Submit signed transaction
+// - aeth_sendTransaction: Submit transfer transaction payload (SDK-friendly JSON)
 // - aeth_getBlockByNumber: Get block by slot number
 // - aeth_getBlockByHash: Get block by hash
 // - aeth_getTransactionReceipt: Get transaction receipt
