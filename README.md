@@ -52,7 +52,7 @@
 | 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
 | 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
 
-GitHub Actions fans out across all six suites to keep every subsystem green.
+GitHub Actions fans out across all seven suites to keep every subsystem green.
 
 ---
 
@@ -206,7 +206,7 @@ Aether is proudly **open-source** and thrives on community contributions. Whethe
 - **Have an idea?** Start a discussion or open a PR.
 - **Want to help?** Look for issues labeled `good first issue` or `help wanted`.
 
-Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) (coming soon) for more details on our codebase structure, how we review PRs, and our community code of conduct.
+Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) for more details on our codebase structure, how we review PRs, and our community code of conduct.
 
 ---
 

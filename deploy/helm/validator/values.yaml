@@ -1,0 +1,52 @@
+replicaCount: 4
+
+image:
+  repository: aether/validator
+  tag: latest
+  pullPolicy: IfNotPresent
+
+resources:
+  requests:
+    cpu: "4"
+    memory: "16Gi"
+  limits:
+    cpu: "8"
+    memory: "32Gi"
+
+storage:
+  size: 100Gi
+  storageClass: fast-nvme
+
+ports:
+  rpc: 8545
+  p2p: 9000
+  metrics: 9090
+
+env:
+  AETHER_RPC_PORT: "8545"
+  RUST_LOG: "info"
+
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+            - key: app
+              operator: In
+              values:
+                - aether-validator
+        topologyKey: topology.kubernetes.io/zone
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8545
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8545
+  initialDelaySeconds: 10
+  periodSeconds: 5

@@ -33,7 +33,7 @@
 // - Attestation proves code integrity
 // ============================================================================
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +75,10 @@ impl AiWorker {
 
     /// Start worker loop
     pub async fn start(&mut self) -> Result<()> {
-        println!("Starting AI worker: {:?}", hex::encode(&self.config.worker_id));
+        println!(
+            "Starting AI worker: {:?}",
+            hex::encode(&self.config.worker_id)
+        );
         self.running = true;
 
         // In production:
@@ -120,7 +123,7 @@ impl AiWorker {
         // 2. Download if missing
         // 3. Verify hash
         // 4. Load into ONNX runtime
-        
+
         if model_hash.is_empty() {
             bail!("empty model hash");
         }
@@ -134,7 +137,7 @@ impl AiWorker {
         // - Disable GPU (non-deterministic)
         // - Run inference
         // - Return output tensor
-        
+
         if input.is_empty() {
             bail!("empty input");
         }
@@ -151,7 +154,7 @@ impl AiWorker {
         // 2. Record intermediate values
         // 3. Compress trace
         // 4. Return as polynomial coefficients
-        
+
         let trace = vec![1u8; 256]; // Placeholder
 
         Ok(trace)
@@ -187,7 +190,7 @@ mod tests {
     fn test_worker_creation() {
         let config = test_config();
         let worker = AiWorker::new(config);
-        
+
         assert!(!worker.is_running());
     }
 
@@ -195,20 +198,19 @@ mod tests {
     fn test_execute_job() {
         let config = test_config();
         let worker = AiWorker::new(config);
-        
+
         let job = InferenceJob {
             job_id: vec![1, 2, 3],
             model_hash: vec![4, 5, 6],
             input_data: vec![7, 8, 9],
             gas_limit: 100_000,
         };
-        
+
         let result = worker.execute_job(&job).unwrap();
-        
+
         assert_eq!(result.job_id, job.job_id);
         assert!(!result.output_data.is_empty());
         assert!(!result.execution_trace.is_empty());
         assert!(result.gas_used > 0);
     }
 }
-

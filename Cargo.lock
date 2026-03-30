@@ -62,10 +62,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-ai-coordinator"
+version = "0.1.0"
+dependencies = [
+ "aether-verifiers-tee",
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aether-ai-router"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "aether-ai-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "aether-ai-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
  "serde",
  "tokio",
 ]
@@ -79,6 +109,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "assert_cmd",
+ "bincode",
  "clap",
  "dirs",
  "hex",
@@ -241,8 +272,11 @@ dependencies = [
  "aether-rpc-grpc",
  "aether-types",
  "anyhow",
+ "hex",
  "serde",
+ "serde_json",
  "tokio",
+ "warp",
 ]
 
 [[package]]
@@ -251,7 +285,11 @@ version = "0.1.0"
 dependencies = [
  "aether-crypto-primitives",
  "anyhow",
+ "hex",
+ "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
@@ -274,8 +312,13 @@ dependencies = [
 name = "aether-loadgen"
 version = "0.1.0"
 dependencies = [
+ "aether-crypto-primitives",
  "aether-types",
  "anyhow",
+ "bincode",
+ "hex",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -314,12 +357,15 @@ dependencies = [
  "aether-ledger",
  "aether-mempool",
  "aether-quic-transport",
+ "aether-rpc-json",
  "aether-runtime",
  "aether-state-storage",
  "aether-types",
  "anyhow",
+ "bincode",
  "blake3",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -426,6 +472,7 @@ dependencies = [
  "aether-ledger",
  "aether-types",
  "anyhow",
+ "bincode",
  "hex",
  "serde",
  "serde_json",
@@ -466,6 +513,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "hex",
  "serde",
  "serde_json",
  "tokio",
@@ -545,9 +593,15 @@ dependencies = [
 name = "aether-verifiers-vcr"
 version = "0.1.0"
 dependencies = [
+ "aether-crypto-kzg",
+ "aether-crypto-primitives",
  "aether-types",
+ "aether-verifiers-tee",
  "anyhow",
+ "bincode",
  "serde",
+ "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

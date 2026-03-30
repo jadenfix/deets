@@ -1,27 +1,30 @@
 # Aether Blockchain - Implementation Progress
 
-**Date**: October 13, 2025
-**Status**: **PHASES 1-7 COMPLETE** (100%)
+**Date**: February 28, 2026
+**Status**: **Phases 1-6 core logic implemented, Phase 7 scaffolded, hardening in progress**
 **Total Commits**: 40+ commits
-**Lines of Code**: 24,000+ production Rust  
+**Lines of Code**: 24,000+ production Rust
 **Test Coverage**: 165+ unit tests
 **Metrics**: 60+ Prometheus metrics, 10+ alert rules
 **Security**: Threat model, TLA+ specs, KES rotation, remote signer
+**Active Branch**: `jaden/big-pushg` -- closing all remaining gaps
 
 ---
 
-## 🎯 Executive Summary
+## Executive Summary
 
-Successfully implemented **Phases 1-3** of the Aether blockchain from the technical roadmap (`trm.md`). This represents a **complete, production-ready** blockchain with:
+Phases 1-6 core logic is implemented. Phase 7 developer tooling is scaffolded.
+An active hardening push is replacing placeholder crypto, wiring disconnected
+subsystems, and completing tooling gaps.
 
-✅ **Complete L1 blockchain** (consensus, ledger, networking)  
-✅ **Economic system** (staking, governance, DEX, AIC tokens)  
-✅ **AI mesh** (TEE workers, verifiable compute, VCRs)  
-✅ **Docker & CI/CD** infrastructure  
-✅ **Developer SDK triad & CLI tooling (Rust / TypeScript / Python)**  
-✅ **Explorer + wallet scaffolding with acceptance tests**  
-✅ **Faucet + scorecard automation for incentives**  
-✅ **140+ unit tests** passing  
+- **Complete L1 blockchain** (consensus, ledger, mempool, parallel scheduler)
+- **Economic system** (staking, governance, DEX, AIC tokens, job escrow)
+- **AI mesh types** (TEE, VCR, KZG structures -- verification wiring in progress)
+- **High-performance DA** (Turbine, erasure coding, QUIC transport)
+- **Observability** (60+ Prometheus metrics, Grafana, alert rules)
+- **Security specs** (threat model, TLA+, KES, remote signer design)
+- **Developer SDKs** (Rust/TS/Python scaffolded, real RPC wiring in progress)
+- **165+ unit tests** passing
 
 ---
 
@@ -279,14 +282,17 @@ cargo clippy --all-targets --all-features -- -D warnings
 - ✅ Remote signer architecture - HSM/KMS integration design for validator keys
 - ✅ Security audit preparation - Comprehensive documentation for external audits
 
-### Phase 7: Developer Platform (Planned)
-- TypeScript SDK
-- Python SDK
-- Rust SDK
-- Block explorer
-- Wallet integration
-- Documentation portal
-- Testnet launch
+### Phase 7: Developer Platform (Scaffolded)
+- [x] TypeScript SDK (scaffold, local stubs)
+- [x] Python SDK (scaffold, local stubs)
+- [x] Rust SDK (scaffold)
+- [x] Block explorer (mock data scaffold)
+- [x] Wallet (demo keys scaffold)
+- [ ] SDKs wired to real RPC
+- [ ] Explorer/wallet with live node data
+- [ ] Indexer, loadgen, keytool implementations
+- [ ] Documentation portal
+- [ ] Testnet launch
 
 ---
 
@@ -337,31 +343,32 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ---
 
-## 🎯 Final Status
+## Current Status
 
-**Phases 1, 2, and 3** of the Aether blockchain are **COMPLETE** and **production-ready**.
+Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed on `jaden/big-pushg`.
 
-The implementation includes:
-- ✅ Complete L1 blockchain (consensus, ledger, networking)
-- ✅ Economic system (tokens, staking, governance, DEX)
-- ✅ AI mesh (TEE workers, verifiable compute, VCRs)
-- ✅ High-performance DA layer (Turbine + erasure coding)
-- ✅ Production monitoring (Prometheus + Grafana + Alerting)
+**Implemented (real logic + tests)**:
+- L1 consensus loop (VRF-PoS + HotStuff + BLS)
+- Ledger, Merkle tree, RocksDB storage, snapshots
+- Mempool with fee prioritization
+- System programs (staking, governance, AMM, AIC, job escrow, reputation)
+- DA layer (Turbine, erasure coding RS(10,2), QUIC)
+- Crypto (Ed25519 batch verify, BLS aggregate, KES rotation)
+- Observability (60+ metrics, Grafana, alerting)
+- Security specs (threat model, TLA+, remote signer design)
 
-The codebase is:
-- ✅ **Modular** (47+ crates, clean boundaries)
-- ✅ **Tested** (165+ unit tests, comprehensive coverage)
-- ✅ **Documented** (comprehensive docs + dashboards + security specs)
-- ✅ **Spec-compliant** (follows overview.md & trm.md)
-- ✅ **Secure** (threat model, formal verification, KES rotation, remote signer)
-- ✅ **Performant** (parallel execution, 105k ed25519 sig/s, 572 MB/s DA decoding)
-- ✅ **Observable** (60+ Prometheus metrics, real-time dashboards, SLO tracking)
-- ✅ **Audit-ready** (TLA+ specifications, security documentation, HSM integration)
+**Scaffolded (types/structure exist, core logic placeholder)**:
+- ECVRF (SHA256 placeholder, no real curve ops)
+- KZG commitments (hardcoded returns, no real pairings)
+- WASM VM (gas metering works, bytecode execution stubbed)
+- VCR/TEE/KZG verifiers (TODOs for real verification calls)
+- P2P network (println stubs, real libp2p not wired)
+- JSON-RPC backend (trait defined, production backend being wired)
+- SDKs (local accepted:true stubs)
+- Explorer/wallet (mock/demo data)
 
----
-
-**Implementation Status**: ✅ **PHASES 1-6 COMPLETE**
-**Next Phase**: Phase 7 (Developer Platform & Ecosystem)
-**Total Progress**: 6/7 phases (86% complete)
-
-🎉 **Phase 6 Security & Audits Complete! Audit-ready blockchain!** 🎉
+**Missing**:
+- Indexer, loadgen, keytool implementations
+- Helm charts, runbooks, chaos testing
+- Coq/Isabelle formal proofs
+- CONTRIBUTING.md (now added)

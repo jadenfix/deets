@@ -32,7 +32,8 @@
 // - Uptime: availability percentage
 // ============================================================================
 
-use anyhow::{Result, bail};
+use aether_verifiers_tee::{AttestationReport, TeeVerifier};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -56,12 +57,15 @@ pub struct JobAssignment {
 pub struct MeshCoordinator {
     /// Registered workers
     workers: HashMap<Vec<u8>, WorkerInfo>,
-    
+
     /// Active job assignments
     assignments: HashMap<Vec<u8>, JobAssignment>,
-    
+
     /// Reputation history
     reputation: HashMap<Vec<u8>, Vec<ReputationEvent>>,
+
+    /// TEE attestation verifier
+    tee_verifier: TeeVerifier,
 }
 
 #[derive(Debug, Clone)]
@@ -82,11 +86,19 @@ pub enum ReputationEventType {
 
 impl MeshCoordinator {
     pub fn new() -> Self {
+        let mut tee_verifier = TeeVerifier::new();
+        // Default simulation measurement for dev/test workers.
+        tee_verifier.add_approved_measurement(vec![1u8; 48]);
         MeshCoordinator {
             workers: HashMap::new(),
             assignments: HashMap::new(),
             reputation: HashMap::new(),
+            tee_verifier,
         }
+    }
+
+    pub fn approve_measurement(&mut self, measurement: Vec<u8>) {
+        self.tee_verifier.add_approved_measurement(measurement);
     }
 
     /// Register a new worker
@@ -95,8 +107,13 @@ impl MeshCoordinator {
         if worker.attestation.is_empty() {
             bail!("missing attestation");
         }
-
-        // TODO: Verify attestation with TEE verifier
+        let report: AttestationReport =
+            serde_json::from_slice(&worker.attestation).map_err(|e| {
+                anyhow::anyhow!("invalid attestation payload (expected JSON report): {e}")
+            })?;
+        self.tee_verifier
+            .verify(&report, current_timestamp())
+            .map_err(|e| anyhow::anyhow!("attestation verification failed: {e}"))?;
 
         self.workers.insert(worker.worker_id.clone(), worker);
 
@@ -104,9 +121,14 @@ impl MeshCoordinator {
     }
 
     /// Find best worker for a job
-    pub fn assign_job(&mut self, job_id: Vec<u8>, requirements: &JobRequirements) -> Result<Vec<u8>> {
+    pub fn assign_job(
+        &mut self,
+        job_id: Vec<u8>,
+        requirements: &JobRequirements,
+    ) -> Result<Vec<u8>> {
         // Find eligible workers
-        let mut candidates: Vec<&WorkerInfo> = self.workers
+        let mut candidates: Vec<&WorkerInfo> = self
+            .workers
             .values()
             .filter(|w| w.available && self.meets_requirements(w, requirements))
             .collect();
@@ -138,7 +160,9 @@ impl MeshCoordinator {
         worker_id: &[u8],
         event_type: ReputationEventType,
     ) -> Result<()> {
-        let worker = self.workers.get_mut(worker_id)
+        let worker = self
+            .workers
+            .get_mut(worker_id)
             .ok_or_else(|| anyhow::anyhow!("worker not found"))?;
 
         let score_change = match event_type {
@@ -166,7 +190,10 @@ impl MeshCoordinator {
         // Ban worker if reputation too low
         if worker.reputation_score < -100 {
             worker.available = false;
-            println!("Worker {:?} banned (low reputation)", hex::encode(worker_id));
+            println!(
+                "Worker {:?} banned (low reputation)",
+                hex::encode(worker_id)
+            );
         }
 
         Ok(())
@@ -230,12 +257,21 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_verifiers_tee::{AttestationReport, TeeType};
 
     fn test_worker(id: u8, reputation: i32) -> WorkerInfo {
+        let report = AttestationReport {
+            tee_type: TeeType::Simulation,
+            measurement: vec![1u8; 48],
+            nonce: vec![2u8; 32],
+            timestamp: current_timestamp(),
+            signature: vec![3u8; 64],
+            cert_chain: vec![vec![4u8; 16]],
+        };
         WorkerInfo {
             worker_id: vec![id],
             tee_type: "sev-snp".to_string(),
-            attestation: vec![1, 2, 3],
+            attestation: serde_json::to_vec(&report).unwrap(),
             capabilities: vec!["onnx".to_string()],
             reputation_score: reputation,
             available: true,
@@ -246,27 +282,29 @@ mod tests {
     fn test_register_worker() {
         let mut coordinator = MeshCoordinator::new();
         let worker = test_worker(1, 0);
-        
+
         coordinator.register_worker(worker).unwrap();
-        
+
         assert_eq!(coordinator.worker_count(), 1);
     }
 
     #[test]
     fn test_assign_job() {
         let mut coordinator = MeshCoordinator::new();
-        
+
         coordinator.register_worker(test_worker(1, 100)).unwrap();
         coordinator.register_worker(test_worker(2, 50)).unwrap();
-        
+
         let requirements = JobRequirements {
             tee_types: vec!["sev-snp".to_string()],
             capabilities: vec!["onnx".to_string()],
             min_reputation: 0,
         };
-        
-        let assigned = coordinator.assign_job(vec![1, 2, 3], &requirements).unwrap();
-        
+
+        let assigned = coordinator
+            .assign_job(vec![1, 2, 3], &requirements)
+            .unwrap();
+
         // Should assign to worker 1 (higher reputation)
         assert_eq!(assigned, vec![1]);
     }
@@ -275,9 +313,11 @@ mod tests {
     fn test_reputation_update() {
         let mut coordinator = MeshCoordinator::new();
         coordinator.register_worker(test_worker(1, 0)).unwrap();
-        
-        coordinator.update_reputation(&[1], ReputationEventType::JobCompleted).unwrap();
-        
+
+        coordinator
+            .update_reputation(&[1], ReputationEventType::JobCompleted)
+            .unwrap();
+
         let worker = coordinator.get_worker(&[1]).unwrap();
         assert_eq!(worker.reputation_score, 10);
     }
@@ -286,11 +326,12 @@ mod tests {
     fn test_ban_low_reputation() {
         let mut coordinator = MeshCoordinator::new();
         coordinator.register_worker(test_worker(1, -90)).unwrap();
-        
-        coordinator.update_reputation(&[1], ReputationEventType::ChallengeLost).unwrap();
-        
+
+        coordinator
+            .update_reputation(&[1], ReputationEventType::ChallengeLost)
+            .unwrap();
+
         let worker = coordinator.get_worker(&[1]).unwrap();
         assert!(!worker.available); // Banned
     }
 }
-

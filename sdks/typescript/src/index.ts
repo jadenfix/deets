@@ -6,6 +6,9 @@ export type {
   JobRequest,
   JobSubmission,
   SubmitResponse,
+  RpcAccountState,
+  RpcBlock,
+  RpcReceipt,
   TransactionFields,
   TransferRequestPayload,
 } from "./types.js";

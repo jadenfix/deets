@@ -3,8 +3,10 @@ import { test } from "node:test";
 
 import { AetherClient } from "../src/index.js";
 
-test("transfer builder constructs deterministic transaction hash", () => {
-  const client = new AetherClient("https://rpc.aether.local");
+const originalFetch = globalThis.fetch;
+
+test("transfer builder submits over JSON-RPC", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
   const tx = client
     .transfer()
     .to("0x8b0b54d2248a3a5617b6bd8a2fd4cc8ebc0f2e90")
@@ -21,14 +23,36 @@ test("transfer builder constructs deterministic transaction hash", () => {
       nonce: 42,
     });
 
-  const response = client.submit(tx);
-  assert.equal(response.accepted, true);
-  assert.ok(response.txHash.startsWith("0x"));
-  assert.equal(
-    response.txHash,
-    tx.hash(),
-    "client returns deterministic hash for submission",
-  );
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.method, "aeth_sendTransaction");
+      assert.equal(payload.params[0].recipient, tx.recipient);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result:
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      );
+    };
+
+    const response = await client.submit(tx);
+    assert.equal(response.accepted, true);
+    assert.equal(
+      response.txHash,
+      "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("transfer builder validates required fields", () => {
@@ -45,4 +69,31 @@ test("transfer builder validates required fields", () => {
       }),
     /recipient not set/,
   );
+});
+
+test("slot query reads from RPC", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.method, "aeth_getSlotNumber");
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: 123,
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        },
+      );
+    };
+    const slot = await client.getSlotNumber();
+    assert.equal(slot, 123);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -130,8 +130,8 @@ mod tests {
     fn detects_mismatch() {
         let verifier = KzgVerifier::new(1024);
         let mut challenge = sample_challenge();
-        let openings = sample_openings();
-        let response = KzgOpeningResponse::new(H256::zero(), openings);
+        let response =
+            KzgOpeningResponse::new(H256::from_slice(&[9u8; 32]).unwrap(), sample_openings());
 
         assert!(verify_kzg_openings(&verifier, &challenge, &response).is_err());
         challenge.point_indices[0].push(2);

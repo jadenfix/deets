@@ -5,6 +5,12 @@ edition.workspace = true
 
 [dependencies]
 aether-types = { path = "../../types" }
+aether-crypto-kzg = { path = "../../crypto/kzg" }
+aether-crypto-primitives = { path = "../../crypto/primitives" }
+aether-verifiers-tee = { path = "../tee" }
 serde.workspace = true
+serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+sha2.workspace = true
+bincode.workspace = true
