@@ -71,6 +71,16 @@ impl RpcBackend for NodeRpcBackend {
         let node = self.read_node()?;
         Ok(node.finalized_slot())
     }
+
+    fn get_latest_block_slot(&self) -> Result<Option<u64>> {
+        let node = self.read_node()?;
+        Ok(node.latest_block_slot())
+    }
+
+    fn request_airdrop(&self, address: Address, amount: u128) -> Result<()> {
+        let mut node = self.write_node()?;
+        node.seed_account(&address, amount)
+    }
 }
 
 async fn run_slot_loop(node: Arc<RwLock<Node>>) -> Result<()> {
@@ -107,7 +117,12 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(8545);
 
-    let node = Node::new(db_path, consensus, Some(validator_keypair.ed25519))?;
+    let mut node = Node::new(db_path, consensus, Some(validator_keypair.ed25519), Some(validator_keypair.bls))?;
+
+    // Seed validator with genesis balance
+    node.seed_account(&validator_address, 1_000_000_000_000)?;
+    println!("Genesis: funded validator with 1_000_000_000_000");
+
     let shared_node = Arc::new(RwLock::new(node));
 
     let backend = NodeRpcBackend {

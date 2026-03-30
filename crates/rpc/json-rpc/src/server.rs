@@ -64,6 +64,12 @@ pub trait RpcBackend: Send + Sync {
     fn get_account(&self, address: Address, block_ref: Option<String>) -> Result<Option<Value>>;
     fn get_slot_number(&self) -> Result<u64>;
     fn get_finalized_slot(&self) -> Result<u64>;
+    fn get_latest_block_slot(&self) -> Result<Option<u64>> {
+        Ok(None)
+    }
+    fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
+        Err(anyhow::anyhow!("airdrop not supported"))
+    }
 }
 
 pub struct JsonRpcServer<B: RpcBackend> {
@@ -92,7 +98,12 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(warp::path("health"))
             .map(|| warp::reply::json(&json!({"status": "ok"})));
 
-        let routes = rpc.or(health);
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["POST", "GET", "OPTIONS"])
+            .allow_headers(vec!["content-type"]);
+
+        let routes = rpc.or(health).with(cors);
 
         println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
         warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
@@ -129,6 +140,7 @@ async fn process_rpc_request<B: RpcBackend>(
         "aeth_getAccount" => handle_get_account(&req.params, backend).await,
         "aeth_getSlotNumber" => handle_get_slot_number(backend).await,
         "aeth_getFinalizedSlot" => handle_get_finalized_slot(backend).await,
+        "aeth_requestAirdrop" => handle_request_airdrop(&req.params, backend).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -294,11 +306,19 @@ async fn handle_get_block_by_number<B: RpcBackend>(
 
     let block_number = if block_ref == "latest" {
         let backend = backend.read().await;
-        backend.get_slot_number().map_err(|e| JsonRpcError {
+        if let Some(slot) = backend.get_latest_block_slot().map_err(|e| JsonRpcError {
             code: -32000,
-            message: format!("Failed to get latest slot: {}", e),
+            message: format!("Failed to get latest block slot: {}", e),
             data: None,
-        })?
+        })? {
+            slot
+        } else {
+            backend.get_slot_number().map_err(|e| JsonRpcError {
+                code: -32000,
+                message: format!("Failed to get latest slot: {}", e),
+                data: None,
+            })?
+        }
     } else {
         block_ref.parse::<u64>().map_err(|_| JsonRpcError {
             code: -32602,
@@ -537,6 +557,36 @@ async fn handle_get_finalized_slot<B: RpcBackend>(
     })?;
 
     Ok(json!(slot))
+}
+
+async fn handle_request_airdrop<B: RpcBackend>(
+    params: &[Value],
+    backend: Arc<RwLock<B>>,
+) -> Result<Value, JsonRpcError> {
+    if params.len() < 2 {
+        return Err(JsonRpcError {
+            code: -32602,
+            message: "Missing parameters: [address, amount]".to_string(),
+            data: None,
+        });
+    }
+
+    let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
+        code: -32602,
+        message: "Invalid address".to_string(),
+        data: None,
+    })?;
+    let address = parse_address(addr_hex, "address")?;
+    let amount = parse_u128_value(&params[1], "amount")?;
+
+    let backend = backend.read().await;
+    backend.request_airdrop(address, amount).map_err(|e| JsonRpcError {
+        code: -32000,
+        message: format!("Airdrop failed: {}", e),
+        data: None,
+    })?;
+
+    Ok(json!({"success": true}))
 }
 
 #[cfg(test)]

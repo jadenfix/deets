@@ -247,6 +247,17 @@ impl Ledger {
         H256::from_slice(&hash).unwrap()
     }
 
+    pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
+        let account = Account::with_balance(*address, balance);
+        let mut batch = StorageBatch::new();
+        let key = address.as_bytes().to_vec();
+        let value = bincode::serialize(&account)?;
+        batch.put(CF_ACCOUNTS, key, value);
+        self.storage.write_batch(batch)?;
+        self.recompute_state_root()?;
+        Ok(())
+    }
+
     pub fn apply_block_transactions(
         &mut self,
         transactions: &[Transaction],

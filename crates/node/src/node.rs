@@ -1,4 +1,5 @@
 use aether_consensus::ConsensusEngine;
+use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
 use aether_ledger::Ledger;
 use aether_mempool::Mempool;
@@ -19,10 +20,12 @@ pub struct Node {
     mempool: Mempool,
     consensus: Box<dyn ConsensusEngine>,
     validator_key: Option<Keypair>,
+    bls_key: Option<BlsKeypair>,
     running: bool,
     poh: PohRecorder,
     last_poh_metrics: Option<PohMetrics>,
     latest_block_hash: H256,
+    latest_block_slot: Option<Slot>,
     blocks_by_slot: HashMap<Slot, H256>,
     blocks_by_hash: HashMap<H256, Block>,
     receipts: HashMap<H256, TransactionReceipt>,
@@ -33,6 +36,7 @@ impl Node {
         db_path: P,
         consensus: Box<dyn ConsensusEngine>,
         validator_key: Option<Keypair>,
+        bls_key: Option<BlsKeypair>,
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
@@ -43,10 +47,12 @@ impl Node {
             mempool,
             consensus,
             validator_key,
+            bls_key,
             running: false,
             poh: PohRecorder::new(),
             last_poh_metrics: None,
             latest_block_hash: H256::zero(),
+            latest_block_slot: None,
             blocks_by_slot: HashMap::new(),
             blocks_by_hash: HashMap::new(),
             receipts: HashMap::new(),
@@ -175,18 +181,29 @@ impl Node {
         // Create vote for our own block (BLS signature)
         let validator_pubkey =
             PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
-        if self
-            .consensus
-            .add_vote(aether_types::Vote {
-                slot,
-                block_hash,
-                validator: validator_pubkey,
-                signature: aether_types::Signature::from_bytes(vec![0; 64]), // Placeholder - real BLS sig created in consensus
-                stake: self.consensus.total_stake(), // Single validator gets all stake
-            })
-            .is_ok()
-        {
-            println!("  Vote created and processed");
+
+        // Sign vote with BLS keypair for valid aggregation
+        let vote_msg = {
+            let mut msg = Vec::new();
+            msg.extend_from_slice(block_hash.as_bytes());
+            msg.extend_from_slice(&slot.to_le_bytes());
+            msg
+        };
+        let vote_sig = if let Some(bls) = &self.bls_key {
+            bls.sign(&vote_msg)
+        } else {
+            vec![0u8; 96]
+        };
+
+        match self.consensus.add_vote(aether_types::Vote {
+            slot,
+            block_hash,
+            validator: validator_pubkey,
+            signature: aether_types::Signature::from_bytes(vote_sig),
+            stake: self.consensus.total_stake(), // Single validator gets all stake
+        }) {
+            Ok(()) => println!("  Vote created and processed"),
+            Err(e) => println!("  Vote failed: {e}"),
         }
 
         for receipt in &mut receipts {
@@ -196,6 +213,7 @@ impl Node {
         }
 
         self.latest_block_hash = block_hash;
+        self.latest_block_slot = Some(slot);
         self.blocks_by_slot.insert(slot, block_hash);
         self.blocks_by_hash.insert(block_hash, block);
 
@@ -242,6 +260,14 @@ impl Node {
         self.consensus.finalized_slot()
     }
 
+    pub fn latest_block_slot(&self) -> Option<Slot> {
+        self.latest_block_slot
+    }
+
+    pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
+        self.ledger.seed_account(address, balance)
+    }
+
     pub fn get_block_by_slot(&self, slot: Slot) -> Option<Block> {
         self.blocks_by_slot
             .get(&slot)
@@ -285,7 +311,7 @@ mod tests {
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
 
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair)).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
 
         node.process_slot().unwrap();
         let first_metrics = node.poh_metrics().cloned().unwrap();
