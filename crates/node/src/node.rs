@@ -126,28 +126,40 @@ impl Node {
     }
 
     /// Persist a block and its receipts to disk.
+    /// Persist a block and its receipts to disk in a SINGLE atomic batch.
     fn persist_block(
         &self,
         block: &Block,
         block_hash: H256,
         receipts: &[TransactionReceipt],
     ) -> Result<()> {
-        let storage = self.ledger.storage();
+        use aether_state_storage::StorageBatch;
+        let mut batch = StorageBatch::new();
 
-        // Persist block
+        // Block data
         let block_bytes = bincode::serialize(block)?;
-        storage.put(CF_BLOCKS, block_hash.as_bytes(), &block_bytes)?;
+        batch.put(CF_BLOCKS, block_hash.as_bytes().to_vec(), block_bytes);
 
-        // Persist slot→hash index
+        // Slot→hash index
         let slot_key = format!("slot:{}", block.header.slot);
-        storage.put(CF_METADATA, slot_key.as_bytes(), block_hash.as_bytes())?;
+        batch.put(
+            CF_METADATA,
+            slot_key.as_bytes().to_vec(),
+            block_hash.as_bytes().to_vec(),
+        );
 
-        // Persist receipts
+        // Receipts
         for receipt in receipts {
             let receipt_bytes = bincode::serialize(receipt)?;
-            storage.put(CF_RECEIPTS, receipt.tx_hash.as_bytes(), &receipt_bytes)?;
+            batch.put(
+                CF_RECEIPTS,
+                receipt.tx_hash.as_bytes().to_vec(),
+                receipt_bytes,
+            );
         }
 
+        // Atomic commit — all-or-nothing
+        self.ledger.storage().write_batch(batch)?;
         Ok(())
     }
 
@@ -207,6 +219,9 @@ impl Node {
 
     fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
+
+        // Update mempool with current slot for forced inclusion tracking
+        self.mempool.set_current_slot(slot);
 
         // Check for epoch transition
         let epoch = slot / EPOCH_LENGTH;
@@ -273,9 +288,9 @@ impl Node {
         // In a full implementation we'd iterate the validator set and credit each.
         // For now, credit the local validator if present.
         if let Some(ref keypair) = self.validator_key {
-            let addr = Address::from_slice(&keypair.to_address()).unwrap();
-            // Proportional reward (simplified: assume we're the only active validator)
-            let _ = self.ledger.credit_account(&addr, emission);
+            if let Ok(addr) = Address::from_slice(&keypair.to_address()) {
+                let _ = self.ledger.credit_account(&addr, emission);
+            }
         }
 
         Ok(())
@@ -302,7 +317,19 @@ impl Node {
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
-        let transactions = self.mempool.get_transactions(1000, 5_000_000);
+        // Forced inclusion: include txs that have been waiting too long (anti-censorship)
+        let forced = self.mempool.must_include_transactions(slot, self.fee_market.base_fee);
+        let forced_count = forced.len();
+        let remaining_capacity = 1000usize.saturating_sub(forced_count);
+        let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
+        let transactions = if forced_count > 0 {
+            println!("  Forced inclusion: {} txs", forced_count);
+            let mut all = forced;
+            all.extend(regular);
+            all
+        } else {
+            regular
+        };
 
         if transactions.is_empty() {
             println!("  No transactions to include");
@@ -310,22 +337,7 @@ impl Node {
 
         println!("  Including {} transactions", transactions.len());
 
-        // Apply transactions to ledger
-        let receipts = self.ledger.apply_block_transactions(&transactions)?;
-        let successful = receipts
-            .iter()
-            .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
-            .count();
-
-        if !transactions.is_empty() {
-            println!(
-                "  {} successful, {} failed",
-                successful,
-                receipts.len() - successful
-            );
-        }
-
-        // Get VRF proof from consensus
+        // Get VRF proof FIRST (before execution, to fail fast if not leader)
         let vrf_proof_crypto = self.consensus.get_leader_proof(slot);
         let vrf_proof = if let Some(proof) = vrf_proof_crypto {
             aether_types::VrfProof {
@@ -339,23 +351,39 @@ impl Node {
             }
         };
 
-        // Compute block header roots BEFORE any mutation
-        let state_root = self.ledger.state_root();
+        // Apply transactions speculatively (NOT committed to disk yet)
+        let (receipts, overlay) =
+            self.ledger.apply_block_speculatively(&transactions)?;
+        let successful = receipts
+            .iter()
+            .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
+            .count();
+
+        if !transactions.is_empty() {
+            println!(
+                "  {} successful, {} failed",
+                successful,
+                receipts.len() - successful
+            );
+        }
+
+        // Compute block header roots from speculative state
+        let state_root = overlay.state_root;
         let transactions_root = compute_transactions_root(&transactions);
-        // Compute receipts_root from receipts in their current (pre-mutation) state
         let receipts_root = compute_receipts_root(&receipts);
 
-        let proposer = self.validator_key.as_ref().unwrap().to_address();
+        let proposer_bytes = self.validator_key.as_ref().unwrap().to_address();
+        let proposer = aether_types::Address::from_slice(&proposer_bytes)
+            .map_err(|e| anyhow::anyhow!("invalid proposer address: {e}"))?;
 
         let mut block = Block::new(
             slot,
             self.latest_block_hash,
-            aether_types::Address::from_slice(&proposer).unwrap(),
+            proposer,
             vrf_proof,
             transactions.clone(),
         );
 
-        // Set computed roots on the header BEFORE hashing
         block.header.state_root = state_root;
         block.header.transactions_root = transactions_root;
         block.header.receipts_root = receipts_root;
@@ -364,11 +392,15 @@ impl Node {
         println!("  Block produced: {:?}", block_hash);
         println!("  State root: {}", state_root);
 
-        // Validate our own block
+        // Validate our own block BEFORE committing state
         if let Err(e) = self.consensus.validate_block(&block) {
+            // Discard overlay — state unchanged
             println!("  WARNING: Block validation failed: {}", e);
             return Ok(());
         }
+
+        // Validation passed — NOW commit state to disk
+        self.ledger.commit_overlay(overlay)?;
 
         // Process fee market (only once — on_block_received skips for already-known blocks)
         let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
@@ -437,12 +469,16 @@ impl Node {
         };
         let vote_sig = bls_key.sign(&vote_msg);
 
+        // Use individual validator stake, NOT total_stake
+        let voter_addr = validator_pubkey.to_address();
+        let my_stake = self.consensus.validator_stake(&voter_addr);
+
         let vote = Vote {
             slot,
             block_hash,
             validator: validator_pubkey,
             signature: aether_types::Signature::from_bytes(vote_sig),
-            stake: self.consensus.total_stake(),
+            stake: my_stake,
         };
 
         match self.consensus.add_vote(vote.clone()) {
@@ -636,11 +672,16 @@ impl Node {
             if self.consensus.check_finality(slot) {
                 println!("✓ FINALIZED: Slot {} via VRF+HotStuff+BLS!", slot);
 
-                // Update epoch randomness from finalized block's VRF output
-                if let Some(block) = self.get_block_by_slot(slot) {
-                    if block.header.vrf_proof.output != [0u8; 32] {
-                        self.consensus
-                            .update_epoch_randomness(&block.header.vrf_proof.output);
+                // Update epoch randomness ONCE per epoch from the first finalized block
+                // of that epoch to ensure deterministic randomness across all nodes.
+                let finalized_epoch = slot / EPOCH_LENGTH;
+                let epoch_start = finalized_epoch * EPOCH_LENGTH;
+                if slot == epoch_start {
+                    if let Some(block) = self.get_block_by_slot(slot) {
+                        if block.header.vrf_proof.output != [0u8; 32] {
+                            self.consensus
+                                .update_epoch_randomness(&block.header.vrf_proof.output);
+                        }
                     }
                 }
 

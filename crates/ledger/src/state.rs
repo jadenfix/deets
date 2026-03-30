@@ -322,9 +322,9 @@ impl Ledger {
 
     fn hash_account(&self, account: &Account) -> H256 {
         use sha2::{Digest, Sha256};
-        let bytes = bincode::serialize(account).unwrap();
+        let bytes = bincode::serialize(account).expect("Account serialization infallible");
         let hash = Sha256::digest(&bytes);
-        H256::from_slice(&hash).unwrap()
+        H256::from_slice(&hash).expect("SHA256 produces 32 bytes")
     }
 
     /// Credit an account with a reward (for epoch emissions, proposer rewards).

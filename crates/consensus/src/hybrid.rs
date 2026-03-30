@@ -283,17 +283,32 @@ impl HybridConsensus {
             );
         }
 
+        // Verify BLS signature FIRST (before equivocation check, to prevent
+        // an attacker from poisoning the equivocation record with invalid-sig votes)
+        if let Some(bls_pk) = self.bls_pubkeys.get(&voter_addr) {
+            let mut vote_msg = Vec::new();
+            vote_msg.extend_from_slice(vote.block_hash.as_bytes());
+            vote_msg.extend_from_slice(&vote.slot.to_le_bytes());
+            let sig_bytes = vote.signature.as_bytes();
+            if sig_bytes.len() == 96 && bls_pk.len() == 48 {
+                match aether_crypto_bls::keypair::verify(bls_pk, &vote_msg, sig_bytes) {
+                    Ok(true) => {} // Valid signature
+                    Ok(false) => bail!("invalid BLS signature on vote from {:?}", voter_addr),
+                    Err(e) => bail!("BLS verification error: {e}"),
+                }
+            }
+        }
+
         // Equivocation detection: check if this validator already voted for a DIFFERENT block
-        // at this slot. If so, that's a slashable offense.
+        // at this slot. Only checked AFTER signature verification so invalid-sig votes
+        // can't poison the record.
         let vote_key = (vote.slot, voter_addr);
         if let Some(prev_block) = self.vote_record.get(&vote_key) {
             if *prev_block != vote.block_hash {
-                // EQUIVOCATION DETECTED: validator voted for different blocks at same slot
                 println!(
                     "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
                     voter_addr, prev_block, vote.block_hash, vote.slot
                 );
-                // In production: create SlashProof and submit to slashing module
                 bail!(
                     "equivocation detected: validator {:?} double-voted at slot {}",
                     voter_addr,
@@ -302,19 +317,6 @@ impl HybridConsensus {
             }
         }
         self.vote_record.insert(vote_key, vote.block_hash);
-
-        // Verify BLS signature if pubkey is registered
-        if let Some(bls_pk) = self.bls_pubkeys.get(&voter_addr) {
-            let vote_msg = [vote.block_hash.as_bytes(), &vote.slot.to_le_bytes()].concat();
-            let sig_bytes = vote.signature.as_bytes();
-            if sig_bytes.len() == 96 && bls_pk.len() == 48 {
-                match aether_crypto_bls::verify(bls_pk, &vote_msg, sig_bytes) {
-                    Ok(true) => {} // Valid signature
-                    Ok(false) => bail!("invalid BLS signature on vote from {:?}", voter_addr),
-                    Err(e) => bail!("BLS verification error: {e}"),
-                }
-            }
-        }
 
         // Deduplicate: one vote per validator per (slot, phase, block)
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
@@ -354,16 +356,17 @@ impl HybridConsensus {
 
             // Handle phase transitions with correct 2-chain finality
             match self.current_phase {
+                Phase::Propose => {
+                    // QC formed in Propose phase → advance to Prevote
+                }
                 Phase::Prevote => {
-                    // Lock on this block
+                    // Prevote QC formed → lock on this block
                     self.locked_block = Some(vote.block_hash);
                     self.locked_slot = vote.slot;
                 }
                 Phase::Precommit => {
-                    // 2-chain finality rule:
-                    // Block C (current) has precommit QC.
-                    // Check if C's parent (block B) has a prevote QC.
-                    // If so, finalize B.
+                    // Precommit QC formed → check 2-chain finality rule:
+                    // If C's parent (block B) has a prevote QC, finalize B.
                     if let Some(parent_hash) = self.block_parents.get(&vote.block_hash) {
                         if let Some(&parent_slot) = self.block_slots.get(parent_hash) {
                             let prevote_key = (parent_slot, Phase::Prevote, *parent_hash);
@@ -378,9 +381,13 @@ impl HybridConsensus {
                     }
                     self.committed_slot = vote.slot;
                 }
-                _ => {}
+                Phase::Commit => {}
             }
 
+            // CRITICAL: Advance phase after QC formation.
+            // This drives the HotStuff state machine:
+            // Propose → Prevote → Precommit → Commit → Propose
+            self.advance_phase();
             self.pacemaker.on_commit();
             return Ok(Some(qc));
         }
@@ -395,18 +402,18 @@ impl HybridConsensus {
             .map(|v| v.signature.as_bytes().to_vec())
             .collect();
 
+        // Use registered BLS public keys (48 bytes) — NOT Ed25519 keys (32 bytes)
         let pubkeys: Vec<Vec<u8>> = votes
             .iter()
             .map(|v| {
                 let addr = v.validator.to_address();
-                if let Some(val) = self.validators.get(&addr) {
-                    let bytes = val.pubkey.as_bytes();
-                    // BLS requires 48 bytes, pad if necessary
-                    let mut padded = vec![0u8; 48];
-                    let copy_len = bytes.len().min(48);
-                    padded[..copy_len].copy_from_slice(&bytes[..copy_len]);
-                    padded
+                // First try BLS pubkey registry (correct 48-byte keys)
+                if let Some(bls_pk) = self.bls_pubkeys.get(&addr) {
+                    bls_pk.clone()
                 } else {
+                    // Fallback: pad Ed25519 key (will produce invalid BLS verification
+                    // but prevents panic — votes from unregistered validators were
+                    // already rejected by process_vote)
                     vec![0u8; 48]
                 }
             })
@@ -544,6 +551,10 @@ impl ConsensusEngine for HybridConsensus {
 
     fn update_epoch_randomness(&mut self, vrf_output: &[u8; 32]) {
         HybridConsensus::update_epoch_randomness(self, vrf_output);
+    }
+
+    fn validator_stake(&self, address: &Address) -> u128 {
+        self.validators.get(address).map_or(0, |v| v.stake)
     }
 
     fn is_timed_out(&self) -> bool {

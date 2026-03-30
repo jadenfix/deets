@@ -53,6 +53,11 @@ pub trait ConsensusEngine: Send + Sync {
         // Default no-op for engines without VRF
     }
 
+    /// Get individual validator's registered stake by address.
+    fn validator_stake(&self, _address: &aether_types::Address) -> u128 {
+        0
+    }
+
     /// Check if the current round has timed out (pacemaker).
     fn is_timed_out(&self) -> bool {
         false

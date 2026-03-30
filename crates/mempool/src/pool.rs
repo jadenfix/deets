@@ -65,6 +65,8 @@ pub struct Mempool {
     rate_limits: HashMap<Address, RateLimitEntry>,
     /// Monotonic counter for FIFO tiebreaking.
     current_time: u64,
+    /// Current slot number (updated externally for forced inclusion tracking).
+    current_slot: u64,
 }
 
 impl Mempool {
@@ -77,7 +79,13 @@ impl Mempool {
             queued: HashMap::new(),
             rate_limits: HashMap::new(),
             current_time: 0,
+            current_slot: 0,
         }
+    }
+
+    /// Update the current slot (for forced inclusion age tracking).
+    pub fn set_current_slot(&mut self, slot: u64) {
+        self.current_slot = slot;
     }
 
     /// Set the expected next nonce for a sender (from chain state).
@@ -201,7 +209,7 @@ impl Mempool {
             tx,
             fee_rate,
             timestamp: self.current_time,
-            submitted_slot: 0, // Updated when slot is known
+            submitted_slot: self.current_slot,
         });
         self.current_time += 1;
     }
@@ -286,6 +294,28 @@ impl Mempool {
         }
 
         selected
+    }
+
+    /// Return transactions that MUST be included (anti-censorship).
+    /// A tx must be included if it has waited > FORCED_INCLUSION_SLOTS
+    /// and pays >= 2x the base_fee (clearly willing to pay market rate).
+    pub fn must_include_transactions(
+        &self,
+        current_slot: u64,
+        base_fee: u128,
+    ) -> Vec<Transaction> {
+        let min_fee = base_fee.saturating_mul(2);
+        let mut forced = Vec::new();
+
+        // Iterate pending heap without consuming (peek at all items)
+        for ptx in self.pending.iter() {
+            let age = current_slot.saturating_sub(ptx.submitted_slot);
+            if age >= FORCED_INCLUSION_SLOTS && ptx.tx.fee >= min_fee {
+                forced.push(ptx.tx.clone());
+            }
+        }
+
+        forced
     }
 
     pub fn remove_transactions(&mut self, tx_hashes: &[H256]) {

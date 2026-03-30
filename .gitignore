@@ -1,5 +1,6 @@
 # Rust
 /target
+**/target/
 **/*.rs.bk
 # Cargo.lock - We keep this for binary projects
 
@@ -30,6 +31,13 @@ logs/
 # Build artifacts
 dist/
 build/
+
+# Fuzz corpus and artifacts
+fuzz/corpus/
+fuzz/artifacts/
+
+# Node data
+data/
 
 # Docker
 .docker/
