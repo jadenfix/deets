@@ -1,19 +1,29 @@
 use aether_consensus::ConsensusEngine;
 use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
-use aether_ledger::Ledger;
+use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
-use aether_state_storage::Storage;
+use aether_p2p::network::NetworkEvent;
+use aether_state_storage::{Storage, CF_BLOCKS, CF_RECEIPTS, CF_METADATA};
 use aether_types::{
-    Account, Address, Block, PublicKey, Slot, Transaction, TransactionReceipt, H256,
+    Account, Address, Block, PublicKey, Slot, Transaction, TransactionReceipt, Vote, H256,
 };
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 use tokio::time;
 
+use crate::fork_choice::ForkChoice;
+use crate::network_handler::{decode_network_event, NodeMessage, OutboundMessage};
 use crate::poh::{PohMetrics, PohRecorder};
+
+const MAX_OUTBOUND_BUFFER: usize = 10_000;
+const MAX_CACHED_BLOCKS: usize = 10_000;
+const MAX_CACHED_RECEIPTS: usize = 50_000;
+const EPOCH_LENGTH: u64 = 100;
 
 pub struct Node {
     ledger: Ledger,
@@ -24,11 +34,19 @@ pub struct Node {
     running: bool,
     poh: PohRecorder,
     last_poh_metrics: Option<PohMetrics>,
+    fee_market: FeeMarket,
+    emission_schedule: EmissionSchedule,
+    current_epoch: u64,
+    fork_choice: ForkChoice,
     latest_block_hash: H256,
     latest_block_slot: Option<Slot>,
     blocks_by_slot: HashMap<Slot, H256>,
     blocks_by_hash: HashMap<H256, Block>,
     receipts: HashMap<H256, TransactionReceipt>,
+    /// Channel to send outbound messages (blocks, votes, txs) to P2P layer.
+    broadcast_tx: Option<mpsc::UnboundedSender<OutboundMessage>>,
+    /// Collected outbound messages when no broadcast channel is set (for testing).
+    outbound_buffer: Vec<OutboundMessage>,
 }
 
 impl Node {
@@ -42,6 +60,23 @@ impl Node {
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
         let mempool = Mempool::new();
 
+        // Warn on asymmetric key configuration
+        if validator_key.is_some() != bls_key.is_some() {
+            println!(
+                "WARNING: asymmetric key config — validator_key={}, bls_key={}. Voting will be disabled.",
+                validator_key.is_some(),
+                bls_key.is_some()
+            );
+        }
+
+        // Load persisted blocks from disk
+        let (blocks_by_slot, blocks_by_hash, latest_block_hash, latest_block_slot) =
+            Self::load_blocks_from_storage(ledger.storage())?;
+
+        if !blocks_by_hash.is_empty() {
+            println!("Recovered {} blocks from disk (tip: slot {:?})", blocks_by_hash.len(), latest_block_slot);
+        }
+
         Ok(Node {
             ledger,
             mempool,
@@ -51,17 +86,99 @@ impl Node {
             running: false,
             poh: PohRecorder::new(),
             last_poh_metrics: None,
-            latest_block_hash: H256::zero(),
-            latest_block_slot: None,
-            blocks_by_slot: HashMap::new(),
-            blocks_by_hash: HashMap::new(),
+            fee_market: FeeMarket::new(10_000, 5_000_000),
+            emission_schedule: EmissionSchedule::new(1_000_000_000_000_000), // 1B tokens
+            current_epoch: 0,
+            fork_choice: ForkChoice::new(),
+            latest_block_hash,
+            latest_block_slot,
+            blocks_by_slot,
+            blocks_by_hash,
             receipts: HashMap::new(),
+            broadcast_tx: None,
+            outbound_buffer: Vec::new(),
         })
+    }
+
+    /// Load persisted blocks from RocksDB on startup.
+    fn load_blocks_from_storage(
+        storage: &Storage,
+    ) -> Result<(HashMap<Slot, H256>, HashMap<H256, Block>, H256, Option<Slot>)> {
+        let mut by_slot = HashMap::new();
+        let mut by_hash = HashMap::new();
+        let mut latest_hash = H256::zero();
+        let mut latest_slot: Option<Slot> = None;
+
+        for (_, value) in storage.iterator(CF_BLOCKS)? {
+            if let Ok(block) = bincode::deserialize::<Block>(&value) {
+                let hash = block.hash();
+                let slot = block.header.slot;
+                by_slot.insert(slot, hash);
+                by_hash.insert(hash, block);
+                if latest_slot.map_or(true, |s| slot > s) {
+                    latest_slot = Some(slot);
+                    latest_hash = hash;
+                }
+            }
+        }
+
+        Ok((by_slot, by_hash, latest_hash, latest_slot))
+    }
+
+    /// Persist a block and its receipts to disk.
+    fn persist_block(
+        &self,
+        block: &Block,
+        block_hash: H256,
+        receipts: &[TransactionReceipt],
+    ) -> Result<()> {
+        let storage = self.ledger.storage();
+
+        // Persist block
+        let block_bytes = bincode::serialize(block)?;
+        storage.put(CF_BLOCKS, block_hash.as_bytes(), &block_bytes)?;
+
+        // Persist slot→hash index
+        let slot_key = format!("slot:{}", block.header.slot);
+        storage.put(CF_METADATA, slot_key.as_bytes(), block_hash.as_bytes())?;
+
+        // Persist receipts
+        for receipt in receipts {
+            let receipt_bytes = bincode::serialize(receipt)?;
+            storage.put(CF_RECEIPTS, receipt.tx_hash.as_bytes(), &receipt_bytes)?;
+        }
+
+        Ok(())
+    }
+
+    /// Set the broadcast channel for outbound P2P messages.
+    pub fn set_broadcast_tx(&mut self, tx: mpsc::UnboundedSender<OutboundMessage>) {
+        self.broadcast_tx = Some(tx);
+    }
+
+    /// Drain collected outbound messages (for testing without P2P).
+    pub fn drain_outbound(&mut self) -> Vec<OutboundMessage> {
+        std::mem::take(&mut self.outbound_buffer)
+    }
+
+    fn broadcast(&mut self, msg: OutboundMessage) {
+        if let Some(ref tx) = self.broadcast_tx {
+            if let Err(e) = tx.send(msg) {
+                // Channel closed — fall back to buffer so message isn't lost
+                println!("WARNING: broadcast channel closed: {e}");
+                if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
+                    self.outbound_buffer.push(e.0);
+                }
+            }
+        } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
+            self.outbound_buffer.push(msg);
+        }
     }
 
     pub fn submit_transaction(&mut self, tx: Transaction) -> Result<H256> {
         let tx_hash = tx.hash();
-        self.mempool.add_transaction(tx)?;
+        self.mempool.add_transaction(tx.clone())?;
+        self.broadcast(OutboundMessage::BroadcastTransaction(tx));
         Ok(tx_hash)
     }
 
@@ -91,6 +208,19 @@ impl Node {
     fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
 
+        // Check for epoch transition
+        let epoch = slot / EPOCH_LENGTH;
+        if epoch > self.current_epoch {
+            self.process_epoch_transition(epoch)?;
+        }
+        self.current_epoch = epoch;
+
+        // Check pacemaker timeout — if no quorum reached, advance to prevent deadlock
+        if self.consensus.is_timed_out() {
+            println!("Slot {}: TIMEOUT — advancing via pacemaker", slot);
+            self.consensus.on_timeout();
+        }
+
         let metrics = self.poh.tick(Instant::now());
         self.last_poh_metrics = Some(metrics.clone());
         println!(
@@ -112,22 +242,76 @@ impl Node {
         // Check if any slot can be finalized
         self.check_finality();
 
+        // Evict old cached blocks/receipts to bound memory (Fix 10)
+        self.evict_old_cache();
+
         Ok(())
     }
 
+    /// Process epoch transition: distribute staking rewards.
+    fn process_epoch_transition(&mut self, new_epoch: u64) -> Result<()> {
+        let slot = self.consensus.current_slot();
+        let total_supply = 1_000_000_000_000_000u128; // TODO: track dynamically
+        let emission = self.emission_schedule.epoch_emission(slot, total_supply);
+
+        if emission == 0 {
+            return Ok(());
+        }
+
+        let total_stake = self.consensus.total_stake();
+        if total_stake == 0 {
+            return Ok(());
+        }
+
+        println!(
+            "Epoch {} → {}: distributing {} emission rewards",
+            new_epoch - 1,
+            new_epoch,
+            emission
+        );
+
+        // In a full implementation we'd iterate the validator set and credit each.
+        // For now, credit the local validator if present.
+        if let Some(ref keypair) = self.validator_key {
+            let addr = Address::from_slice(&keypair.to_address()).unwrap();
+            // Proportional reward (simplified: assume we're the only active validator)
+            let _ = self.ledger.credit_account(&addr, emission);
+        }
+
+        Ok(())
+    }
+
+    /// Evict oldest cached blocks/receipts to keep memory bounded.
+    fn evict_old_cache(&mut self) {
+        if self.blocks_by_hash.len() > MAX_CACHED_BLOCKS {
+            // Find the lowest slot and remove it
+            if let Some(&min_slot) = self.blocks_by_slot.keys().min() {
+                if let Some(hash) = self.blocks_by_slot.remove(&min_slot) {
+                    self.blocks_by_hash.remove(&hash);
+                }
+            }
+        }
+
+        if self.receipts.len() > MAX_CACHED_RECEIPTS {
+            // Remove a batch of old receipts (they're on disk via persist_block)
+            let to_remove: Vec<H256> = self.receipts.keys().take(1000).cloned().collect();
+            for key in to_remove {
+                self.receipts.remove(&key);
+            }
+        }
+    }
+
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
-        // Get transactions from mempool
         let transactions = self.mempool.get_transactions(1000, 5_000_000);
 
         if transactions.is_empty() {
             println!("  No transactions to include");
-            // Even with no transactions, create an empty block for consensus
         }
 
         println!("  Including {} transactions", transactions.len());
 
         // Apply transactions to ledger
-        let mut receipts = self.ledger.apply_block_transactions(&transactions)?;
+        let receipts = self.ledger.apply_block_transactions(&transactions)?;
         let successful = receipts
             .iter()
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
@@ -141,10 +325,9 @@ impl Node {
             );
         }
 
-        // Get VRF proof from consensus (proves leader eligibility)
+        // Get VRF proof from consensus
         let vrf_proof_crypto = self.consensus.get_leader_proof(slot);
         let vrf_proof = if let Some(proof) = vrf_proof_crypto {
-            // Convert from crypto::VrfProof to types::VrfProof
             aether_types::VrfProof {
                 output: proof.output,
                 proof: proof.proof,
@@ -156,17 +339,26 @@ impl Node {
             }
         };
 
-        // Create block with VRF proof
+        // Compute block header roots BEFORE any mutation
         let state_root = self.ledger.state_root();
+        let transactions_root = compute_transactions_root(&transactions);
+        // Compute receipts_root from receipts in their current (pre-mutation) state
+        let receipts_root = compute_receipts_root(&receipts);
+
         let proposer = self.validator_key.as_ref().unwrap().to_address();
 
-        let block = Block::new(
+        let mut block = Block::new(
             slot,
             self.latest_block_hash,
             aether_types::Address::from_slice(&proposer).unwrap(),
             vrf_proof,
             transactions.clone(),
         );
+
+        // Set computed roots on the header BEFORE hashing
+        block.header.state_root = state_root;
+        block.header.transactions_root = transactions_root;
+        block.header.receipts_root = receipts_root;
 
         let block_hash = block.hash();
         println!("  Block produced: {:?}", block_hash);
@@ -178,49 +370,251 @@ impl Node {
             return Ok(());
         }
 
-        // Create vote for our own block (BLS signature)
-        let validator_pubkey =
-            PublicKey::from_bytes(self.validator_key.as_ref().unwrap().public_key());
+        // Process fee market (only once — on_block_received skips for already-known blocks)
+        let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
+        let gas_used: u64 = transactions.iter().map(|tx| tx.gas_limit).sum();
+        let _fee_result = self.fee_market.process_block(gas_used, total_fees);
 
-        // Sign vote with BLS keypair for valid aggregation
+        // Store block and receipts — set block_hash/slot on receipts for storage
+        for receipt in &receipts {
+            let mut stored_receipt = receipt.clone();
+            stored_receipt.block_hash = block_hash;
+            stored_receipt.slot = slot;
+            self.receipts.insert(stored_receipt.tx_hash, stored_receipt);
+        }
+
+        self.fork_choice.add_block(slot, block_hash);
+        self.latest_block_hash = block_hash;
+        self.latest_block_slot = Some(slot);
+        self.blocks_by_slot.insert(slot, block_hash);
+        self.blocks_by_hash.insert(block_hash, block.clone());
+
+        // Persist block to disk
+        let stored_receipts: Vec<TransactionReceipt> = receipts.iter().map(|r| {
+            let mut sr = r.clone();
+            sr.block_hash = block_hash;
+            sr.slot = slot;
+            sr
+        }).collect();
+        self.persist_block(&block, block_hash, &stored_receipts)?;
+
+        // Record block parent for 2-chain finality tracking
+        self.consensus.record_block(block_hash, block.header.parent_hash, slot);
+
+        // Remove transactions from mempool
+        let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
+        self.mempool.remove_transactions(&tx_hashes);
+
+        // Broadcast block to network
+        self.broadcast(OutboundMessage::BroadcastBlock(block.clone()));
+
+        // Vote on our own block
+        self.vote_on_block(&block)?;
+
+        Ok(())
+    }
+
+    /// Create a BLS vote for a block and submit to consensus + broadcast.
+    fn vote_on_block(&mut self, block: &Block) -> Result<()> {
+        let (validator_key, bls_key) = match (&self.validator_key, &self.bls_key) {
+            (Some(vk), Some(bk)) => (vk, bk),
+            (Some(_), None) => {
+                println!("  WARNING: validator_key set but bls_key missing, cannot vote");
+                return Ok(());
+            }
+            _ => return Ok(()), // Not a validator
+        };
+
+        let block_hash = block.hash();
+        let slot = block.header.slot;
+        let validator_pubkey = PublicKey::from_bytes(validator_key.public_key());
+
         let vote_msg = {
             let mut msg = Vec::new();
             msg.extend_from_slice(block_hash.as_bytes());
             msg.extend_from_slice(&slot.to_le_bytes());
             msg
         };
-        let vote_sig = if let Some(bls) = &self.bls_key {
-            bls.sign(&vote_msg)
-        } else {
-            vec![0u8; 96]
-        };
+        let vote_sig = bls_key.sign(&vote_msg);
 
-        match self.consensus.add_vote(aether_types::Vote {
+        let vote = Vote {
             slot,
             block_hash,
             validator: validator_pubkey,
             signature: aether_types::Signature::from_bytes(vote_sig),
-            stake: self.consensus.total_stake(), // Single validator gets all stake
-        }) {
+            stake: self.consensus.total_stake(),
+        };
+
+        match self.consensus.add_vote(vote.clone()) {
             Ok(()) => println!("  Vote created and processed"),
             Err(e) => println!("  Vote failed: {e}"),
         }
 
-        for receipt in &mut receipts {
-            receipt.block_hash = block_hash;
-            receipt.slot = slot;
-            self.receipts.insert(receipt.tx_hash, receipt.clone());
+        self.broadcast(OutboundMessage::BroadcastVote(vote));
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Block Reception (Phase B)
+    // ========================================================================
+
+    /// Handle a block received from the P2P network.
+    pub fn on_block_received(&mut self, block: Block) -> Result<()> {
+        let block_hash = block.hash();
+
+        // Reject if already known (also prevents fee market double-update)
+        if self.blocks_by_hash.contains_key(&block_hash) {
+            return Ok(());
         }
 
-        self.latest_block_hash = block_hash;
-        self.latest_block_slot = Some(slot);
-        self.blocks_by_slot.insert(slot, block_hash);
-        self.blocks_by_hash.insert(block_hash, block);
+        // Reject if slot is at or before finalized (except slot 0 edge case)
+        if block.header.slot <= self.consensus.finalized_slot()
+            && self.consensus.finalized_slot() > 0
+        {
+            return Ok(());
+        }
 
-        // Remove transactions from mempool
-        let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
+        // Validate block via consensus (VRF proof, locked block check)
+        self.consensus.validate_block(&block)?;
+
+        // Validate transactions_root matches actual transactions
+        let computed_tx_root = compute_transactions_root(&block.transactions);
+        if block.header.transactions_root != H256::zero()
+            && computed_tx_root != block.header.transactions_root
+        {
+            bail!(
+                "transactions_root mismatch: computed={}, block={}",
+                computed_tx_root,
+                block.header.transactions_root
+            );
+        }
+
+        // Validate parent exists (skip for genesis-like blocks)
+        if block.header.slot > 0
+            && block.header.parent_hash != H256::zero()
+            && !self.blocks_by_hash.contains_key(&block.header.parent_hash)
+        {
+            bail!(
+                "unknown parent block: {:?} for slot {}",
+                block.header.parent_hash,
+                block.header.slot
+            );
+        }
+
+        // Execute transactions SPECULATIVELY (not committed to disk yet)
+        let (receipts, overlay) =
+            self.ledger.apply_block_speculatively(&block.transactions)?;
+
+        // Validate state root matches before committing
+        if block.header.state_root != H256::zero()
+            && overlay.state_root != block.header.state_root
+        {
+            // Discard overlay — state is UNCHANGED (rollback!)
+            bail!(
+                "state root mismatch: computed={}, block={} — block rejected, state unchanged",
+                overlay.state_root,
+                block.header.state_root
+            );
+        }
+
+        // State root matches — commit overlay to permanent storage
+        self.ledger.commit_overlay(overlay)?;
+
+        // Fork choice: track this block and check for competing forks
+        let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
+        if is_fork {
+            println!(
+                "  FORK detected at slot {}: multiple blocks",
+                block.header.slot
+            );
+        }
+
+        // Store block
+        self.blocks_by_slot.insert(block.header.slot, block_hash);
+        self.blocks_by_hash.insert(block_hash, block.clone());
+
+        // Only update tip if this is the canonical choice
+        if self.fork_choice.canonical_block(block.header.slot) == Some(block_hash) {
+            self.latest_block_hash = block_hash;
+            self.latest_block_slot = Some(block.header.slot);
+        }
+
+        // Record block parent for 2-chain finality tracking
+        self.consensus
+            .record_block(block_hash, block.header.parent_hash, block.header.slot);
+
+        // Store receipts with block context
+        for receipt in &receipts {
+            let mut stored_receipt = receipt.clone();
+            stored_receipt.block_hash = block_hash;
+            stored_receipt.slot = block.header.slot;
+            self.receipts
+                .insert(stored_receipt.tx_hash, stored_receipt);
+        }
+
+        // Persist block and receipts to disk
+        let stored_receipts: Vec<TransactionReceipt> = receipts
+            .iter()
+            .map(|r| {
+                let mut sr = r.clone();
+                sr.block_hash = block_hash;
+                sr.slot = block.header.slot;
+                sr
+            })
+            .collect();
+        self.persist_block(&block, block_hash, &stored_receipts)?;
+
+        // Remove included txs from mempool
+        let tx_hashes: Vec<H256> = block.transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
 
+        // Update fee market
+        let total_fees: u128 = block.transactions.iter().map(|tx| tx.fee).sum();
+        let gas_used: u64 = block.transactions.iter().map(|tx| tx.gas_limit).sum();
+        let _fee_result = self.fee_market.process_block(gas_used, total_fees);
+
+        // Vote on this block (if we're a validator)
+        self.vote_on_block(&block)?;
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Vote Reception (Phase C)
+    // ========================================================================
+
+    /// Handle a vote received from the P2P network.
+    pub fn on_vote_received(&mut self, vote: Vote) -> Result<()> {
+        self.consensus.add_vote(vote)?;
+        self.check_finality();
+        Ok(())
+    }
+
+    // ========================================================================
+    // Network Event Dispatch
+    // ========================================================================
+
+    /// Handle a raw network event from the P2P layer.
+    pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
+        match decode_network_event(event) {
+            Some(NodeMessage::BlockReceived(block)) => {
+                if let Err(e) = self.on_block_received(block) {
+                    println!("  Block rejected: {e}");
+                }
+            }
+            Some(NodeMessage::VoteReceived(vote)) => {
+                if let Err(e) = self.on_vote_received(vote) {
+                    println!("  Vote rejected: {e}");
+                }
+            }
+            Some(NodeMessage::TransactionReceived(tx)) => {
+                if let Err(e) = self.mempool.add_transaction(tx) {
+                    println!("  Tx rejected: {e}");
+                }
+            }
+            None => {}
+        }
         Ok(())
     }
 
@@ -228,10 +622,32 @@ impl Node {
         let current_slot = self.consensus.current_slot();
         let last_finalized = self.consensus.finalized_slot();
 
-        // Check last few slots for finality
-        for slot in last_finalized..current_slot {
+        // Only check slots we haven't checked yet (avoid O(n) scan on restart)
+        let start = if last_finalized > 0 {
+            last_finalized
+        } else {
+            0
+        };
+
+        // Limit to checking at most 100 slots per tick to prevent CPU spikes
+        let end = current_slot.min(start + 100);
+
+        for slot in start..=end {
             if self.consensus.check_finality(slot) {
                 println!("✓ FINALIZED: Slot {} via VRF+HotStuff+BLS!", slot);
+
+                // Update epoch randomness from finalized block's VRF output
+                if let Some(block) = self.get_block_by_slot(slot) {
+                    if block.header.vrf_proof.output != [0u8; 32] {
+                        self.consensus
+                            .update_epoch_randomness(&block.header.vrf_proof.output);
+                    }
+                }
+
+                // Finalize in fork choice
+                if let Some(&hash) = self.blocks_by_slot.get(&slot) {
+                    self.fork_choice.finalize(slot, hash);
+                }
             }
         }
     }
@@ -286,6 +702,42 @@ impl Node {
     pub fn get_account(&self, address: Address) -> Result<Option<Account>> {
         self.ledger.get_account(&address)
     }
+
+    pub fn base_fee(&self) -> u128 {
+        self.fee_market.base_fee
+    }
+}
+
+// ============================================================================
+// Block Header Root Computation (Phase D)
+// ============================================================================
+
+/// Compute the Merkle root of a list of transactions (hash of hashes).
+pub fn compute_transactions_root(txs: &[Transaction]) -> H256 {
+    if txs.is_empty() {
+        return H256::zero();
+    }
+    let mut hasher = Sha256::new();
+    for tx in txs {
+        hasher.update(tx.hash().as_bytes());
+    }
+    H256::from_slice(&hasher.finalize()).unwrap()
+}
+
+/// Compute the Merkle root of a list of receipts.
+/// NOTE: Must be called BEFORE receipts are mutated with block_hash/slot
+/// to ensure deterministic roots across nodes.
+pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
+    if receipts.is_empty() {
+        return H256::zero();
+    }
+    let mut hasher = Sha256::new();
+    for receipt in receipts {
+        let receipt_bytes = bincode::serialize(receipt).unwrap_or_default();
+        let receipt_hash = Sha256::digest(&receipt_bytes);
+        hasher.update(&receipt_hash);
+    }
+    H256::from_slice(&hasher.finalize()).unwrap()
 }
 
 #[cfg(test)]
@@ -321,5 +773,82 @@ mod tests {
         let second_metrics = node.poh_metrics().cloned().unwrap();
         assert!(second_metrics.tick_count >= 2);
         assert!(second_metrics.average_duration_ms >= 0.0);
+    }
+
+    #[test]
+    fn outbound_buffer_is_capped() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
+
+        // Push more than MAX_OUTBOUND_BUFFER messages
+        for _ in 0..MAX_OUTBOUND_BUFFER + 100 {
+            node.broadcast(OutboundMessage::BroadcastVote(Vote {
+                slot: 0,
+                block_hash: H256::zero(),
+                validator: PublicKey::from_bytes(vec![0u8; 32]),
+                signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+                stake: 0,
+            }));
+        }
+
+        assert_eq!(node.outbound_buffer.len(), MAX_OUTBOUND_BUFFER);
+    }
+
+    #[test]
+    fn duplicate_block_is_ignored() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
+
+        let block = Block::new(
+            0,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+
+        // Insert manually
+        let hash = block.hash();
+        node.blocks_by_hash.insert(hash, block.clone());
+
+        // on_block_received should return Ok (silently skip duplicate)
+        assert!(node.on_block_received(block).is_ok());
+    }
+
+    #[test]
+    fn transactions_root_is_deterministic() {
+        let tx1 = Transaction {
+            nonce: 0,
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![1, 2, 3],
+            gas_limit: 21000,
+            fee: 1000,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+
+        let root1 = compute_transactions_root(&[tx1.clone()]);
+        let root2 = compute_transactions_root(&[tx1]);
+        assert_eq!(root1, root2, "same input must produce same root");
+    }
+
+    #[test]
+    fn empty_root_is_zero() {
+        assert_eq!(compute_transactions_root(&[]), H256::zero());
+        assert_eq!(compute_receipts_root(&[]), H256::zero());
     }
 }

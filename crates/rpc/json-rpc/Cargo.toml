@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tokio.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 bincode.workspace = true
 anyhow.workspace = true
 warp = "0.3"
 hex = "0.4"
+futures = "0.3"
 
 aether-types = { path = "../../types" }
 aether-ledger = { path = "../../ledger" }

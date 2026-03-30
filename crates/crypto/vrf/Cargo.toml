@@ -9,3 +9,13 @@ thiserror.workspace = true
 serde.workspace = true
 sha2 = "0.10"
 rand = "0.8"
+curve25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "vrf_bench"
+harness = false

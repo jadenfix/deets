@@ -2,11 +2,15 @@ use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use aether_node::{create_hybrid_consensus, validator_info_from_keypair, Node, ValidatorKeypair};
+use aether_node::{
+    create_hybrid_consensus, validator_info_from_keypair, Node, OutboundMessage, ValidatorKeypair,
+};
+use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
-use aether_types::{Address, Block, Transaction, TransactionReceipt, H256};
+use aether_types::{Address, Block, Transaction, TransactionReceipt, Vote, H256};
 use anyhow::{Context, Result};
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 struct NodeRpcBackend {
     node: Arc<RwLock<Node>>,
@@ -83,8 +87,19 @@ impl RpcBackend for NodeRpcBackend {
     }
 }
 
-async fn run_slot_loop(node: Arc<RwLock<Node>>) -> Result<()> {
+async fn run_slot_loop(
+    node: Arc<RwLock<Node>>,
+    mut net_rx: mpsc::UnboundedReceiver<aether_p2p::network::NetworkEvent>,
+) -> Result<()> {
     loop {
+        // Drain all pending network messages
+        while let Ok(event) = net_rx.try_recv() {
+            let mut guard = node
+                .write()
+                .map_err(|_| anyhow::anyhow!("node lock poisoned"))?;
+            guard.handle_network_event(event)?;
+        }
+        // Tick the node
         {
             let mut guard = node
                 .write()
@@ -95,9 +110,50 @@ async fn run_slot_loop(node: Arc<RwLock<Node>>) -> Result<()> {
     }
 }
 
+/// P2P outbound loop: reads OutboundMessages from node and publishes to network.
+async fn run_p2p_outbound(
+    mut p2p: P2PNetwork,
+    mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    net_tx: mpsc::UnboundedSender<aether_p2p::network::NetworkEvent>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            // Poll for inbound P2P events
+            event = p2p.poll() => {
+                if let Some(event) = event {
+                    let _ = net_tx.send(event);
+                }
+            }
+            // Handle outbound messages from the node
+            msg = outbound_rx.recv() => {
+                match msg {
+                    Some(OutboundMessage::BroadcastBlock(block)) => {
+                        if let Err(e) = p2p.broadcast_block(&block) {
+                            tracing::warn!("failed to broadcast block: {e}");
+                        }
+                    }
+                    Some(OutboundMessage::BroadcastVote(vote)) => {
+                        let data = bincode::serialize(&vote).unwrap_or_default();
+                        if let Err(e) = p2p.publish(TOPIC_VOTE, data) {
+                            tracing::warn!("failed to broadcast vote: {e}");
+                        }
+                    }
+                    Some(OutboundMessage::BroadcastTransaction(tx)) => {
+                        if let Err(e) = p2p.broadcast_transaction(&tx) {
+                            tracing::warn!("failed to broadcast tx: {e}");
+                        }
+                    }
+                    None => break, // Channel closed
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Aether Node v0.1.0");
+    println!("Aether Node v0.2.0");
     println!("=================\n");
 
     let validator_keypair = ValidatorKeypair::generate();
@@ -116,12 +172,32 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(8545);
+    let p2p_port: u16 = env::var("AETHER_P2P_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9000);
 
-    let mut node = Node::new(db_path, consensus, Some(validator_keypair.ed25519), Some(validator_keypair.bls))?;
+    let mut node = Node::new(
+        db_path,
+        consensus,
+        Some(validator_keypair.ed25519),
+        Some(validator_keypair.bls),
+    )?;
 
-    // Seed validator with genesis balance
-    node.seed_account(&validator_address, 1_000_000_000_000)?;
-    println!("Genesis: funded validator with 1_000_000_000_000");
+    // Seed validator with genesis balance (only on first run)
+    if node.get_account(validator_address)?.is_none() {
+        node.seed_account(&validator_address, 1_000_000_000_000)?;
+        println!("Genesis: funded validator with 1_000_000_000_000");
+    } else {
+        println!("Node already initialized, skipping genesis funding");
+    }
+
+    // Set up P2P outbound channel
+    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    node.set_broadcast_tx(outbound_tx);
+
+    // Set up P2P inbound channel
+    let (net_tx, net_rx) = mpsc::unbounded_channel();
 
     let shared_node = Arc::new(RwLock::new(node));
 
@@ -130,13 +206,35 @@ async fn main() -> Result<()> {
     };
     let rpc_server = JsonRpcServer::new(backend, rpc_port);
 
+    // Initialize P2P network
+    let mut p2p = P2PNetwork::new_random()?;
+    let listen_addr = format!("/ip4/0.0.0.0/tcp/{}", p2p_port);
+    p2p.start(&listen_addr).await?;
+    let peer_id = p2p.peer_id_str();
+
     println!("Validator address: {:?}", validator_address);
+    println!("Peer ID: {}", peer_id);
     println!("Consensus: VRF + HotStuff + BLS");
+    println!("P2P listening on 0.0.0.0:{p2p_port}");
     println!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
     println!("Press Ctrl-C to stop.\n");
 
-    let slot_task = tokio::spawn(run_slot_loop(shared_node));
+    // Connect to bootstrap peers if specified
+    if let Ok(peers) = env::var("AETHER_BOOTSTRAP_PEERS") {
+        for peer_addr in peers.split(',') {
+            let addr = peer_addr.trim();
+            if !addr.is_empty() {
+                match p2p.connect_peer(addr) {
+                    Ok(()) => println!("Connecting to peer: {addr}"),
+                    Err(e) => println!("Failed to connect to {addr}: {e}"),
+                }
+            }
+        }
+    }
+
+    let slot_task = tokio::spawn(run_slot_loop(shared_node, net_rx));
     let rpc_task = tokio::spawn(async move { rpc_server.run().await });
+    let p2p_task = tokio::spawn(run_p2p_outbound(p2p, outbound_rx, net_tx));
 
     tokio::select! {
         res = slot_task => {
@@ -149,6 +247,12 @@ async fn main() -> Result<()> {
             match res {
                 Ok(inner) => inner?,
                 Err(e) => return Err(anyhow::anyhow!("rpc task failed: {e}")),
+            }
+        }
+        res = p2p_task => {
+            match res {
+                Ok(inner) => inner?,
+                Err(e) => return Err(anyhow::anyhow!("p2p task failed: {e}")),
             }
         }
         _ = tokio::signal::ctrl_c() => {

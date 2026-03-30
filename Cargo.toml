@@ -30,6 +30,7 @@
 
 [workspace]
 resolver = "2"
+exclude = ["fuzz"]
 
 members = [
     # Core protocol stack
@@ -81,8 +82,21 @@ members = [
     "crates/codecs",
     "crates/metrics",
     
+    # Light client
+    "crates/light-client",
+
+    # MEV mitigation
+    "crates/mev",
+
+    # Account abstraction
+    "crates/programs/account-abstraction",
+
+    # L2 Rollup
+    "crates/rollup",
+
     # SDKs
     "crates/sdk/rust",
+    "crates/sdk/contract",
     
     # Tools
     "crates/tools/cli",
@@ -104,6 +118,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
+publish = false
 repository = "https://github.com/aether/aether"
 
 [workspace.dependencies]
@@ -119,14 +134,16 @@ borsh = "1"
 
 # Cryptography
 ed25519-dalek = "2"
+curve25519-dalek = { version = "4", features = ["digest"] }
 blst = "0.3"
 sha2 = "0.10"
 blake3 = "1"
 rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
 
 # Networking
 quinn = "0.10"
-libp2p = { version = "0.53", features = ["gossipsub", "identify", "kad", "noise", "tcp", "quic"] }
+libp2p = { version = "0.53", features = ["gossipsub", "identify", "kad", "noise", "tcp", "quic", "yamux", "macros", "tokio"] }
 
 # Storage
 rocksdb = "0.21"
@@ -147,6 +164,7 @@ prometheus = "0.13"
 
 # Testing
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [profile.release]
 opt-level = 3

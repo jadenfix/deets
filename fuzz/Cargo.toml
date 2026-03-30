@@ -1,0 +1,41 @@
+[package]
+name = "aether-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+aether-types = { path = "../crates/types" }
+aether-crypto-vrf = { path = "../crates/crypto/vrf" }
+aether-state-merkle = { path = "../crates/state/merkle" }
+aether-runtime = { path = "../crates/runtime" }
+bincode = "1"
+
+[[bin]]
+name = "fuzz_transaction_deser"
+path = "fuzz_targets/fuzz_transaction_deser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_block_deser"
+path = "fuzz_targets/fuzz_block_deser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_vrf_verify"
+path = "fuzz_targets/fuzz_vrf_verify.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_wasm_execute"
+path = "fuzz_targets/fuzz_wasm_execute.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_merkle_proof"
+path = "fuzz_targets/fuzz_merkle_proof.rs"
+doc = false

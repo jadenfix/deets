@@ -32,13 +32,25 @@ pub fn verify_kzg_openings(
 
     for opening in &response.openings {
         validate_opening(challenge, opening, &mut seen)?;
-        verifier
-            .verify(&opening.commitment, &opening.proof, &opening.point)
+        let point: [u8; 32] = opening
+            .point
+            .as_slice()
+            .try_into()
+            .map_err(|_| VerifierError::InvalidChallenge("point must be 32 bytes"))?;
+        let valid = verifier
+            .verify(&opening.commitment, &opening.proof, &point)
             .map_err(|err| VerifierError::InvalidProof {
                 layer: opening.layer_idx,
                 point: opening.point_idx,
                 source: err,
             })?;
+        if !valid {
+            return Err(VerifierError::InvalidProof {
+                layer: opening.layer_idx,
+                point: opening.point_idx,
+                source: anyhow::anyhow!("KZG proof verification failed"),
+            });
+        }
     }
 
     Ok(())
@@ -75,7 +87,7 @@ fn validate_opening(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_crypto_kzg::{KzgCommitment, KzgProof};
+    use aether_crypto_kzg::{KzgCommitment, KzgProof, ScalarBytes};
     use aether_types::H256;
 
     fn sample_challenge() -> KzgChallenge {
@@ -87,31 +99,37 @@ mod tests {
         }
     }
 
-    fn sample_openings() -> Vec<Opening> {
+    fn make_valid_openings(verifier: &KzgVerifier) -> Vec<Opening> {
+        // Create a real polynomial and generate valid commitments/proofs
+        let mut coeffs = vec![[0u8; 32]; 3];
+        coeffs[0][0] = 3;
+        coeffs[1][0] = 2;
+        coeffs[2][0] = 1;
+
+        let commitment = verifier.commit(&coeffs).unwrap();
+
+        let mut z1 = [0u8; 32];
+        z1[0] = 1;
+        let mut z2 = [0u8; 32];
+        z2[0] = 4;
+
+        let proof1 = verifier.create_proof(&coeffs, &z1).unwrap();
+        let proof2 = verifier.create_proof(&coeffs, &z2).unwrap();
+
         vec![
             Opening {
                 layer_idx: 0,
                 point_idx: 0,
-                point: vec![1u8; 32],
-                commitment: KzgCommitment {
-                    commitment: vec![1u8; 48],
-                },
-                proof: KzgProof {
-                    proof: vec![2u8; 48],
-                    evaluation: vec![3u8; 32],
-                },
+                point: z1.to_vec(),
+                commitment: commitment.clone(),
+                proof: proof1,
             },
             Opening {
                 layer_idx: 0,
                 point_idx: 1,
-                point: vec![4u8; 32],
-                commitment: KzgCommitment {
-                    commitment: vec![1u8; 48],
-                },
-                proof: KzgProof {
-                    proof: vec![2u8; 48],
-                    evaluation: vec![3u8; 32],
-                },
+                point: z2.to_vec(),
+                commitment,
+                proof: proof2,
             },
         ]
     }
@@ -120,7 +138,7 @@ mod tests {
     fn verifies_valid_openings() {
         let verifier = KzgVerifier::new(1024);
         let challenge = sample_challenge();
-        let openings = sample_openings();
+        let openings = make_valid_openings(&verifier);
         let response = KzgOpeningResponse::new(H256::zero(), openings);
 
         assert!(verify_kzg_openings(&verifier, &challenge, &response).is_ok());
@@ -130,8 +148,9 @@ mod tests {
     fn detects_mismatch() {
         let verifier = KzgVerifier::new(1024);
         let mut challenge = sample_challenge();
+        let openings = make_valid_openings(&verifier);
         let response =
-            KzgOpeningResponse::new(H256::from_slice(&[9u8; 32]).unwrap(), sample_openings());
+            KzgOpeningResponse::new(H256::from_slice(&[9u8; 32]).unwrap(), openings);
 
         assert!(verify_kzg_openings(&verifier, &challenge, &response).is_err());
         challenge.point_indices[0].push(2);

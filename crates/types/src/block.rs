@@ -9,8 +9,13 @@ pub struct Block {
     pub aggregated_vote: Option<AggregatedVote>,
 }
 
+/// Current protocol version. Incremented on hard forks.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BlockHeader {
+    /// Protocol version (for hard fork signaling).
+    pub version: u32,
     pub slot: Slot,
     pub parent_hash: H256,
     pub state_root: H256,
@@ -39,9 +44,9 @@ pub struct AggregatedVote {
 impl Block {
     pub fn hash(&self) -> H256 {
         use sha2::{Digest, Sha256};
-        let bytes = bincode::serialize(&self.header).unwrap();
+        let bytes = bincode::serialize(&self.header).expect("header serialization infallible");
         let hash = Sha256::digest(&bytes);
-        H256::from_slice(&hash).unwrap()
+        H256::from_slice(&hash).expect("SHA256 produces 32 bytes")
     }
 
     pub fn new(
@@ -53,6 +58,7 @@ impl Block {
     ) -> Self {
         Block {
             header: BlockHeader {
+                version: PROTOCOL_VERSION,
                 slot,
                 parent_hash,
                 state_root: H256::zero(),

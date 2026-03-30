@@ -106,7 +106,14 @@ fn phase1_simple_consensus_finality() {
 
 #[test]
 fn phase1_wasm_runtime_executes_minimal_contract() {
-    let wasm = b"\0asm\x01\x00\x00\x00";
+    // Minimal valid WASM: (module (func (export "execute") (param i32 i32) (result i32) i32.const 0))
+    let wasm: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+        0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f, // type: (i32,i32)->i32
+        0x03, 0x02, 0x01, 0x00, // func section
+        0x07, 0x0b, 0x01, 0x07, 0x65, 0x78, 0x65, 0x63, 0x75, 0x74, 0x65, 0x00, 0x00, // export
+        0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b, // code: i32.const 0, end
+    ];
     let context = ExecutionContext {
         contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
         caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -116,7 +123,7 @@ fn phase1_wasm_runtime_executes_minimal_contract() {
         timestamp: 1_000,
     };
 
-    let mut vm = WasmVm::new(10_000);
+    let mut vm = WasmVm::new(50_000);
     let result = vm
         .execute(wasm, &context, b"input")
         .expect("WASM execution succeeds");

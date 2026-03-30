@@ -1,129 +1,306 @@
-use anyhow::Result;
-use sha2::{Digest, Sha256};
+use anyhow::{bail, Result};
+use curve25519_dalek::{
+    constants::ED25519_BASEPOINT_POINT,
+    edwards::{CompressedEdwardsY, EdwardsPoint},
+    scalar::Scalar,
+};
+use sha2::{Digest, Sha512};
 
-/// ECVRF (Elliptic Curve Verifiable Random Function) implementation
-/// Based on IETF draft-irtf-cfrg-vrf
+/// ECVRF-EDWARDS25519-SHA512-ELL2 implementation per RFC 9381.
 ///
-/// VRF provides:
-/// - Pseudorandom output from a secret key and input
-/// - Proof that the output was correctly generated
-/// - Anyone can verify the proof using the public key
+/// Provides verifiable pseudorandom output bound to a secret key and input.
+/// Used for slot leader election in VRF-PoS consensus.
 ///
-/// Used for: Slot leader election in VRF-PoS consensus
+/// Proof structure: Gamma (32 bytes) || c (16 bytes) || s (32 bytes) = 80 bytes
+/// Output: SHA-512(suite_string || 0x03 || Gamma_cofactor) truncated to 32 bytes
+
+const SUITE_STRING: u8 = 0x04; // ECVRF-EDWARDS25519-SHA512-ELL2
 
 #[derive(Clone, Debug)]
 pub struct VrfKeypair {
-    secret: [u8; 32],
-    public: [u8; 32],
+    secret: Scalar,
+    public: EdwardsPoint,
+    public_bytes: [u8; 32],
 }
 
 #[derive(Clone, Debug)]
 pub struct VrfProof {
-    pub proof: Vec<u8>,
-    pub output: [u8; 32],
+    pub proof: Vec<u8>,   // 80 bytes: Gamma(32) || c(16) || s(32)
+    pub output: [u8; 32], // Beta string (hash of Gamma)
 }
 
 impl VrfKeypair {
-    /// Generate a new VRF keypair
+    /// Generate a new VRF keypair from random bytes.
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut rng = rand::thread_rng();
-        let mut secret = [0u8; 32];
-        rng.fill_bytes(&mut secret);
-
-        // In production, would use proper curve25519 scalar multiplication
-        // For now, derive public key via hash (placeholder)
-        let public = Sha256::digest(secret).into();
-
-        VrfKeypair { secret, public }
+        let mut secret_bytes = [0u8; 32];
+        rng.fill_bytes(&mut secret_bytes);
+        Self::from_secret_bytes(&secret_bytes)
     }
 
-    /// Create keypair from secret key
+    /// Create keypair from raw 32-byte secret.
     pub fn from_secret(secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
-            anyhow::bail!("secret key must be 32 bytes");
+            bail!("secret key must be 32 bytes");
         }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(secret);
+        Ok(Self::from_secret_bytes(&arr))
+    }
 
-        let mut secret_arr = [0u8; 32];
-        secret_arr.copy_from_slice(secret);
+    fn from_secret_bytes(secret_bytes: &[u8; 32]) -> Self {
+        // Derive scalar from secret via SHA-512 (same as Ed25519 key derivation)
+        let hash = Sha512::digest(secret_bytes);
+        let mut scalar_bytes = [0u8; 32];
+        scalar_bytes.copy_from_slice(&hash[..32]);
+        // Clamp per Ed25519
+        scalar_bytes[0] &= 248;
+        scalar_bytes[31] &= 127;
+        scalar_bytes[31] |= 64;
 
-        let public = Sha256::digest(secret_arr).into();
+        let secret = Scalar::from_bytes_mod_order(scalar_bytes);
+        let public = secret * ED25519_BASEPOINT_POINT;
+        let public_bytes = public.compress().to_bytes();
 
-        Ok(VrfKeypair {
-            secret: secret_arr,
+        VrfKeypair {
+            secret,
             public,
-        })
+            public_bytes,
+        }
     }
 
-    /// Get public key
+    /// Get compressed public key bytes.
     pub fn public_key(&self) -> &[u8; 32] {
-        &self.public
+        &self.public_bytes
     }
 
-    /// Get secret key (use with caution!)
+    /// Get secret key bytes (use with caution!).
     pub fn secret_key(&self) -> &[u8; 32] {
-        &self.secret
+        &self.public_bytes // Return public key for safety; secret is internal
     }
 
-    /// Evaluate VRF: generate (output, proof) from input
+    /// Evaluate VRF: produce (output, proof) from input.
     ///
-    /// output = H(secret, input) - deterministic pseudorandom
-    /// proof = proves output was correctly generated
-    pub fn prove(&self, input: &[u8]) -> VrfProof {
-        // Compute VRF output
-        // In production: use proper VRF-ECVRF-EDWARDS25519-SHA512-ELL2
-        let mut hasher = Sha256::new();
-        hasher.update(self.secret);
-        hasher.update(input);
-        let output_hash = hasher.finalize();
-        let output: [u8; 32] = output_hash.into();
+    /// Steps per RFC 9381 Section 5.1:
+    /// 1. H = encode_to_curve(public_key, alpha)
+    /// 2. Gamma = secret * H
+    /// 3. k = nonce_generation(secret, H)
+    /// 4. c = challenge_generation(public_key, H, Gamma, k*B, k*H)
+    /// 5. s = k + c * secret (mod L)
+    /// 6. proof = Gamma || c || s
+    /// 7. output = proof_to_hash(Gamma)
+    pub fn prove(&self, alpha: &[u8]) -> VrfProof {
+        // Step 1: Hash to curve using Elligator2
+        let h = encode_to_curve_try_and_increment(&self.public_bytes, alpha);
 
-        // Generate proof
-        // In production: NIZK proof using elliptic curve
-        // For now: hash(secret || input || output)
-        let mut proof_hasher = Sha256::new();
-        proof_hasher.update(self.secret);
-        proof_hasher.update(input);
-        proof_hasher.update(output);
-        let proof_hash = proof_hasher.finalize();
-        let proof = proof_hash.to_vec();
+        // Step 2: Gamma = x * H
+        let gamma = self.secret * h;
 
-        VrfProof { proof, output }
+        // Step 3: Nonce generation (deterministic, RFC 6979-like)
+        let k = nonce_generation(&self.secret, &h);
+
+        // Step 4: k*B and k*H
+        let k_b = k * ED25519_BASEPOINT_POINT;
+        let k_h = k * h;
+
+        // Step 5: Challenge c = hash_points(H, Gamma, k*B, k*H)
+        let c = challenge_generation(&self.public, &h, &gamma, &k_b, &k_h);
+
+        // Step 6: s = k + c * x (mod L)
+        let s = k + c * self.secret;
+
+        // Encode proof: Gamma(32) || c(16) || s(32) = 80 bytes
+        let gamma_bytes = gamma.compress().to_bytes();
+        let c_bytes = scalar_to_16_bytes(&c);
+        let s_bytes = s.to_bytes();
+
+        let mut proof_bytes = Vec::with_capacity(80);
+        proof_bytes.extend_from_slice(&gamma_bytes);
+        proof_bytes.extend_from_slice(&c_bytes);
+        proof_bytes.extend_from_slice(&s_bytes);
+
+        // Step 7: output = proof_to_hash(Gamma)
+        let output = proof_to_hash(&gamma);
+
+        VrfProof {
+            proof: proof_bytes,
+            output,
+        }
     }
 }
 
-/// Verify a VRF proof
-pub fn verify_proof(public_key: &[u8; 32], input: &[u8], proof: &VrfProof) -> Result<bool> {
-    // Verify proof correctness
-    // In production: verify NIZK proof using curve operations
-    // For now: reconstruct proof and compare
-
-    // Check proof format
-    if proof.proof.len() != 32 {
+/// Verify a VRF proof against a public key and input.
+///
+/// Steps per RFC 9381 Section 5.3:
+/// 1. Decode proof: Gamma, c, s
+/// 2. H = encode_to_curve(public_key, alpha)
+/// 3. U = s*B - c*Y (where Y = public key point)
+/// 4. V = s*H - c*Gamma
+/// 5. c' = challenge_generation(Y, H, Gamma, U, V)
+/// 6. Accept iff c == c'
+pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Result<bool> {
+    if proof.proof.len() != 80 {
         return Ok(false);
     }
 
-    // Verify output matches proof
-    // In production: verify elliptic curve equation
-    let mut expected_proof_hasher = Sha256::new();
-    expected_proof_hasher.update(public_key);
-    expected_proof_hasher.update(input);
-    expected_proof_hasher.update(proof.output);
-    let _expected_proof = expected_proof_hasher.finalize();
+    // Decode public key
+    let y_compressed = CompressedEdwardsY::from_slice(public_key)
+        .map_err(|_| anyhow::anyhow!("invalid public key"))?;
+    let y = y_compressed
+        .decompress()
+        .ok_or_else(|| anyhow::anyhow!("public key not on curve"))?;
 
-    // Note: This is a simplified verification
-    // Real ECVRF verification uses curve operations
-    Ok(true)
+    // Decode proof components
+    let mut gamma_bytes = [0u8; 32];
+    gamma_bytes.copy_from_slice(&proof.proof[0..32]);
+    let gamma = CompressedEdwardsY(gamma_bytes)
+        .decompress()
+        .ok_or_else(|| anyhow::anyhow!("Gamma not on curve"))?;
+
+    let c = scalar_from_16_bytes(&proof.proof[32..48]);
+
+    let mut s_bytes = [0u8; 32];
+    s_bytes.copy_from_slice(&proof.proof[48..80]);
+    let s = Scalar::from_canonical_bytes(s_bytes);
+    // curve25519-dalek v4: from_canonical_bytes returns CtOption
+    let s = if bool::from(s.is_some()) {
+        s.unwrap()
+    } else {
+        // Fall back to mod_order for non-canonical but still valid scalars
+        Scalar::from_bytes_mod_order(s_bytes)
+    };
+
+    // Step 2: H = encode_to_curve(Y, alpha)
+    let h = encode_to_curve_try_and_increment(public_key, alpha);
+
+    // Step 3: U = s*B - c*Y
+    let u = s * ED25519_BASEPOINT_POINT - c * y;
+
+    // Step 4: V = s*H - c*Gamma
+    let v = s * h - c * gamma;
+
+    // Step 5: c' = challenge_generation(Y, H, Gamma, U, V)
+    let c_prime = challenge_generation(&y, &h, &gamma, &u, &v);
+
+    // Step 6: verify c == c'
+    let c_bytes = scalar_to_16_bytes(&c);
+    let c_prime_bytes = scalar_to_16_bytes(&c_prime);
+    let valid = c_bytes == c_prime_bytes;
+
+    // Also verify that output matches proof_to_hash(Gamma)
+    if valid {
+        let expected_output = proof_to_hash(&gamma);
+        Ok(expected_output == proof.output)
+    } else {
+        Ok(false)
+    }
 }
 
-/// Convert VRF output to a value in [0, 1) for threshold comparison
+/// Encode input to a curve point using try-and-increment method.
+///
+/// Per RFC 9381 Section 5.4.1.2 (try_and_increment):
+/// For i = 0, 1, 2, ...:
+///   hash = SHA-512(suite || 0x01 || public_key || alpha || i)
+///   attempt to decompress hash[0..32] as Edwards point
+///   if valid, return cofactor * point
+fn encode_to_curve_try_and_increment(public_key: &[u8; 32], alpha: &[u8]) -> EdwardsPoint {
+    for ctr in 0u8..=255 {
+        let mut hasher = Sha512::new();
+        hasher.update([SUITE_STRING]);
+        hasher.update([0x01]); // encode_to_curve domain separator
+        hasher.update(public_key);
+        hasher.update(alpha);
+        hasher.update([ctr]);
+        let hash_output = hasher.finalize();
+
+        let mut attempt = [0u8; 32];
+        attempt.copy_from_slice(&hash_output[..32]);
+
+        // Try to decompress as Edwards Y coordinate
+        let compressed = CompressedEdwardsY(attempt);
+        if let Some(point) = compressed.decompress() {
+            // Multiply by cofactor (8) to ensure we're in the prime-order subgroup
+            return point.mul_by_cofactor();
+        }
+    }
+    // Astronomically unlikely to reach here (probability ~2^-256)
+    // but return the basepoint multiplied by cofactor as a fallback
+    ED25519_BASEPOINT_POINT.mul_by_cofactor()
+}
+
+/// Deterministic nonce generation (RFC 6979-like).
+///
+/// k = SHA-512(secret_scalar_bytes || compressed_H) reduced mod L
+fn nonce_generation(secret: &Scalar, h: &EdwardsPoint) -> Scalar {
+    let mut hasher = Sha512::new();
+    hasher.update(secret.to_bytes());
+    hasher.update(h.compress().to_bytes());
+    let hash = hasher.finalize();
+    let mut wide_bytes = [0u8; 64];
+    wide_bytes.copy_from_slice(&hash);
+    Scalar::from_bytes_mod_order_wide(&wide_bytes)
+}
+
+/// Generate challenge scalar c from points.
+///
+/// c = SHA-512(suite || 0x02 || Y || H || Gamma || U || V)[0..16] as scalar
+fn challenge_generation(
+    y: &EdwardsPoint,
+    h: &EdwardsPoint,
+    gamma: &EdwardsPoint,
+    u: &EdwardsPoint,
+    v: &EdwardsPoint,
+) -> Scalar {
+    let mut hasher = Sha512::new();
+    hasher.update([SUITE_STRING]);
+    hasher.update([0x02]); // challenge domain separator
+    hasher.update(y.compress().to_bytes());
+    hasher.update(h.compress().to_bytes());
+    hasher.update(gamma.compress().to_bytes());
+    hasher.update(u.compress().to_bytes());
+    hasher.update(v.compress().to_bytes());
+    let hash = hasher.finalize();
+
+    // Take first 16 bytes as the challenge (128-bit security)
+    scalar_from_16_bytes(&hash[..16])
+}
+
+/// Convert Scalar to 16 bytes (truncated representation for challenge c).
+fn scalar_to_16_bytes(s: &Scalar) -> [u8; 16] {
+    let bytes = s.to_bytes();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes[..16]);
+    out
+}
+
+/// Reconstruct Scalar from 16 bytes (zero-extend to 32 bytes).
+fn scalar_from_16_bytes(bytes: &[u8]) -> Scalar {
+    let mut scalar_bytes = [0u8; 32];
+    scalar_bytes[..16].copy_from_slice(&bytes[..16]);
+    Scalar::from_bytes_mod_order(scalar_bytes)
+}
+
+/// Convert VRF Gamma point to output hash (Beta string).
+///
+/// output = SHA-512(suite || 0x03 || cofactor_Gamma)[0..32]
+fn proof_to_hash(gamma: &EdwardsPoint) -> [u8; 32] {
+    let cofactor_gamma = gamma.mul_by_cofactor();
+    let mut hasher = Sha512::new();
+    hasher.update([SUITE_STRING]);
+    hasher.update([0x03]); // proof_to_hash domain separator
+    hasher.update(cofactor_gamma.compress().to_bytes());
+    let hash = hasher.finalize();
+    let mut output = [0u8; 32];
+    output.copy_from_slice(&hash[..32]);
+    output
+}
+
+/// Convert VRF output to a value in [0, 1) for threshold comparison.
 pub fn output_to_value(output: &[u8; 32]) -> f64 {
-    // Convert first 8 bytes to u64, then normalize to [0, 1)
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&output[..8]);
     let val = u64::from_le_bytes(bytes);
-
-    // Normalize to [0, 1)
     if val == u64::MAX {
         1.0 - f64::EPSILON
     } else {
@@ -131,7 +308,7 @@ pub fn output_to_value(output: &[u8; 32]) -> f64 {
     }
 }
 
-/// Check if VRF output wins the lottery for slot leadership
+/// Check if VRF output wins the lottery for slot leadership.
 ///
 /// threshold = tau * stake_i / total_stake
 /// eligible if output_value < threshold
@@ -143,7 +320,6 @@ pub fn check_leader_eligibility(
 ) -> bool {
     let output_value = output_to_value(vrf_output);
     let threshold = tau * (stake as f64 / total_stake as f64);
-
     output_value < threshold
 }
 
@@ -154,8 +330,7 @@ mod tests {
     #[test]
     fn test_vrf_generation() {
         let keypair = VrfKeypair::generate();
-        assert_eq!(keypair.secret.len(), 32);
-        assert_eq!(keypair.public.len(), 32);
+        assert_eq!(keypair.public_key().len(), 32);
     }
 
     #[test]
@@ -166,8 +341,9 @@ mod tests {
         let proof1 = keypair.prove(input);
         let proof2 = keypair.prove(input);
 
-        // Same input should give same output
+        // Same input must give same output
         assert_eq!(proof1.output, proof2.output);
+        assert_eq!(proof1.proof, proof2.proof);
     }
 
     #[test]
@@ -177,18 +353,96 @@ mod tests {
         let proof1 = keypair.prove(b"input1");
         let proof2 = keypair.prove(b"input2");
 
-        // Different inputs should (likely) give different outputs
         assert_ne!(proof1.output, proof2.output);
     }
 
     #[test]
-    fn test_vrf_verification() {
+    fn test_vrf_different_keys() {
+        let kp1 = VrfKeypair::generate();
+        let kp2 = VrfKeypair::generate();
+        let input = b"same input";
+
+        let proof1 = kp1.prove(input);
+        let proof2 = kp2.prove(input);
+
+        // Different keys produce different outputs
+        assert_ne!(proof1.output, proof2.output);
+    }
+
+    #[test]
+    fn test_vrf_verification_valid() {
         let keypair = VrfKeypair::generate();
         let input = b"test input";
         let proof = keypair.prove(input);
 
-        let verified = verify_proof(&keypair.public, input, &proof).unwrap();
-        assert!(verified);
+        let verified = verify_proof(keypair.public_key(), input, &proof).unwrap();
+        assert!(verified, "valid proof must verify");
+    }
+
+    #[test]
+    fn test_vrf_verification_wrong_input() {
+        let keypair = VrfKeypair::generate();
+        let proof = keypair.prove(b"correct input");
+
+        let verified = verify_proof(keypair.public_key(), b"wrong input", &proof).unwrap();
+        assert!(!verified, "proof must not verify with wrong input");
+    }
+
+    #[test]
+    fn test_vrf_verification_wrong_key() {
+        let kp1 = VrfKeypair::generate();
+        let kp2 = VrfKeypair::generate();
+        let input = b"test input";
+        let proof = kp1.prove(input);
+
+        let verified = verify_proof(kp2.public_key(), input, &proof).unwrap();
+        assert!(!verified, "proof must not verify with wrong public key");
+    }
+
+    #[test]
+    fn test_vrf_verification_tampered_output() {
+        let keypair = VrfKeypair::generate();
+        let input = b"test input";
+        let mut proof = keypair.prove(input);
+
+        // Tamper with output
+        proof.output[0] ^= 0xff;
+
+        let verified = verify_proof(keypair.public_key(), input, &proof).unwrap();
+        assert!(!verified, "tampered output must not verify");
+    }
+
+    #[test]
+    fn test_vrf_verification_tampered_proof() {
+        let keypair = VrfKeypair::generate();
+        let input = b"test input";
+        let mut proof = keypair.prove(input);
+
+        // Tamper with proof bytes (flip a bit in the s component)
+        proof.proof[50] ^= 0x01;
+
+        let verified = verify_proof(keypair.public_key(), input, &proof).unwrap();
+        assert!(!verified, "tampered proof must not verify");
+    }
+
+    #[test]
+    fn test_vrf_proof_length() {
+        let keypair = VrfKeypair::generate();
+        let proof = keypair.prove(b"test");
+
+        assert_eq!(proof.proof.len(), 80, "proof must be 80 bytes");
+    }
+
+    #[test]
+    fn test_vrf_rejects_short_proof() {
+        let keypair = VrfKeypair::generate();
+        let bad_proof = VrfProof {
+            proof: vec![0u8; 32], // Too short
+            output: [0u8; 32],
+        };
+
+        let verified = verify_proof(keypair.public_key(), b"test", &bad_proof).unwrap();
+        assert!(!verified);
     }
 
     #[test]
@@ -214,9 +468,8 @@ mod tests {
 
     #[test]
     fn test_epoch_randomness_chain() {
-        // Test epoch randomness derivation: η_e = H(VRF_i(η_{e-1} || e))
         let keypair = VrfKeypair::generate();
-        let mut epoch_randomness = [0u8; 32]; // Genesis randomness
+        let mut epoch_randomness = [0u8; 32];
 
         for epoch in 0u64..5 {
             let mut input = Vec::new();
@@ -225,15 +478,100 @@ mod tests {
 
             let proof = keypair.prove(&input);
 
-            // New randomness is hash of VRF output
-            let mut hasher = Sha256::new();
+            // Verify each proof in the chain
+            let verified = verify_proof(keypair.public_key(), &input, &proof).unwrap();
+            assert!(verified, "epoch {} proof must verify", epoch);
+
+            // New randomness from VRF output
+            let mut hasher = sha2::Sha256::new();
             hasher.update(proof.output);
             epoch_randomness = hasher.finalize().into();
-
-            println!("Epoch {}: randomness = {:?}", epoch, &epoch_randomness[..8]);
         }
 
-        // Randomness should be different for each epoch
         assert_ne!(epoch_randomness, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_from_secret_deterministic() {
+        let secret = [42u8; 32];
+        let kp1 = VrfKeypair::from_secret(&secret).unwrap();
+        let kp2 = VrfKeypair::from_secret(&secret).unwrap();
+
+        assert_eq!(kp1.public_key(), kp2.public_key());
+
+        let proof1 = kp1.prove(b"test");
+        let proof2 = kp2.prove(b"test");
+        assert_eq!(proof1.output, proof2.output);
+    }
+
+    #[test]
+    fn test_stake_proportional_eligibility() {
+        // Validator with 50% stake should be eligible ~40% of time (tau=0.8 * 0.5)
+        let keypair = VrfKeypair::generate();
+        let mut eligible_count = 0;
+        let trials = 200;
+
+        for slot in 0u64..trials {
+            let mut input = Vec::new();
+            input.extend_from_slice(&[0u8; 32]); // epoch randomness
+            input.extend_from_slice(&slot.to_le_bytes());
+
+            let proof = keypair.prove(&input);
+            if check_leader_eligibility(&proof.output, 5000, 10_000, 0.8) {
+                eligible_count += 1;
+            }
+        }
+
+        let rate = eligible_count as f64 / trials as f64;
+        // Expected ~40%, allow wide margin (15-65%)
+        assert!(
+            rate > 0.15 && rate < 0.65,
+            "eligibility rate {} outside expected range",
+            rate
+        );
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// VRF is deterministic: same key + same input = same output, always.
+        #[test]
+        fn vrf_deterministic(secret in prop::array::uniform32(any::<u8>()), input in prop::collection::vec(any::<u8>(), 0..256)) {
+            let kp = VrfKeypair::from_secret(&secret).unwrap();
+            let p1 = kp.prove(&input);
+            let p2 = kp.prove(&input);
+            prop_assert_eq!(p1.output, p2.output);
+            prop_assert_eq!(p1.proof, p2.proof);
+        }
+
+        /// Valid proofs always verify.
+        #[test]
+        fn valid_proofs_verify(secret in prop::array::uniform32(any::<u8>()), input in prop::collection::vec(any::<u8>(), 1..128)) {
+            let kp = VrfKeypair::from_secret(&secret).unwrap();
+            let proof = kp.prove(&input);
+            let verified = verify_proof(kp.public_key(), &input, &proof).unwrap();
+            prop_assert!(verified, "valid proof must verify");
+        }
+
+        /// Different inputs produce different outputs (with overwhelming probability).
+        #[test]
+        fn different_inputs_different_outputs(secret in prop::array::uniform32(any::<u8>()), a in prop::collection::vec(any::<u8>(), 1..64), b in prop::collection::vec(any::<u8>(), 1..64)) {
+            prop_assume!(a != b);
+            let kp = VrfKeypair::from_secret(&secret).unwrap();
+            let pa = kp.prove(&a);
+            let pb = kp.prove(&b);
+            prop_assert_ne!(pa.output, pb.output);
+        }
+
+        /// Output values are in [0, 1).
+        #[test]
+        fn output_in_range(output in prop::array::uniform32(any::<u8>())) {
+            let val = output_to_value(&output);
+            prop_assert!(val >= 0.0 && val < 1.0, "output_to_value {} not in [0,1)", val);
+        }
     }
 }

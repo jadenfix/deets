@@ -10,5 +10,8 @@ aether-quic-transport = { path = "../networking/quic-transport" }
 tokio.workspace = true
 libp2p.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 sha2 = "0.10"
 bincode = "1.3"
+zstd = "0.13"
+serde.workspace = true

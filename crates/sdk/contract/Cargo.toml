@@ -1,0 +1,10 @@
+[package]
+name = "aether-contract-sdk"
+version.workspace = true
+edition.workspace = true
+description = "SDK for writing smart contracts targeting the Aether WASM runtime"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

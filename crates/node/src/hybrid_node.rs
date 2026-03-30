@@ -67,6 +67,41 @@ pub fn create_hybrid_consensus(
     ))
 }
 
+/// Create a hybrid consensus engine with VRF public keys for multi-validator verification.
+pub fn create_hybrid_consensus_with_vrf_keys(
+    validators: Vec<ValidatorInfo>,
+    vrf_pubkeys: Vec<(Address, [u8; 32])>,
+    my_keypair: Option<&ValidatorKeypair>,
+    tau: f64,
+    epoch_length: u64,
+) -> Result<HybridConsensus> {
+    let (my_vrf, my_bls, my_addr) = if let Some(kp) = my_keypair {
+        (
+            Some(kp.vrf.clone()),
+            Some(kp.bls.clone()),
+            Some(kp.address()),
+        )
+    } else {
+        (None, None, None)
+    };
+
+    let mut consensus = HybridConsensus::new(
+        validators,
+        tau,
+        epoch_length,
+        my_vrf,
+        my_bls,
+        my_addr,
+    );
+
+    // Register all VRF public keys for cross-validation
+    for (addr, vrf_pk) in vrf_pubkeys {
+        consensus.register_vrf_pubkey(addr, vrf_pk);
+    }
+
+    Ok(consensus)
+}
+
 /// Helper to create validator info from a keypair
 pub fn validator_info_from_keypair(keypair: &ValidatorKeypair, stake: u128) -> ValidatorInfo {
     ValidatorInfo {

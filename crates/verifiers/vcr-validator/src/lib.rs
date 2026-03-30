@@ -149,9 +149,17 @@ impl VcrValidator {
             evaluation: vcr.trace_evaluation.clone(),
         };
 
-        self.kzg_verifier
-            .verify(&commitment, &proof, &vcr.trace_point)
-            .context("KZG trace proof verification failed")
+        let point: [u8; 32] = vcr
+            .trace_point
+            .as_slice()
+            .try_into()
+            .context("trace_point must be 32 bytes")?;
+        let valid = self
+            .kzg_verifier
+            .verify(&commitment, &proof, &point)
+            .context("KZG trace proof verification failed")?;
+        anyhow::ensure!(valid, "KZG trace proof verification returned false");
+        Ok(())
     }
 
     fn verify_signature(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
@@ -240,16 +248,26 @@ mod tests {
             cert_chain: vec![vec![4u8; 16]],
         };
 
+        // Create valid KZG commitment/proof using the real verifier
+        let kzg = aether_crypto_kzg::KzgVerifier::new(16);
+        let mut coeffs = [[0u8; 32]; 2];
+        coeffs[0][0] = 3;
+        coeffs[1][0] = 1;
+        let commitment = kzg.commit(&coeffs).unwrap();
+        let mut z = [0u8; 32];
+        z[0] = 4;
+        let proof = kzg.create_proof(&coeffs, &z).unwrap();
+
         let mut vcr = VerifiableComputeReceipt {
             job_id: H256::zero(),
             worker_id: worker.public_key(),
             model_hash: H256::zero(),
             input_hash: H256::zero(),
             output_hash: H256::from_slice(&[output; 32]).unwrap(),
-            trace_commitment: vec![1u8; 48],
-            trace_proof: vec![2u8; 48],
-            trace_evaluation: vec![3u8; 32],
-            trace_point: vec![4u8; 32],
+            trace_commitment: commitment.commitment,
+            trace_proof: proof.proof,
+            trace_evaluation: proof.evaluation,
+            trace_point: z.to_vec(),
             tee_attestation: serde_json::to_vec(&report).unwrap(),
             timestamp: current_timestamp(),
             signature: Vec::new(),

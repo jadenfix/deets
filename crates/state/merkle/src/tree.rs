@@ -1,27 +1,43 @@
-use crate::proof::MerkleProof;
+use crate::proof::{address_to_bits, internal_hash, leaf_hash, MerkleProof};
 use aether_types::{Address, H256};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Sparse Merkle Tree with 160-bit depth (matching Address = 20 bytes).
+///
+/// Only non-empty leaves are stored. Hashes are computed by recursively
+/// partitioning leaves by their address bits at each tree level.
+/// Empty subtrees use precomputed default hashes.
 #[derive(Clone, Debug)]
 pub struct SparseMerkleTree {
     root: H256,
     leaves: HashMap<Address, H256>,
+    /// defaults[0] = empty leaf hash, defaults[d] = hash of empty subtree of height d
+    defaults: Vec<H256>,
+    depth: usize,
 }
 
 impl SparseMerkleTree {
     pub fn new() -> Self {
-        Self::default()
+        let depth = 160;
+        let defaults = precompute_defaults(depth);
+        let root = defaults[depth];
+
+        SparseMerkleTree {
+            root,
+            leaves: HashMap::new(),
+            defaults,
+            depth,
+        }
     }
 
     pub fn update(&mut self, key: Address, value_hash: H256) {
         self.leaves.insert(key, value_hash);
-        self.recompute_root();
+        self.root = self.compute_root();
     }
 
     pub fn delete(&mut self, key: &Address) {
         self.leaves.remove(key);
-        self.recompute_root();
+        self.root = self.compute_root();
     }
 
     pub fn get(&self, key: &Address) -> Option<H256> {
@@ -32,36 +48,124 @@ impl SparseMerkleTree {
         self.root
     }
 
-    fn recompute_root(&mut self) {
-        if self.leaves.is_empty() {
-            self.root = H256::zero();
-            return;
-        }
+    /// Generate a Merkle proof for a key.
+    ///
+    /// Returns siblings in leaf-to-root order (index 0 = deepest sibling).
+    pub fn prove(&self, key: &Address) -> MerkleProof {
+        let bits = address_to_bits(key);
+        let value_hash = self.leaves.get(key).copied();
 
-        let mut entries: Vec<_> = self.leaves.iter().collect();
-        entries.sort_by_key(|(addr, _)| addr.as_bytes().to_vec());
+        let all_leaves: Vec<(Vec<bool>, H256)> = self
+            .leaves
+            .iter()
+            .map(|(addr, vh)| (address_to_bits(addr), leaf_hash(addr, vh)))
+            .collect();
 
-        let mut hasher = Sha256::new();
-        for (addr, value) in entries {
-            hasher.update(addr.as_bytes());
-            hasher.update(value.as_bytes());
-        }
+        // Collect siblings top-to-bottom, then reverse to get leaf-to-root order
+        let mut siblings = self.collect_siblings(&bits, &all_leaves, 0);
+        siblings.reverse();
 
-        self.root = H256::from_slice(&hasher.finalize()).unwrap();
+        MerkleProof::new(*key, value_hash, self.root, siblings)
     }
 
-    pub fn prove(&self, key: &Address) -> MerkleProof {
-        MerkleProof::new(*key, self.leaves.get(key).copied(), self.root)
+    /// Collect sibling hashes top-to-bottom (bit_index 0 = MSB = root level).
+    fn collect_siblings(
+        &self,
+        target_bits: &[bool],
+        leaves: &[(Vec<bool>, H256)],
+        bit_index: usize,
+    ) -> Vec<H256> {
+        if bit_index >= self.depth {
+            return Vec::new();
+        }
+
+        let mut same_side = Vec::new();
+        let mut sibling_side = Vec::new();
+        let target_bit = target_bits[bit_index];
+
+        for entry in leaves {
+            if entry.0[bit_index] == target_bit {
+                same_side.push(entry.clone());
+            } else {
+                sibling_side.push(entry.clone());
+            }
+        }
+
+        let remaining_height = self.depth - bit_index - 1;
+        let sibling_hash = self.subtree_hash(&sibling_side, bit_index + 1, remaining_height);
+
+        let mut siblings = vec![sibling_hash];
+        siblings.extend(self.collect_siblings(target_bits, &same_side, bit_index + 1));
+        siblings
+    }
+
+    fn compute_root(&self) -> H256 {
+        if self.leaves.is_empty() {
+            return self.defaults[self.depth];
+        }
+
+        let all_leaves: Vec<(Vec<bool>, H256)> = self
+            .leaves
+            .iter()
+            .map(|(addr, vh)| (address_to_bits(addr), leaf_hash(addr, vh)))
+            .collect();
+
+        self.subtree_hash(&all_leaves, 0, self.depth)
+    }
+
+    /// Compute the hash of a subtree.
+    /// `bit_index`: current position in the address bits
+    /// `height`: remaining height of this subtree
+    fn subtree_hash(
+        &self,
+        leaves: &[(Vec<bool>, H256)],
+        bit_index: usize,
+        height: usize,
+    ) -> H256 {
+        if leaves.is_empty() {
+            return self.defaults[height];
+        }
+
+        if height == 0 {
+            // Leaf level — should have exactly one entry
+            return leaves[0].1;
+        }
+
+        // Partition by bit at bit_index
+        let mut left = Vec::new();
+        let mut right = Vec::new();
+        for entry in leaves {
+            if entry.0[bit_index] {
+                right.push(entry.clone());
+            } else {
+                left.push(entry.clone());
+            }
+        }
+
+        let left_hash = self.subtree_hash(&left, bit_index + 1, height - 1);
+        let right_hash = self.subtree_hash(&right, bit_index + 1, height - 1);
+
+        internal_hash(&left_hash, &right_hash)
     }
 }
 
 impl Default for SparseMerkleTree {
     fn default() -> Self {
-        SparseMerkleTree {
-            root: H256::zero(),
-            leaves: HashMap::new(),
-        }
+        Self::new()
     }
+}
+
+/// Precompute default hashes.
+/// defaults[0] = H256::zero() (empty leaf)
+/// defaults[d] = internal_hash(defaults[d-1], defaults[d-1])
+fn precompute_defaults(depth: usize) -> Vec<H256> {
+    let mut defaults = Vec::with_capacity(depth + 1);
+    defaults.push(H256::zero());
+    for _ in 1..=depth {
+        let prev = defaults.last().unwrap();
+        defaults.push(internal_hash(prev, prev));
+    }
+    defaults
 }
 
 #[cfg(test)]
@@ -71,7 +175,7 @@ mod tests {
     #[test]
     fn test_empty_tree() {
         let tree = SparseMerkleTree::new();
-        assert_eq!(tree.root(), H256::zero());
+        assert_ne!(tree.root(), H256::zero());
     }
 
     #[test]
@@ -79,7 +183,6 @@ mod tests {
         let mut tree = SparseMerkleTree::new();
         let addr = Address::from_slice(&[1u8; 20]).unwrap();
         let value = H256::from_slice(&[2u8; 32]).unwrap();
-
         tree.update(addr, value);
         assert_eq!(tree.get(&addr), Some(value));
     }
@@ -88,12 +191,167 @@ mod tests {
     fn test_root_changes_on_update() {
         let mut tree = SparseMerkleTree::new();
         let root1 = tree.root();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        tree.update(addr, H256::from_slice(&[2u8; 32]).unwrap());
+        assert_ne!(root1, tree.root());
+    }
 
+    #[test]
+    fn test_deterministic_root() {
+        let mut t1 = SparseMerkleTree::new();
+        let mut t2 = SparseMerkleTree::new();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        let val = H256::from_slice(&[2u8; 32]).unwrap();
+        t1.update(addr, val);
+        t2.update(addr, val);
+        assert_eq!(t1.root(), t2.root());
+    }
+
+    #[test]
+    fn test_different_values_different_roots() {
+        let mut t1 = SparseMerkleTree::new();
+        let mut t2 = SparseMerkleTree::new();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        t1.update(addr, H256::from_slice(&[1u8; 32]).unwrap());
+        t2.update(addr, H256::from_slice(&[2u8; 32]).unwrap());
+        assert_ne!(t1.root(), t2.root());
+    }
+
+    #[test]
+    fn test_delete_restores_root() {
+        let mut tree = SparseMerkleTree::new();
+        let empty_root = tree.root();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        tree.update(addr, H256::from_slice(&[2u8; 32]).unwrap());
+        tree.delete(&addr);
+        assert_eq!(tree.root(), empty_root);
+    }
+
+    #[test]
+    fn test_proof_verification_inclusion() {
+        let mut tree = SparseMerkleTree::new();
         let addr = Address::from_slice(&[1u8; 20]).unwrap();
         let value = H256::from_slice(&[2u8; 32]).unwrap();
         tree.update(addr, value);
+        let proof = tree.prove(&addr);
+        assert!(proof.verify(), "inclusion proof must verify");
+        assert_eq!(proof.value_hash, Some(value));
+    }
 
-        let root2 = tree.root();
-        assert_ne!(root1, root2);
+    #[test]
+    fn test_proof_verification_exclusion() {
+        let mut tree = SparseMerkleTree::new();
+        let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
+        tree.update(addr1, H256::from_slice(&[2u8; 32]).unwrap());
+
+        let addr2 = Address::from_slice(&[3u8; 20]).unwrap();
+        let proof = tree.prove(&addr2);
+        assert!(proof.verify(), "exclusion proof must verify");
+        assert_eq!(proof.value_hash, None);
+    }
+
+    #[test]
+    fn test_proof_fails_with_wrong_root() {
+        let mut tree = SparseMerkleTree::new();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        tree.update(addr, H256::from_slice(&[2u8; 32]).unwrap());
+        let mut proof = tree.prove(&addr);
+        proof.root = H256::from_slice(&[99u8; 32]).unwrap();
+        assert!(!proof.verify());
+    }
+
+    #[test]
+    fn test_proof_fails_with_tampered_sibling() {
+        let mut tree = SparseMerkleTree::new();
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        tree.update(addr, H256::from_slice(&[2u8; 32]).unwrap());
+        let mut proof = tree.prove(&addr);
+        proof.siblings[0] = H256::from_slice(&[99u8; 32]).unwrap();
+        assert!(!proof.verify());
+    }
+
+    #[test]
+    fn test_multiple_keys() {
+        let mut tree = SparseMerkleTree::new();
+        for i in 0u8..10 {
+            let mut ab = [0u8; 20];
+            ab[0] = i;
+            let mut vb = [0u8; 32];
+            vb[0] = i + 100;
+            tree.update(
+                Address::from_slice(&ab).unwrap(),
+                H256::from_slice(&vb).unwrap(),
+            );
+        }
+        for i in 0u8..10 {
+            let mut ab = [0u8; 20];
+            ab[0] = i;
+            let addr = Address::from_slice(&ab).unwrap();
+            let proof = tree.prove(&addr);
+            assert!(proof.verify(), "proof for key {} must verify", i);
+        }
+    }
+
+    #[test]
+    fn test_order_independence() {
+        let mut t1 = SparseMerkleTree::new();
+        let mut t2 = SparseMerkleTree::new();
+        let a = Address::from_slice(&[1u8; 20]).unwrap();
+        let b = Address::from_slice(&[2u8; 20]).unwrap();
+        let va = H256::from_slice(&[10u8; 32]).unwrap();
+        let vb = H256::from_slice(&[20u8; 32]).unwrap();
+        t1.update(a, va);
+        t1.update(b, vb);
+        t2.update(b, vb);
+        t2.update(a, va);
+        assert_eq!(t1.root(), t2.root());
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_address() -> impl Strategy<Value = Address> {
+        prop::array::uniform20(any::<u8>()).prop_map(|b| Address::from_slice(&b).unwrap())
+    }
+
+    fn arb_h256() -> impl Strategy<Value = H256> {
+        prop::array::uniform32(any::<u8>()).prop_map(|b| H256::from_slice(&b).unwrap())
+    }
+
+    proptest! {
+        /// Any inserted key can be proven and the proof verifies.
+        #[test]
+        fn prove_after_insert_verifies(addr in arb_address(), val in arb_h256()) {
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, val);
+            let proof = tree.prove(&addr);
+            prop_assert!(proof.verify(), "proof for inserted key must verify");
+            prop_assert_eq!(proof.value_hash, Some(val));
+        }
+
+        /// Deletion restores the empty-tree root.
+        #[test]
+        fn delete_single_key_restores_root(addr in arb_address(), val in arb_h256()) {
+            let mut tree = SparseMerkleTree::new();
+            let empty_root = tree.root();
+            tree.update(addr, val);
+            tree.delete(&addr);
+            prop_assert_eq!(tree.root(), empty_root);
+        }
+
+        /// Inserting two keys in either order produces the same root.
+        #[test]
+        fn order_independent(a in arb_address(), va in arb_h256(), b in arb_address(), vb in arb_h256()) {
+            let mut t1 = SparseMerkleTree::new();
+            let mut t2 = SparseMerkleTree::new();
+            t1.update(a, va);
+            t1.update(b, vb);
+            t2.update(b, vb);
+            t2.update(a, va);
+            prop_assert_eq!(t1.root(), t2.root());
+        }
     }
 }

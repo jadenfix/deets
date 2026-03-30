@@ -8,6 +8,7 @@ anyhow.workspace = true
 serde.workspace = true
 tokio.workspace = true
 bincode.workspace = true
+zstd = "0.13"
 
 aether-types = { path = "../../types" }
 aether-state-storage = { path = "../storage" }

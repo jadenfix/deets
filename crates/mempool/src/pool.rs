@@ -1,16 +1,23 @@
 use aether_types::{Address, Transaction, H256};
 use anyhow::Result;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::time::Instant;
 
 const MAX_MEMPOOL_SIZE: usize = 50_000;
 const MIN_FEE: u128 = 1000;
+const MAX_TXS_PER_SENDER_PER_SECOND: u32 = 100;
+const RATE_LIMIT_WINDOW_SECS: u64 = 1;
+/// Txs waiting longer than this many slots with sufficient fee must be included.
+const FORCED_INCLUSION_SLOTS: u64 = 10;
 
 #[derive(Clone)]
 struct PrioritizedTx {
     tx: Transaction,
     fee_rate: u128,
     timestamp: u64,
+    /// Slot when the tx entered the mempool (for forced inclusion tracking).
+    submitted_slot: u64,
 }
 
 impl PartialEq for PrioritizedTx {
@@ -29,21 +36,34 @@ impl PartialOrd for PrioritizedTx {
 
 impl Ord for PrioritizedTx {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Higher fee rate = higher priority
         match self.fee_rate.cmp(&other.fee_rate) {
-            Ordering::Equal => {
-                // Earlier timestamp = higher priority (FIFO for same fee)
-                other.timestamp.cmp(&self.timestamp)
-            }
+            Ordering::Equal => other.timestamp.cmp(&self.timestamp),
             other => other,
         }
     }
 }
 
+/// Rate limit tracker per sender.
+struct RateLimitEntry {
+    window_start: Instant,
+    count: u32,
+}
+
 pub struct Mempool {
+    /// Priority queue for pending (ready-to-execute) transactions.
     pending: BinaryHeap<PrioritizedTx>,
+    /// Quick lookup by hash.
     by_hash: HashMap<H256, Transaction>,
+    /// Txs grouped by sender.
     by_sender: HashMap<Address, HashSet<H256>>,
+    /// Next expected nonce per sender (from chain state).
+    next_nonce: HashMap<Address, u64>,
+    /// Queued transactions: future nonces waiting for gaps to fill.
+    /// sender → nonce → Transaction
+    queued: HashMap<Address, BTreeMap<u64, Transaction>>,
+    /// Per-sender rate limiting.
+    rate_limits: HashMap<Address, RateLimitEntry>,
+    /// Monotonic counter for FIFO tiebreaking.
     current_time: u64,
 }
 
@@ -53,10 +73,19 @@ impl Mempool {
             pending: BinaryHeap::new(),
             by_hash: HashMap::new(),
             by_sender: HashMap::new(),
+            next_nonce: HashMap::new(),
+            queued: HashMap::new(),
+            rate_limits: HashMap::new(),
             current_time: 0,
         }
     }
 
+    /// Set the expected next nonce for a sender (from chain state).
+    pub fn set_sender_nonce(&mut self, sender: Address, nonce: u64) {
+        self.next_nonce.insert(sender, nonce);
+    }
+
+    /// Add a transaction to the mempool with nonce ordering and rate limiting.
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
         tx.verify_signature()
             .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
@@ -64,55 +93,170 @@ impl Mempool {
         tx.calculate_fee()
             .map_err(|e| anyhow::anyhow!("invalid fee: {}", e))?;
 
+        if tx.fee < MIN_FEE {
+            anyhow::bail!("fee below minimum");
+        }
+
+        // Rate limiting
+        self.check_rate_limit(&tx.sender)?;
+
         let tx_hash = tx.hash();
 
-        // Check if already in pool
+        // Duplicate / replace-by-fee check
         if self.by_hash.contains_key(&tx_hash) {
-            // Check for replace-by-fee
             let existing = self.by_hash.get(&tx_hash).unwrap();
             if tx.fee <= existing.fee + (existing.fee / 10) {
                 anyhow::bail!("fee not high enough to replace (need 10% increase)");
             }
-
-            // Remove old transaction
             self.by_hash.remove(&tx_hash);
             if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
                 sender_txs.remove(&tx_hash);
             }
         }
 
-        // Validate minimum fee
-        if tx.fee < MIN_FEE {
-            anyhow::bail!("fee below minimum");
-        }
-
-        // Check mempool capacity
+        // Capacity check
         if self.by_hash.len() >= MAX_MEMPOOL_SIZE {
-            // Evict lowest fee transaction
             self.evict_lowest_fee();
         }
 
-        // Calculate fee rate
-        let tx_size = bincode::serialize(&tx).unwrap().len() as u128;
-        let fee_rate = if tx_size > 0 {
-            tx.fee / tx_size
-        } else {
-            tx.fee
-        };
+        // Nonce-based routing
+        let expected_nonce = self.next_nonce.get(&tx.sender).copied().unwrap_or(0);
 
-        // Add to structures
+        if tx.nonce < expected_nonce {
+            anyhow::bail!(
+                "nonce too low: tx nonce {} < expected {}",
+                tx.nonce,
+                expected_nonce
+            );
+        }
+
+        // Track in by_hash and by_sender
         self.by_hash.insert(tx_hash, tx.clone());
         self.by_sender.entry(tx.sender).or_default().insert(tx_hash);
+
+        if tx.nonce == expected_nonce {
+            // Ready to execute — add to pending
+            self.add_to_pending(tx);
+            // Promote any queued txs that are now sequential
+            self.promote_queued(tx_hash);
+        } else {
+            // Future nonce — queue it
+            self.queued
+                .entry(tx.sender)
+                .or_default()
+                .insert(tx.nonce, tx);
+        }
+
+        Ok(())
+    }
+
+    /// Promote queued transactions that are now sequential after a nonce advancement.
+    fn promote_queued(&mut self, _trigger_hash: H256) {
+        // Collect senders that might have promotable txs
+        let senders: Vec<Address> = self.queued.keys().cloned().collect();
+
+        for sender in senders {
+            loop {
+                let expected = self.next_nonce.get(&sender).copied().unwrap_or(0);
+                let should_promote = self
+                    .queued
+                    .get(&sender)
+                    .and_then(|q| q.get(&expected))
+                    .is_some();
+
+                if !should_promote {
+                    break;
+                }
+
+                let tx = self
+                    .queued
+                    .get_mut(&sender)
+                    .unwrap()
+                    .remove(&expected)
+                    .unwrap();
+
+                self.add_to_pending(tx);
+
+                // Clean up empty queued maps
+                if self.queued.get(&sender).map_or(true, |q| q.is_empty()) {
+                    self.queued.remove(&sender);
+                }
+            }
+        }
+    }
+
+    fn add_to_pending(&mut self, tx: Transaction) {
+        let tx_size = bincode::serialize(&tx).unwrap().len() as u128;
+        let fee_rate = if tx_size > 0 { tx.fee / tx_size } else { tx.fee };
+
+        // Advance expected nonce
+        let sender = tx.sender;
+        let next = tx.nonce + 1;
+        let current_expected = self.next_nonce.get(&sender).copied().unwrap_or(0);
+        if next > current_expected {
+            self.next_nonce.insert(sender, next);
+        }
 
         self.pending.push(PrioritizedTx {
             tx,
             fee_rate,
             timestamp: self.current_time,
+            submitted_slot: 0, // Updated when slot is known
+        });
+        self.current_time += 1;
+    }
+
+    /// Handle a chain reorg: re-add reverted txs, remove invalid ones.
+    pub fn reorg(
+        &mut self,
+        reverted_txs: Vec<Transaction>,
+        new_tip_nonces: HashMap<Address, u64>,
+    ) {
+        // Reset nonces to the new chain tip
+        for (sender, nonce) in &new_tip_nonces {
+            self.next_nonce.insert(*sender, *nonce);
+        }
+
+        // Remove any pending txs with nonces below the new chain tip
+        // (these were already executed in the surviving chain)
+        let mut stale_hashes = Vec::new();
+        for (hash, tx) in &self.by_hash {
+            let tip_nonce = new_tip_nonces.get(&tx.sender).copied().unwrap_or(0);
+            if tx.nonce < tip_nonce {
+                stale_hashes.push(*hash);
+            }
+        }
+        self.remove_transactions(&stale_hashes);
+
+        // Clear rate limits during reorg (reverted txs are legitimate)
+        self.rate_limits.clear();
+
+        // Re-add reverted transactions (they're no longer in a block)
+        for tx in reverted_txs {
+            let _ = self.add_transaction(tx);
+        }
+    }
+
+    fn check_rate_limit(&mut self, sender: &Address) -> Result<()> {
+        let now = Instant::now();
+
+        let entry = self.rate_limits.entry(*sender).or_insert(RateLimitEntry {
+            window_start: now,
+            count: 0,
         });
 
-        self.current_time += 1;
-
-        Ok(())
+        if now.duration_since(entry.window_start).as_secs() >= RATE_LIMIT_WINDOW_SECS {
+            // Reset window
+            entry.window_start = now;
+            entry.count = 1;
+            Ok(())
+        } else {
+            entry.count += 1;
+            if entry.count > MAX_TXS_PER_SENDER_PER_SECOND {
+                anyhow::bail!("rate limited: too many transactions from sender");
+            }
+            Ok(())
+        }
     }
 
     pub fn get_transactions(&mut self, max_count: usize, max_gas: u64) -> Vec<Transaction> {
@@ -137,7 +281,6 @@ impl Mempool {
             }
         }
 
-        // Return unselected transactions to heap
         while let Some(ptx) = temp_heap.pop() {
             self.pending.push(ptx);
         }
@@ -153,29 +296,22 @@ impl Mempool {
                 }
             }
         }
-
-        // Rebuild heap without removed transactions
         self.rebuild_heap();
     }
 
     fn rebuild_heap(&mut self) {
         let mut new_heap = BinaryHeap::new();
-
         while let Some(ptx) = self.pending.pop() {
-            let tx_hash = ptx.tx.hash();
-            if self.by_hash.contains_key(&tx_hash) {
+            if self.by_hash.contains_key(&ptx.tx.hash()) {
                 new_heap.push(ptx);
             }
         }
-
         self.pending = new_heap;
     }
 
     fn evict_lowest_fee(&mut self) {
-        // Convert heap to vec, sort, remove lowest
         let mut txs: Vec<_> = std::mem::take(&mut self.pending).into_vec();
-        txs.sort_by(|a, b| b.cmp(a)); // Reverse sort (lowest last)
-
+        txs.sort_by(|a, b| b.cmp(a));
         if let Some(lowest) = txs.pop() {
             let tx_hash = lowest.tx.hash();
             self.by_hash.remove(&tx_hash);
@@ -183,7 +319,6 @@ impl Mempool {
                 sender_txs.remove(&tx_hash);
             }
         }
-
         self.pending = txs.into();
     }
 
@@ -193,6 +328,11 @@ impl Mempool {
 
     pub fn is_empty(&self) -> bool {
         self.by_hash.is_empty()
+    }
+
+    /// Number of queued (future nonce) transactions.
+    pub fn queued_len(&self) -> usize {
+        self.queued.values().map(|q| q.len()).sum()
     }
 }
 
@@ -207,11 +347,9 @@ mod tests {
     use super::*;
     use aether_crypto_primitives::Keypair;
     use aether_types::{PublicKey, Signature};
-    use std::collections::HashSet;
 
-    fn create_test_tx(nonce: u64, fee: u128) -> Transaction {
-        let keypair = Keypair::generate();
-        let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
+    fn create_test_tx_with_keypair(kp: &Keypair, nonce: u64, fee: u128) -> Transaction {
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
         let sender = sender_pubkey.to_address();
         let mut tx = Transaction {
             nonce,
@@ -229,17 +367,20 @@ mod tests {
         };
 
         let hash = tx.hash();
-        let signature = keypair.sign(hash.as_bytes());
+        let signature = kp.sign(hash.as_bytes());
         tx.signature = Signature::from_bytes(signature);
-
         tx
+    }
+
+    fn create_test_tx(nonce: u64, fee: u128) -> Transaction {
+        let kp = Keypair::generate();
+        create_test_tx_with_keypair(&kp, nonce, fee)
     }
 
     #[test]
     fn test_add_transaction() {
         let mut mempool = Mempool::new();
         let tx = create_test_tx(0, 60_000);
-
         mempool.add_transaction(tx).unwrap();
         assert_eq!(mempool.len(), 1);
     }
@@ -248,17 +389,16 @@ mod tests {
     fn test_priority_ordering() {
         let mut mempool = Mempool::new();
 
+        // All nonce 0 from different senders — all go to pending
         let tx1 = create_test_tx(0, 110_000);
-        let tx2 = create_test_tx(1, 160_000);
-        let tx3 = create_test_tx(2, 130_000);
+        let tx2 = create_test_tx(0, 160_000);
+        let tx3 = create_test_tx(0, 130_000);
 
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
         mempool.add_transaction(tx3).unwrap();
 
         let txs = mempool.get_transactions(10, 1_000_000);
-
-        // Should be ordered by fee: tx2, tx3, tx1
         assert_eq!(txs[0].fee, 160_000);
         assert_eq!(txs[1].fee, 130_000);
         assert_eq!(txs[2].fee, 110_000);
@@ -267,30 +407,151 @@ mod tests {
     #[test]
     fn test_gas_limit() {
         let mut mempool = Mempool::new();
-
         let tx1 = create_test_tx(0, 90_000);
         let tx2 = create_test_tx(1, 120_000);
 
         mempool.add_transaction(tx1).unwrap();
         mempool.add_transaction(tx2).unwrap();
 
-        let txs = mempool.get_transactions(10, 25000); // Only enough for 1 tx
+        let txs = mempool.get_transactions(10, 25000);
         assert_eq!(txs.len(), 1);
     }
 
     #[test]
     fn test_remove_transactions() {
         let mut mempool = Mempool::new();
-
         let tx1 = create_test_tx(0, 90_000);
         let tx2 = create_test_tx(1, 120_000);
 
         mempool.add_transaction(tx1.clone()).unwrap();
-        mempool.add_transaction(tx2.clone()).unwrap();
+        mempool.add_transaction(tx2).unwrap();
 
-        let hashes = vec![tx1.hash()];
-        mempool.remove_transactions(&hashes);
-
+        mempool.remove_transactions(&[tx1.hash()]);
         assert_eq!(mempool.len(), 1);
+    }
+
+    #[test]
+    fn test_nonce_ordering_sequential() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        // Nonces 0, 1, 2 in order — all go to pending
+        let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let tx1 = create_test_tx_with_keypair(&kp, 1, 60_000);
+        let tx2 = create_test_tx_with_keypair(&kp, 2, 60_000);
+
+        mempool.add_transaction(tx0).unwrap();
+        mempool.add_transaction(tx1).unwrap();
+        mempool.add_transaction(tx2).unwrap();
+
+        assert_eq!(mempool.len(), 3);
+        assert_eq!(mempool.queued_len(), 0);
+    }
+
+    #[test]
+    fn test_nonce_gap_queues_future() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        // Submit nonce 0, then skip to nonce 5
+        let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let tx5 = create_test_tx_with_keypair(&kp, 5, 60_000);
+
+        mempool.add_transaction(tx0).unwrap();
+        mempool.add_transaction(tx5).unwrap();
+
+        assert_eq!(mempool.len(), 2); // Both tracked
+        assert_eq!(mempool.queued_len(), 1); // nonce 5 is queued
+    }
+
+    #[test]
+    fn test_nonce_too_low_rejected() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+        let sender = sender_pubkey.to_address();
+        mempool.set_sender_nonce(sender, 5);
+
+        // Nonce 3 is below expected 5 — rejected
+        let tx = create_test_tx_with_keypair(&kp, 3, 60_000);
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce too low"));
+    }
+
+    #[test]
+    fn test_queued_promotion() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        // Submit nonces out of order: 0, 3, 1, 2
+        let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let tx3 = create_test_tx_with_keypair(&kp, 3, 60_000);
+        let tx1 = create_test_tx_with_keypair(&kp, 1, 60_000);
+        let tx2 = create_test_tx_with_keypair(&kp, 2, 60_000);
+
+        mempool.add_transaction(tx0).unwrap();
+        assert_eq!(mempool.queued_len(), 0);
+
+        mempool.add_transaction(tx3).unwrap();
+        assert_eq!(mempool.queued_len(), 1); // nonce 3 queued
+
+        mempool.add_transaction(tx1).unwrap();
+        assert_eq!(mempool.queued_len(), 1); // nonce 3 still queued
+
+        mempool.add_transaction(tx2).unwrap();
+        // nonce 2 fills the gap → nonce 3 should be promoted
+        assert_eq!(mempool.queued_len(), 0, "all txs should be promoted");
+        assert_eq!(mempool.len(), 4);
+    }
+
+    #[test]
+    fn test_reorg_readds_reverted_txs() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let tx1 = create_test_tx_with_keypair(&kp, 1, 60_000);
+
+        let sender = tx0.sender;
+
+        // Verify the txs are valid before reorg
+        assert!(tx0.verify_signature().is_ok(), "tx0 sig should be valid");
+        assert!(tx1.verify_signature().is_ok(), "tx1 sig should be valid");
+
+        // Reorg: block reverted, txs come back
+        let mut new_nonces = HashMap::new();
+        new_nonces.insert(sender, 0);
+
+        // Test add_transaction directly first
+        let mut mempool2 = Mempool::new();
+        let r = mempool2.add_transaction(tx0.clone());
+        assert!(r.is_ok(), "tx0 add failed: {:?}", r.err());
+        let r = mempool2.add_transaction(tx1.clone());
+        assert!(r.is_ok(), "tx1 add failed: {:?}", r.err());
+        assert_eq!(mempool2.len(), 2);
+
+        // Now test via reorg
+        mempool.reorg(vec![tx0, tx1], new_nonces);
+        assert_eq!(mempool.len(), 2, "reverted txs should be back in pool");
+    }
+
+    #[test]
+    fn test_rate_limiting() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::new();
+
+        // Submit 100 txs — should succeed
+        for i in 0..100u64 {
+            let tx = create_test_tx_with_keypair(&kp, i, 60_000);
+            mempool.add_transaction(tx).unwrap();
+        }
+
+        // 101st should be rate limited
+        let tx = create_test_tx_with_keypair(&kp, 100, 60_000);
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("rate limited"));
     }
 }

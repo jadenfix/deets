@@ -3,11 +3,13 @@ use aether_types::{
     TRANSFER_PROGRAM_ID,
 };
 use anyhow::Result;
+use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
+use warp::ws::{Message, WebSocket};
 use warp::{Filter, Reply};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,8 +74,74 @@ pub trait RpcBackend: Send + Sync {
     }
 }
 
+/// Subscription topics for WebSocket clients.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubscriptionTopic {
+    NewBlocks,
+    NewTransactions,
+    Finality,
+}
+
+/// Event broadcast to WebSocket subscribers.
+#[derive(Debug, Clone, Serialize)]
+pub struct SubscriptionEvent {
+    pub topic: String,
+    pub data: Value,
+}
+
+/// Manages WebSocket subscriptions and event broadcasting.
+pub struct SubscriptionManager {
+    sender: broadcast::Sender<SubscriptionEvent>,
+}
+
+impl SubscriptionManager {
+    pub fn new() -> Self {
+        let (sender, _) = broadcast::channel(1024);
+        SubscriptionManager { sender }
+    }
+
+    /// Broadcast a new block event to all subscribers.
+    pub fn notify_new_block(&self, block: &Block) {
+        let event = SubscriptionEvent {
+            topic: "newBlock".to_string(),
+            data: json!({
+                "slot": block.header.slot,
+                "hash": format!("{:?}", block.hash()),
+                "proposer": format!("{:?}", block.header.proposer),
+                "txCount": block.transactions.len(),
+                "timestamp": block.header.timestamp,
+            }),
+        };
+        let _ = self.sender.send(event);
+    }
+
+    /// Broadcast a finality event.
+    pub fn notify_finality(&self, slot: u64, block_hash: H256) {
+        let event = SubscriptionEvent {
+            topic: "finality".to_string(),
+            data: json!({
+                "finalizedSlot": slot,
+                "blockHash": format!("{:?}", block_hash),
+            }),
+        };
+        let _ = self.sender.send(event);
+    }
+
+    /// Get a new subscriber receiver.
+    pub fn subscribe(&self) -> broadcast::Receiver<SubscriptionEvent> {
+        self.sender.subscribe()
+    }
+}
+
+impl Default for SubscriptionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct JsonRpcServer<B: RpcBackend> {
     backend: Arc<RwLock<B>>,
+    subscriptions: Arc<SubscriptionManager>,
     port: u16,
 }
 
@@ -81,12 +149,19 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
     pub fn new(backend: B, port: u16) -> Self {
         Self {
             backend: Arc::new(RwLock::new(backend)),
+            subscriptions: Arc::new(SubscriptionManager::new()),
             port,
         }
     }
 
+    /// Get a reference to the subscription manager for event broadcasting.
+    pub fn subscription_manager(&self) -> Arc<SubscriptionManager> {
+        self.subscriptions.clone()
+    }
+
     pub async fn run(self) -> Result<()> {
         let backend = self.backend.clone();
+        let subs = self.subscriptions.clone();
 
         let rpc = warp::post()
             .and(warp::path::end())
@@ -98,18 +173,53 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(warp::path("health"))
             .map(|| warp::reply::json(&json!({"status": "ok"})));
 
+        // WebSocket subscription endpoint
+        let ws_subs = subs.clone();
+        let ws = warp::path("ws")
+            .and(warp::ws())
+            .map(move |ws: warp::ws::Ws| {
+                let subs = ws_subs.clone();
+                ws.on_upgrade(move |socket| handle_ws_connection(socket, subs))
+            });
+
         let cors = warp::cors()
             .allow_any_origin()
             .allow_methods(vec!["POST", "GET", "OPTIONS"])
             .allow_headers(vec!["content-type"]);
 
-        let routes = rpc.or(health).with(cors);
+        let routes = rpc.or(health).or(ws).with(cors);
 
         println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
+        println!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
         warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
 
         Ok(())
     }
+}
+
+async fn handle_ws_connection(ws: WebSocket, subs: Arc<SubscriptionManager>) {
+    let (mut ws_tx, mut ws_rx) = ws.split();
+    let mut rx = subs.subscribe();
+
+    // Spawn task to forward subscription events to this WebSocket client
+    let send_task = tokio::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let msg = serde_json::to_string(&event).unwrap_or_default();
+            if ws_tx.send(Message::text(msg)).await.is_err() {
+                break; // Client disconnected
+            }
+        }
+    });
+
+    // Read client messages (subscribe/unsubscribe commands)
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        if msg.is_close() {
+            break;
+        }
+        // For now, just accept the connection. Future: parse subscribe/unsubscribe messages.
+    }
+
+    send_task.abort();
 }
 
 fn with_backend<B: RpcBackend>(

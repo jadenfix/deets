@@ -4,13 +4,14 @@
 // Combines VRF-PoS leader election + HotStuff BFT + BLS signature aggregation
 // ============================================================================
 
-use crate::ConsensusEngine;
+use crate::{ConsensusEngine, Pacemaker};
 use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
 use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair, VrfProof};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, Vote, H256};
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// HotStuff consensus phases
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -56,10 +57,27 @@ pub struct HybridConsensus {
 
     // === HotStuff State ===
     current_phase: Phase,
-    votes: HashMap<(Slot, Phase, H256), Vec<Vote>>,
+    /// Votes deduplicated by validator address: one vote per (slot, phase, block, validator).
+    votes: HashMap<(Slot, Phase, H256), HashMap<Address, Vote>>,
     qcs: HashMap<(Slot, Phase, H256), QuorumCertificate>,
     locked_block: Option<H256>,
     locked_slot: Slot,
+
+    // === Block Parent Tracking (for 2-chain finality) ===
+    block_parents: HashMap<H256, H256>,
+    block_slots: HashMap<H256, Slot>,
+
+    /// Track which block each validator voted for per slot (equivocation detection).
+    /// Key: (slot, validator_address) → block_hash they voted for.
+    vote_record: HashMap<(Slot, Address), H256>,
+
+    // === VRF Public Keys (for verifying other validators' proofs) ===
+    vrf_pubkeys: HashMap<Address, [u8; 32]>,
+    /// BLS public keys for vote signature verification
+    bls_pubkeys: HashMap<Address, Vec<u8>>,
+
+    // === Pacemaker (timeout-based phase advancement) ===
+    pacemaker: Pacemaker,
 
     // === Finality ===
     committed_slot: Slot,
@@ -97,6 +115,12 @@ impl HybridConsensus {
             qcs: HashMap::new(),
             locked_block: None,
             locked_slot: 0,
+            block_parents: HashMap::new(),
+            block_slots: HashMap::new(),
+            vote_record: HashMap::new(),
+            vrf_pubkeys: HashMap::new(),
+            bls_pubkeys: HashMap::new(),
+            pacemaker: Pacemaker::new(Duration::from_millis(500)),
             committed_slot: 0,
             finalized_slot: 0,
         }
@@ -124,6 +148,11 @@ impl HybridConsensus {
         }
     }
 
+    /// Register a validator's VRF public key for cross-validation.
+    pub fn register_vrf_pubkey(&mut self, address: Address, vrf_pubkey: [u8; 32]) {
+        self.vrf_pubkeys.insert(address, vrf_pubkey);
+    }
+
     /// Verify that a block's proposer was eligible
     pub fn verify_leader_eligibility(&self, block: &Block) -> Result<bool> {
         let proposer_addr = block.header.proposer;
@@ -143,14 +172,19 @@ impl HybridConsensus {
             proof: block.header.vrf_proof.proof.clone(),
         };
 
-        // Verify VRF proof
-        let vrf_pubkey = validator
-            .pubkey
-            .as_bytes()
-            .get(..32)
-            .ok_or_else(|| anyhow::anyhow!("invalid pubkey length"))?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("pubkey conversion failed"))?;
+        // Look up VRF public key — first check registered VRF keys, then fall back
+        // to using the validator's Ed25519 key (for backwards compatibility)
+        let vrf_pubkey: [u8; 32] = if let Some(vrf_pk) = self.vrf_pubkeys.get(&proposer_addr) {
+            *vrf_pk
+        } else {
+            validator
+                .pubkey
+                .as_bytes()
+                .get(..32)
+                .ok_or_else(|| anyhow::anyhow!("invalid pubkey length"))?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("pubkey conversion failed"))?
+        };
 
         if !verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
@@ -182,11 +216,10 @@ impl HybridConsensus {
             .get(my_addr)
             .ok_or_else(|| anyhow::anyhow!("not in validator set"))?;
 
-        // Create vote message: block_hash || slot || phase
+        // Create vote message: block_hash || slot (standardized format)
         let mut msg = Vec::new();
         msg.extend_from_slice(block_hash.as_bytes());
         msg.extend_from_slice(&self.current_slot.to_le_bytes());
-        msg.extend_from_slice(format!("{:?}", phase).as_bytes());
 
         // Sign with BLS
         let signature = bls_keypair.sign(&msg);
@@ -200,47 +233,126 @@ impl HybridConsensus {
         }))
     }
 
-    /// Process a vote and check for quorum
+    /// Register a validator's BLS public key for vote signature verification.
+    pub fn register_bls_pubkey(&mut self, address: Address, bls_pubkey: Vec<u8>) {
+        self.bls_pubkeys.insert(address, bls_pubkey);
+    }
+
+    /// Record a block's parent relationship (for 2-chain finality).
+    pub fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
+        self.block_parents.insert(block_hash, parent_hash);
+        self.block_slots.insert(block_hash, slot);
+    }
+
+    /// Update epoch randomness using a real VRF output from the first block.
+    pub fn update_epoch_randomness(&mut self, block_vrf_output: &[u8; 32]) {
+        let mut hasher = Sha256::new();
+        hasher.update(self.epoch_randomness.as_bytes());
+        hasher.update(block_vrf_output);
+        hasher.update(&self.current_epoch.to_le_bytes());
+        self.epoch_randomness = H256::from_slice(&hasher.finalize()).unwrap();
+    }
+
+    /// Process a vote and check for quorum.
+    ///
+    /// Safety properties enforced:
+    /// 1. Vote deduplication — one vote per validator per (slot, phase, block)
+    /// 2. Stake verification — claimed stake must match validator registry
+    /// 3. Unknown validator rejection
     pub fn process_vote(&mut self, vote: Vote) -> Result<Option<QuorumCertificate>> {
         // Verify vote is for current slot
         if vote.slot != self.current_slot {
-            bail!("vote for wrong slot");
+            bail!("vote for wrong slot: got {}, expected {}", vote.slot, self.current_slot);
         }
 
-        // Store vote
+        let voter_addr = vote.validator.to_address();
+
+        // Verify voter is a known validator
+        let registered = self
+            .validators
+            .get(&voter_addr)
+            .ok_or_else(|| anyhow::anyhow!("unknown validator: {:?}", voter_addr))?;
+
+        // Verify claimed stake matches registry
+        if vote.stake != registered.stake {
+            bail!(
+                "claimed stake {} != registered stake {} for {:?}",
+                vote.stake,
+                registered.stake,
+                voter_addr
+            );
+        }
+
+        // Equivocation detection: check if this validator already voted for a DIFFERENT block
+        // at this slot. If so, that's a slashable offense.
+        let vote_key = (vote.slot, voter_addr);
+        if let Some(prev_block) = self.vote_record.get(&vote_key) {
+            if *prev_block != vote.block_hash {
+                // EQUIVOCATION DETECTED: validator voted for different blocks at same slot
+                println!(
+                    "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
+                    voter_addr, prev_block, vote.block_hash, vote.slot
+                );
+                // In production: create SlashProof and submit to slashing module
+                bail!(
+                    "equivocation detected: validator {:?} double-voted at slot {}",
+                    voter_addr,
+                    vote.slot
+                );
+            }
+        }
+        self.vote_record.insert(vote_key, vote.block_hash);
+
+        // Verify BLS signature if pubkey is registered
+        if let Some(bls_pk) = self.bls_pubkeys.get(&voter_addr) {
+            let vote_msg = [vote.block_hash.as_bytes(), &vote.slot.to_le_bytes()].concat();
+            let sig_bytes = vote.signature.as_bytes();
+            if sig_bytes.len() == 96 && bls_pk.len() == 48 {
+                match aether_crypto_bls::verify(bls_pk, &vote_msg, sig_bytes) {
+                    Ok(true) => {} // Valid signature
+                    Ok(false) => bail!("invalid BLS signature on vote from {:?}", voter_addr),
+                    Err(e) => bail!("BLS verification error: {e}"),
+                }
+            }
+        }
+
+        // Deduplicate: one vote per validator per (slot, phase, block)
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
-        let votes = self.votes.entry(key.clone()).or_default();
-        votes.push(vote.clone());
+        let votes_map = self.votes.entry(key.clone()).or_default();
+        if votes_map.contains_key(&voter_addr) {
+            return Ok(None);
+        }
+        votes_map.insert(voter_addr, vote.clone());
 
         // Check for quorum (2/3+ stake)
-        let voted_stake: u128 = votes.iter().map(|v| v.stake).sum();
+        let voted_stake: u128 = votes_map.values().map(|v| v.stake).sum();
         let has_quorum = voted_stake * 3 >= self.total_stake * 2;
 
         if has_quorum {
-            // Single-validator fast path: skip BLS aggregation & phase transitions
+            // Single-validator fast path
             if self.validators.len() == 1 {
                 let qc = QuorumCertificate {
                     slot: vote.slot,
                     block_hash: vote.block_hash,
                     phase: self.current_phase.clone(),
                     total_stake: vote.stake,
-                    signers: vec![vote.validator.to_address()],
+                    signers: vec![voter_addr],
                     aggregated_signature: vote.signature.as_bytes().to_vec(),
                     aggregated_pubkey: vec![],
                 };
                 self.qcs.insert(key, qc.clone());
                 self.committed_slot = vote.slot;
                 self.finalized_slot = vote.slot;
+                self.pacemaker.on_commit();
                 return Ok(Some(qc));
             }
 
-            // Clone votes for aggregation to avoid borrow conflicts
-            let votes_to_aggregate = votes.clone();
-            // Create QC
-            let qc = self.aggregate_votes(&votes_to_aggregate)?;
+            // Multi-validator: aggregate votes
+            let votes_vec: Vec<Vote> = votes_map.values().cloned().collect();
+            let qc = self.aggregate_votes(&votes_vec)?;
             self.qcs.insert(key, qc.clone());
 
-            // Handle phase transitions
+            // Handle phase transitions with correct 2-chain finality
             match self.current_phase {
                 Phase::Prevote => {
                     // Lock on this block
@@ -248,13 +360,20 @@ impl HybridConsensus {
                     self.locked_slot = vote.slot;
                 }
                 Phase::Precommit => {
-                    // Check 2-chain rule
-                    if let Some(parent_slot) = vote.slot.checked_sub(1) {
-                        let prevote_key = (parent_slot, Phase::Prevote, vote.block_hash);
-                        if self.qcs.contains_key(&prevote_key) {
-                            // Finalize parent block!
-                            self.finalized_slot = parent_slot;
-                            println!("FINALIZED slot {} block {:?}", parent_slot, vote.block_hash);
+                    // 2-chain finality rule:
+                    // Block C (current) has precommit QC.
+                    // Check if C's parent (block B) has a prevote QC.
+                    // If so, finalize B.
+                    if let Some(parent_hash) = self.block_parents.get(&vote.block_hash) {
+                        if let Some(&parent_slot) = self.block_slots.get(parent_hash) {
+                            let prevote_key = (parent_slot, Phase::Prevote, *parent_hash);
+                            if self.qcs.contains_key(&prevote_key) {
+                                self.finalized_slot = parent_slot;
+                                println!(
+                                    "FINALIZED slot {} (parent of slot {} block)",
+                                    parent_slot, vote.slot
+                                );
+                            }
                         }
                     }
                     self.committed_slot = vote.slot;
@@ -262,6 +381,7 @@ impl HybridConsensus {
                 _ => {}
             }
 
+            self.pacemaker.on_commit();
             return Ok(Some(qc));
         }
 
@@ -336,9 +456,12 @@ impl ConsensusEngine for HybridConsensus {
 
         // Check for epoch transition
         if self.current_slot % self.epoch_length == 0 {
-            // Update epoch randomness (simplified - use previous epoch hash)
+            // Default epoch randomness update (deterministic fallback).
+            // In production, Node calls update_epoch_randomness() with a real VRF output
+            // from the first finalized block of the new epoch, which overrides this.
             let mut hasher = Sha256::new();
             hasher.update(self.epoch_randomness.as_bytes());
+            hasher.update(self.current_slot.to_le_bytes());
             hasher.update(self.current_epoch.to_le_bytes());
             let new_randomness = hasher.finalize();
 
@@ -361,6 +484,20 @@ impl ConsensusEngine for HybridConsensus {
         // Check slot is valid
         if block.header.slot > self.current_slot {
             bail!("block from future slot");
+        }
+
+        // Validate timestamp: must be reasonable (within 1 hour of expected)
+        let expected_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let max_drift: u64 = 3600; // 1 hour tolerance
+        if block.header.timestamp > expected_timestamp + max_drift {
+            bail!(
+                "block timestamp {} is too far in the future (now={})",
+                block.header.timestamp,
+                expected_timestamp
+            );
         }
 
         // Verify VRF proof and leader eligibility
@@ -398,6 +535,25 @@ impl ConsensusEngine for HybridConsensus {
 
     fn get_leader_proof(&self, slot: Slot) -> Option<VrfProof> {
         self.check_my_eligibility(slot)
+    }
+
+    fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
+        self.block_parents.insert(block_hash, parent_hash);
+        self.block_slots.insert(block_hash, slot);
+    }
+
+    fn update_epoch_randomness(&mut self, vrf_output: &[u8; 32]) {
+        HybridConsensus::update_epoch_randomness(self, vrf_output);
+    }
+
+    fn is_timed_out(&self) -> bool {
+        self.pacemaker.is_timed_out()
+    }
+
+    fn on_timeout(&mut self) {
+        self.pacemaker.on_timeout();
+        // Advance phase to prevent deadlock
+        self.advance_phase();
     }
 }
 
@@ -455,9 +611,221 @@ mod tests {
             create_test_validator(1000),
         ];
         let consensus = HybridConsensus::new(validators, 0.8, 100, None, None, None);
-
-        // Total stake = 3000
-        // Quorum = 2/3 = 2000
         assert_eq!(consensus.total_stake, 3000);
+    }
+
+    #[test]
+    fn test_vote_deduplication_rejects_duplicate() {
+        // 4 validators — no single validator can reach quorum (2/3 of 4000 = 2667)
+        let v1 = create_test_validator(1000);
+        let v2 = create_test_validator(1000);
+        let v3 = create_test_validator(1000);
+        let v4 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+
+        let vote = Vote {
+            slot: 0,
+            block_hash,
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: v1.stake,
+        };
+
+        // First vote: accepted (no quorum yet)
+        let result1 = consensus.process_vote(vote.clone());
+        assert!(result1.is_ok(), "First vote should be accepted: {:?}", result1.err());
+
+        // Second identical vote from same validator: silently ignored (dedup)
+        let result2 = consensus.process_vote(vote.clone()).unwrap();
+        assert!(result2.is_none(), "Duplicate vote should return None (ignored)");
+
+        // Verify only 1 vote counted
+        let key = (0, Phase::Propose, block_hash);
+        let votes = consensus.votes.get(&key).unwrap();
+        assert_eq!(votes.len(), 1, "Only 1 unique vote should be stored");
+    }
+
+    #[test]
+    fn test_vote_rejects_inflated_stake() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+
+        let vote = Vote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: 999_999, // Inflated stake (registered = 1000)
+        };
+
+        let result = consensus.process_vote(vote);
+        assert!(result.is_err(), "Inflated stake should be rejected");
+    }
+
+    #[test]
+    fn test_vote_rejects_unknown_validator() {
+        let v1 = create_test_validator(1000);
+        let unknown = create_test_validator(5000);
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        let vote = Vote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            validator: unknown.pubkey.clone(), // Not in validator set
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: unknown.stake,
+        };
+
+        let result = consensus.process_vote(vote);
+        assert!(result.is_err(), "Unknown validator vote should be rejected");
+    }
+
+    #[test]
+    fn test_byzantine_cannot_forge_quorum_with_duplicates() {
+        // 3 validators with equal stake — quorum requires 2/3 = 2000 out of 3000
+        let v1 = create_test_validator(1000);
+        let v2 = create_test_validator(1000);
+        let v3 = create_test_validator(1000);
+        let mut consensus =
+            HybridConsensus::new(vec![v1.clone(), v2.clone(), v3.clone()], 0.8, 100, None, None, None);
+
+        let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+
+        // Byzantine validator v1 submits vote 1000 times
+        for _ in 0..1000 {
+            let vote = Vote {
+                slot: 0,
+                block_hash,
+                validator: v1.pubkey.clone(),
+                signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+                stake: v1.stake,
+            };
+            let _ = consensus.process_vote(vote);
+        }
+
+        // Only 1 vote should be counted (1000 stake, not 1,000,000)
+        let key = (0, Phase::Propose, block_hash);
+        let votes = consensus.votes.get(&key).unwrap();
+        assert_eq!(votes.len(), 1, "Dedup should prevent duplicate accumulation");
+
+        let voted_stake: u128 = votes.values().map(|v| v.stake).sum();
+        assert_eq!(voted_stake, 1000, "Total stake should be 1000, not 1,000,000");
+        // Quorum not reached (1000 < 2000)
+    }
+
+    #[test]
+    fn test_block_parent_tracking() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        let parent_hash = H256::from_slice(&[1u8; 32]).unwrap();
+        let child_hash = H256::from_slice(&[2u8; 32]).unwrap();
+
+        consensus.record_block(child_hash, parent_hash, 5);
+
+        assert_eq!(consensus.block_parents.get(&child_hash), Some(&parent_hash));
+        assert_eq!(consensus.block_slots.get(&child_hash), Some(&5));
+    }
+
+    #[test]
+    fn test_epoch_randomness_update() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        let initial_randomness = consensus.epoch_randomness;
+
+        // Update with VRF output
+        let vrf_output = [42u8; 32];
+        consensus.update_epoch_randomness(&vrf_output);
+
+        assert_ne!(
+            consensus.epoch_randomness, initial_randomness,
+            "Randomness should change after VRF update"
+        );
+
+        // Different VRF output → different randomness
+        let mut consensus2 = HybridConsensus::new(vec![create_test_validator(1000)], 0.8, 100, None, None, None);
+        consensus2.update_epoch_randomness(&[99u8; 32]);
+
+        assert_ne!(
+            consensus.epoch_randomness, consensus2.epoch_randomness,
+            "Different VRF outputs should produce different randomness"
+        );
+    }
+
+    #[test]
+    fn test_equivocation_detection_rejects_double_vote() {
+        let v1 = create_test_validator(1000);
+        let v2 = create_test_validator(1000);
+        let v3 = create_test_validator(1000);
+        let v4 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        let block_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let block_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        // v1 votes for block A
+        let vote_a = Vote {
+            slot: 0,
+            block_hash: block_a,
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: v1.stake,
+        };
+        assert!(consensus.process_vote(vote_a).is_ok());
+
+        // v1 tries to vote for block B at the same slot — EQUIVOCATION!
+        let vote_b = Vote {
+            slot: 0,
+            block_hash: block_b,
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: v1.stake,
+        };
+        let result = consensus.process_vote(vote_b);
+        assert!(
+            result.is_err(),
+            "Double-voting for different blocks at same slot must be rejected"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("equivocation"),
+            "Error should mention equivocation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_timestamp_validation() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+
+        // Block with timestamp far in the future should be rejected
+        let mut block = Block::new(
+            0,
+            H256::zero(),
+            v1.pubkey.to_address(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        // Set timestamp to year 2099
+        block.header.timestamp = 4_000_000_000;
+
+        let result = consensus.validate_block(&block);
+        assert!(
+            result.is_err(),
+            "Block with future timestamp should be rejected"
+        );
     }
 }

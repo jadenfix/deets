@@ -9,7 +9,7 @@
 // ============================================================================
 
 use aether_crypto_vrf::VrfProof;
-use aether_types::{Block, PublicKey, Slot, Vote};
+use aether_types::{Block, PublicKey, Slot, Vote, H256};
 use anyhow::Result;
 
 /// Unified interface for all consensus engines
@@ -42,14 +42,35 @@ pub trait ConsensusEngine: Send + Sync {
     fn get_leader_proof(&self, _slot: Slot) -> Option<VrfProof> {
         None
     }
+
+    /// Record a block's parent relationship (for 2-chain finality).
+    fn record_block(&mut self, _block_hash: H256, _parent_hash: H256, _slot: Slot) {
+        // Default no-op for engines that don't need parent tracking
+    }
+
+    /// Update epoch randomness from a finalized block's VRF output.
+    fn update_epoch_randomness(&mut self, _vrf_output: &[u8; 32]) {
+        // Default no-op for engines without VRF
+    }
+
+    /// Check if the current round has timed out (pacemaker).
+    fn is_timed_out(&self) -> bool {
+        false
+    }
+
+    /// Handle a timeout — advance phase/slot to prevent deadlock.
+    fn on_timeout(&mut self) {}
 }
 
 pub mod hotstuff;
 pub mod hybrid;
+pub mod pacemaker;
+pub mod slashing;
 pub mod simple;
 pub mod vrf_pos;
 
-pub use hotstuff::HotStuffConsensus;
+pub use hotstuff::{ConsensusAction, HotStuffConsensus, TimeoutCertificate, TimeoutVote};
 pub use hybrid::HybridConsensus;
+pub use pacemaker::Pacemaker;
 pub use simple::SimpleConsensus;
 pub use vrf_pos::VrfPosConsensus;

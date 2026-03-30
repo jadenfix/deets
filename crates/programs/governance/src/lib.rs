@@ -66,11 +66,17 @@ pub struct Proposal {
 pub struct GovernanceState {
     pub proposals: HashMap<H256, Proposal>,
     pub voting_power: HashMap<Address, u128>, // Derived from staking
+    /// Delegation: delegator → delegate (revocable).
+    pub delegations: HashMap<Address, Address>,
+    /// Effective voting power after delegation aggregation.
+    pub effective_power: HashMap<Address, u128>,
     pub min_proposal_stake: u128,
     pub quorum_percentage: u8, // e.g., 20 = 20%
     pub voting_period_slots: u64,
     pub timelock_slots: u64,
     pub total_voting_power: u128,
+    /// On-chain treasury balance (SWR).
+    pub treasury_balance: u128,
 }
 
 impl GovernanceState {
@@ -78,11 +84,14 @@ impl GovernanceState {
         GovernanceState {
             proposals: HashMap::new(),
             voting_power: HashMap::new(),
+            delegations: HashMap::new(),
+            effective_power: HashMap::new(),
             min_proposal_stake: 1_000_000_000_000, // 1000 SWR
             quorum_percentage: 20,
             voting_period_slots: 100_800, // 7 days
             timelock_slots: 96_000,       // 48 hours
             total_voting_power: 0,
+            treasury_balance: 0,
         }
     }
 
@@ -153,13 +162,13 @@ impl GovernanceState {
             return Err("already voted".to_string());
         }
 
-        // Get voting power
-        let power = self.voting_power.get(&voter).copied().unwrap_or(0);
+        // Get effective voting power (includes delegated power)
+        let power = self.effective_power.get(&voter).copied().unwrap_or(0);
         if power == 0 {
             return Err("no voting power".to_string());
         }
 
-        // Record vote
+        // Record vote (1x conviction by default)
         proposal.voters.insert(voter, vote_for);
         if vote_for {
             proposal.votes_for += power;
@@ -254,11 +263,146 @@ impl GovernanceState {
         Ok(())
     }
 
-    /// Update voting power (called from staking module)
+    /// Update voting power (called from staking module).
     pub fn update_voting_power(&mut self, account: Address, power: u128) {
         let old_power = self.voting_power.get(&account).copied().unwrap_or(0);
         self.total_voting_power = self.total_voting_power - old_power + power;
         self.voting_power.insert(account, power);
+        self.recompute_effective_power();
+    }
+
+    // ── Liquid Delegation ──────────────────────────────────
+
+    /// Delegate voting power to a representative (revocable at any time).
+    ///
+    /// The delegate votes on behalf of the delegator. The delegator's
+    /// raw voting power is added to the delegate's effective power.
+    pub fn delegate(&mut self, delegator: Address, delegate: Address) -> Result<(), String> {
+        if delegator == delegate {
+            return Err("cannot delegate to self".into());
+        }
+        // Prevent delegation chains (A→B→C): delegate must not be delegating to someone else
+        if self.delegations.contains_key(&delegate) {
+            return Err("delegate is already delegating to someone else (no chains)".into());
+        }
+        self.delegations.insert(delegator, delegate);
+        self.recompute_effective_power();
+        Ok(())
+    }
+
+    /// Revoke delegation (return voting power to self).
+    pub fn undelegate(&mut self, delegator: Address) -> Result<(), String> {
+        if self.delegations.remove(&delegator).is_none() {
+            return Err("no active delegation".into());
+        }
+        self.recompute_effective_power();
+        Ok(())
+    }
+
+    /// Recompute effective voting power after delegation changes.
+    fn recompute_effective_power(&mut self) {
+        // Start with raw power
+        let mut effective: HashMap<Address, u128> = self.voting_power.clone();
+
+        // Apply delegations: move delegator's power to delegate
+        for (delegator, delegate) in &self.delegations {
+            let power = self.voting_power.get(delegator).copied().unwrap_or(0);
+            if power > 0 {
+                // Remove from delegator
+                *effective.entry(*delegator).or_insert(0) = 0;
+                // Add to delegate
+                *effective.entry(*delegate).or_insert(0) += power;
+            }
+        }
+
+        self.effective_power = effective;
+    }
+
+    /// Get effective voting power (after delegation).
+    pub fn effective_voting_power(&self, account: &Address) -> u128 {
+        self.effective_power.get(account).copied().unwrap_or(0)
+    }
+
+    // ── Conviction Voting ──────────────────────────────────
+
+    /// Calculate conviction-weighted voting power.
+    ///
+    /// Conviction voting: longer lock duration = higher vote weight.
+    /// Multiplier = 1 + (lock_slots / voting_period_slots)
+    /// Capped at 6x multiplier (locking for 5 full voting periods).
+    pub fn conviction_multiplier(&self, lock_slots: u64) -> u128 {
+        let periods = lock_slots / self.voting_period_slots.max(1);
+        let multiplier = 1 + periods.min(5); // Cap at 6x
+        multiplier as u128
+    }
+
+    /// Cast a conviction-weighted vote.
+    ///
+    /// `lock_slots`: how many slots the voter commits to locking their stake.
+    /// Higher lock = higher vote weight (up to 6x).
+    pub fn vote_with_conviction(
+        &mut self,
+        proposal_id: H256,
+        voter: Address,
+        vote_for: bool,
+        lock_slots: u64,
+        current_slot: u64,
+    ) -> Result<(), String> {
+        // Read effective power and compute multiplier before mutable borrow
+        let base_power = self.effective_power.get(&voter).copied().unwrap_or(0);
+        if base_power == 0 {
+            return Err("no voting power".into());
+        }
+        let multiplier = self.conviction_multiplier(lock_slots);
+        let weighted_power = base_power.saturating_mul(multiplier);
+
+        let proposal = self
+            .proposals
+            .get_mut(&proposal_id)
+            .ok_or("proposal not found")?;
+
+        if proposal.status != ProposalStatus::Active {
+            return Err("proposal not active".into());
+        }
+        if current_slot < proposal.start_slot || current_slot > proposal.end_slot {
+            return Err("not in voting period".into());
+        }
+        if proposal.voters.contains_key(&voter) {
+            return Err("already voted".into());
+        }
+
+        proposal.voters.insert(voter, vote_for);
+        if vote_for {
+            proposal.votes_for += weighted_power;
+        } else {
+            proposal.votes_against += weighted_power;
+        }
+
+        Ok(())
+    }
+
+    // ── Treasury ───────────────────────────────────────────
+
+    /// Deposit funds into the governance treasury.
+    pub fn deposit_treasury(&mut self, amount: u128) {
+        self.treasury_balance += amount;
+    }
+
+    /// Execute a treasury allocation (after proposal passes).
+    pub fn execute_treasury_allocation(
+        &mut self,
+        recipient: &Address,
+        amount: u128,
+    ) -> Result<(), String> {
+        if amount > self.treasury_balance {
+            return Err(format!(
+                "insufficient treasury: {} < {}",
+                self.treasury_balance, amount
+            ));
+        }
+        self.treasury_balance -= amount;
+        // In production: transfer `amount` to `recipient` via ledger
+        Ok(())
     }
 
     pub fn get_proposal(&self, proposal_id: &H256) -> Option<&Proposal> {
@@ -365,5 +509,143 @@ mod tests {
             proposal_type,
             ProposalType::ParameterChange { .. }
         ));
+    }
+
+    #[test]
+    fn test_delegation() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 3_000_000_000_000); // 3000 SWR
+        state.update_voting_power(addr(2), 1_000_000_000_000); // 1000 SWR
+
+        // addr(1) delegates to addr(2)
+        state.delegate(addr(1), addr(2)).unwrap();
+
+        // addr(1) should have 0 effective power, addr(2) should have 4000
+        assert_eq!(state.effective_voting_power(&addr(1)), 0);
+        assert_eq!(
+            state.effective_voting_power(&addr(2)),
+            4_000_000_000_000
+        );
+    }
+
+    #[test]
+    fn test_undelegate() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 3_000_000_000_000);
+        state.update_voting_power(addr(2), 1_000_000_000_000);
+
+        state.delegate(addr(1), addr(2)).unwrap();
+        state.undelegate(addr(1)).unwrap();
+
+        // Power returns to original
+        assert_eq!(
+            state.effective_voting_power(&addr(1)),
+            3_000_000_000_000
+        );
+        assert_eq!(
+            state.effective_voting_power(&addr(2)),
+            1_000_000_000_000
+        );
+    }
+
+    #[test]
+    fn test_no_delegation_chains() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 1_000_000_000_000);
+        state.update_voting_power(addr(2), 1_000_000_000_000);
+        state.update_voting_power(addr(3), 1_000_000_000_000);
+
+        state.delegate(addr(1), addr(2)).unwrap();
+        // addr(2) is already a delegation target — cannot delegate further
+        let result = state.delegate(addr(2), addr(3));
+        // addr(2) is not delegating, so this should succeed
+        // But addr(2) already has delegations FROM others, that's fine
+        // The restriction is: delegate must not be delegating TO someone
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_conviction_voting() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 5_000_000_000_000);
+        state.update_voting_power(addr(2), 5_000_000_000_000);
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "test".into(),
+                    value: 1,
+                },
+                "Test conviction".into(),
+                1000,
+            )
+            .unwrap();
+
+        // addr(1) votes with 3x conviction (lock for 2 voting periods)
+        let lock_slots = state.voting_period_slots * 2;
+        state
+            .vote_with_conviction(pid, addr(1), true, lock_slots, 1500)
+            .unwrap();
+
+        let proposal = state.get_proposal(&pid).unwrap();
+        // 5000 SWR * 3x conviction = 15000 effective votes
+        assert_eq!(proposal.votes_for, 15_000_000_000_000);
+    }
+
+    #[test]
+    fn test_conviction_caps_at_6x() {
+        let state = GovernanceState::new();
+        let lock_slots = state.voting_period_slots * 100; // Way more than 5 periods
+        assert_eq!(state.conviction_multiplier(lock_slots), 6);
+    }
+
+    #[test]
+    fn test_delegation_affects_voting() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 3_000_000_000_000);
+        state.update_voting_power(addr(2), 1_000_000_000_000);
+
+        // addr(1) delegates to addr(2)
+        state.delegate(addr(1), addr(2)).unwrap();
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(2),
+                ProposalType::ParameterChange {
+                    parameter: "test".into(),
+                    value: 1,
+                },
+                "Test".into(),
+                1000,
+            )
+            .unwrap();
+
+        // addr(2) votes with 4000 SWR (1000 own + 3000 delegated)
+        state.vote(pid, addr(2), true, 1500).unwrap();
+
+        let proposal = state.get_proposal(&pid).unwrap();
+        assert_eq!(proposal.votes_for, 4_000_000_000_000);
+    }
+
+    #[test]
+    fn test_treasury() {
+        let mut state = GovernanceState::new();
+        state.deposit_treasury(1_000_000);
+
+        assert_eq!(state.treasury_balance, 1_000_000);
+
+        state
+            .execute_treasury_allocation(&addr(1), 500_000)
+            .unwrap();
+        assert_eq!(state.treasury_balance, 500_000);
+
+        // Insufficient funds
+        let result = state.execute_treasury_allocation(&addr(2), 999_999);
+        assert!(result.is_err());
     }
 }

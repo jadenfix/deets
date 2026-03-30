@@ -23,10 +23,10 @@ pub mod primitives;
 pub mod transaction;
 
 pub use account::{Account, Utxo};
-pub use block::{AggregatedVote, Block, BlockHeader, VrfProof};
+pub use block::{AggregatedVote, Block, BlockHeader, VrfProof, PROTOCOL_VERSION};
 pub use consensus::{EpochInfo, ValidatorInfo, Vote};
 pub use primitives::{Address, Epoch, PublicKey, Signature, Slot, H160, H256};
 pub use transaction::{
-    Transaction, TransactionReceipt, TransactionStatus, TransferPayload, UtxoId, UtxoOutput,
-    TRANSFER_PROGRAM_ID,
+    BlobTransaction, Transaction, TransactionReceipt, TransactionStatus, TransferPayload, UtxoId,
+    UtxoOutput, BLOB_RETENTION_SLOTS, MAX_BLOBS_PER_TX, MAX_BLOB_SIZE, TRANSFER_PROGRAM_ID,
 };

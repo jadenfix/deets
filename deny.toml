@@ -1,0 +1,36 @@
+# cargo-deny v0.19 configuration for Aether blockchain
+# Run: cargo deny check bans sources
+# Run: cargo deny check advisories (reports known vulns)
+
+[graph]
+targets = []
+all-features = true
+
+# ============================================================
+# Advisories: flag known vulnerabilities (informational)
+# ============================================================
+[advisories]
+version = 2
+ignore = []
+
+# ============================================================
+# Bans: prevent problematic dependencies
+# ============================================================
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+deny = [
+    # Prefer rustls over OpenSSL
+    { name = "openssl", wrappers = [] },
+    { name = "openssl-sys", wrappers = [] },
+]
+
+# ============================================================
+# Sources: only allow crates.io (no unknown registries)
+# ============================================================
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
