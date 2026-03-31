@@ -251,7 +251,10 @@ impl Mempool {
 
         // Re-add reverted transactions (they're no longer in a block)
         for tx in reverted_txs {
-            let _ = self.add_transaction(tx);
+            if let Err(e) = self.add_transaction(tx) {
+                // Log at module level since tracing may not be available
+                eprintln!("failed to re-add reverted tx during reorg: {e}");
+            }
         }
     }
 

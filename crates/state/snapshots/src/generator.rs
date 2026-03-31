@@ -1,6 +1,6 @@
 use aether_state_storage::{Storage, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
 use aether_types::{account::Account, Address, Utxo, UtxoId, H256};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -74,7 +74,7 @@ fn load_state_root(storage: &Storage) -> Result<H256> {
     if let Some(bytes) = storage.get(CF_METADATA, b"state_root")? {
         return H256::from_slice(&bytes).map_err(|e| anyhow!("invalid state root: {e}"));
     }
-    Ok(H256::zero())
+    bail!("state root not found in storage metadata — database may be uninitialized")
 }
 
 #[cfg(test)]
@@ -87,6 +87,10 @@ mod tests {
     fn generate_roundtrip() {
         let dir = TempDir::new().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
+        // Seed a non-zero state root so generate_snapshot succeeds
+        storage
+            .put(CF_METADATA, b"state_root", &[1u8; 32])
+            .unwrap();
         let bytes = generate_snapshot(&storage, 10).unwrap();
         let snapshot = decode_snapshot(&bytes).unwrap();
         assert_eq!(snapshot.metadata.height, 10);

@@ -607,6 +607,29 @@ mod tests {
         // Should not panic
         let _ = check_leader_eligibility_integer(&output, large_stake, large_total, 4, 5);
     }
+
+    #[test]
+    fn test_integer_eligibility_deterministic() {
+        // Integer eligibility should give consistent results
+        let kp = VrfKeypair::generate();
+        let proof = kp.prove(b"test-slot-1");
+        let result1 = check_leader_eligibility_integer(&proof.output, 500, 1000, 8000, 10000);
+        let result2 = check_leader_eligibility_integer(&proof.output, 500, 1000, 8000, 10000);
+        assert_eq!(result1, result2, "integer eligibility must be deterministic");
+    }
+
+    #[test]
+    fn test_integer_eligibility_deterministic_fixed_output() {
+        // The integer eligibility function should be deterministic with fixed inputs
+        let output = [42u8; 32];
+        let stake = 1000u128;
+        let total = 10000u128;
+        let tau_num = 8000u128; // 0.8
+        let tau_den = 10000u128;
+        let r1 = check_leader_eligibility_integer(&output, stake, total, tau_num, tau_den);
+        let r2 = check_leader_eligibility_integer(&output, stake, total, tau_num, tau_den);
+        assert_eq!(r1, r2, "integer eligibility must be deterministic");
+    }
 }
 
 #[cfg(test)]

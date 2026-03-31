@@ -967,4 +967,124 @@ mod tests {
         let result = consensus.process_vote(vote);
         assert!(result.is_err(), "Vote with invalid BLS sig should be rejected");
     }
+
+    #[test]
+    fn test_equivocation_detected() {
+        // Create 4 validators so no single validator can reach quorum
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, _bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
+        let (v4, _bls4) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        let block_a = H256::from_slice(&[0xAAu8; 32]).unwrap();
+        let block_b = H256::from_slice(&[0xBBu8; 32]).unwrap();
+
+        // v1 votes for block_a at slot 5
+        for _ in 0..5 {
+            consensus.advance_slot();
+        }
+        let vote_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 5);
+        assert!(consensus.process_vote(vote_a).is_ok(), "first vote should succeed");
+
+        // v1 tries to vote for block_b at the same slot 5 -- equivocation
+        let vote_b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 5);
+        let result = consensus.process_vote(vote_b);
+        assert!(result.is_err(), "second vote for different block at same slot must be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("equivocation"),
+            "error should mention equivocation, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_finality_not_reported_twice() {
+        // Single-validator setup: quorum is immediate
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        // Advance to slot 1 so finalized_slot (1) > last_reported_finalized (0)
+        consensus.advance_slot();
+
+        let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+        let vote = make_signed_vote(&mut consensus, &v1, &bls1, block_hash, 1);
+
+        // Process vote -- single validator reaches quorum immediately, finalizing slot 1
+        let qc = consensus.process_vote(vote).unwrap();
+        assert!(qc.is_some(), "single-validator quorum should form immediately");
+
+        // First check_finality for slot 1 should return true
+        let first = consensus.check_finality(1);
+        assert!(first, "first check_finality should return true for newly finalized slot");
+
+        // Second check_finality for the same slot should return false (already reported)
+        let second = consensus.check_finality(1);
+        assert!(!second, "second check_finality should return false -- finality already reported");
+    }
+
+    #[test]
+    fn test_equivocation_detected_slot1() {
+        // Adversarial test: validator votes for block A then block B at slot 1
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, _bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        // Advance to slot 1
+        consensus.advance_slot();
+
+        let block_a = H256::from_slice(&[0xAAu8; 32]).unwrap();
+        let block_b = H256::from_slice(&[0xBBu8; 32]).unwrap();
+
+        // Vote for block A at slot 1
+        let vote_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 1);
+        assert!(consensus.process_vote(vote_a).is_ok(), "first vote should succeed");
+
+        // Vote for block B at slot 1 from the same validator -- equivocation
+        let vote_b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 1);
+        let result = consensus.process_vote(vote_b);
+        assert!(result.is_err(), "second vote for different block should be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("equivocation"),
+            "error should contain 'equivocation', got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_finality_not_double_reported() {
+        // check_finality should return true only once per slot
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone()],
+            0.8, 100, None, None, None,
+        );
+
+        // Advance to slot 1 and finalize via single-validator quorum
+        consensus.advance_slot();
+        let block_hash = H256::from_slice(&[0xCCu8; 32]).unwrap();
+        let vote = make_signed_vote(&mut consensus, &v1, &bls1, block_hash, 1);
+        let qc = consensus.process_vote(vote).unwrap();
+        assert!(qc.is_some(), "single-validator should reach quorum");
+
+        // First call: true (newly finalized)
+        let first = consensus.check_finality(1);
+        assert!(first, "first check_finality should return true");
+
+        // Second call: false (already reported)
+        let second = consensus.check_finality(1);
+        assert!(!second, "second check_finality should return false");
+    }
 }

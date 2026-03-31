@@ -160,6 +160,10 @@ impl GossipManager {
 
         // Limit seen messages
         if self.seen_messages.len() > self.cache_size {
+            tracing::warn!(
+                "gossip cache overflow ({} > {}), clearing dedup cache",
+                self.seen_messages.len(), self.cache_size
+            );
             self.seen_messages.clear();
         }
     }

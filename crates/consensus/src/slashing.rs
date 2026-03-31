@@ -140,14 +140,18 @@ pub fn verify_slash_proof(proof: &SlashProof) -> anyhow::Result<()> {
     }
 }
 
-/// Verify a vote's Ed25519 signature against the validator's public key.
+/// Verify a vote's BLS signature against the validator's public key.
+/// Votes are signed with BLS (not Ed25519), matching the consensus voting path.
 fn verify_vote_signature(vote: &Vote) -> anyhow::Result<()> {
     let pubkey_bytes = vote.validator_pubkey.as_bytes();
     let msg = vote.signing_message();
     let sig_bytes = vote.signature.as_bytes();
 
-    aether_crypto_primitives::verify(pubkey_bytes, &msg, sig_bytes)
-        .map_err(|e| anyhow::anyhow!("invalid vote signature: {}", e))
+    match aether_crypto_bls::keypair::verify(pubkey_bytes, &msg, sig_bytes) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(anyhow::anyhow!("invalid BLS vote signature")),
+        Err(e) => Err(anyhow::anyhow!("BLS verification error: {}", e)),
+    }
 }
 
 /// Calculate how much stake to slash.
@@ -187,10 +191,10 @@ pub fn apply_slash(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_crypto_primitives::Keypair;
+    use aether_crypto_bls::BlsKeypair;
 
-    fn make_vote(kp: &Keypair, slot: u64, block_byte: u8) -> Vote {
-        let validator_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+    fn make_vote(kp: &BlsKeypair, slot: u64, block_byte: u8) -> Vote {
+        let validator_pubkey = PublicKey::from_bytes(kp.public_key());
         let validator = validator_pubkey.to_address();
         let block_hash = H256::from_slice(&[block_byte; 32]).unwrap();
 
@@ -202,7 +206,7 @@ mod tests {
             signature: Signature::from_bytes(vec![]), // placeholder
         };
 
-        // Sign properly
+        // Sign properly with BLS
         let msg = vote.signing_message();
         let sig = kp.sign(&msg);
         Vote {
@@ -213,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_detect_double_sign() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         let vote1 = make_vote(&kp, 100, 1);
         let vote2 = make_vote(&kp, 100, 2);
 
@@ -227,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_no_double_sign_same_block() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         let vote1 = make_vote(&kp, 100, 1);
         let vote2 = make_vote(&kp, 100, 1);
 
@@ -236,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_verify_double_sign_proof_checks_signatures() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         let vote1 = make_vote(&kp, 100, 1);
         let vote2 = make_vote(&kp, 100, 2);
 
@@ -248,17 +252,17 @@ mod tests {
 
     #[test]
     fn test_verify_proof_rejects_forged_signature() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         let mut vote1 = make_vote(&kp, 100, 1);
         let vote2 = make_vote(&kp, 100, 2);
 
-        // Forge the signature
-        vote1.signature = Signature::from_bytes(vec![0u8; 64]);
+        // Forge the signature (BLS signatures are 96 bytes)
+        vote1.signature = Signature::from_bytes(vec![0u8; 96]);
 
         let proof = SlashProof {
             vote1,
             vote2,
-            validator: PublicKey::from_bytes(kp.public_key().to_vec()).to_address(),
+            validator: PublicKey::from_bytes(kp.public_key()).to_address(),
             proof_type: SlashType::DoubleSign,
         };
 
@@ -270,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_detect_surround_vote() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         // Vote A: source=10, target=100 (wide range)
         let vote_a = make_vote(&kp, 100, 1);
         // Vote B: source=20, target=50 (narrower range inside A)
@@ -286,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_no_surround_vote_non_overlapping() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         // Vote A: source=10, target=20
         let vote_a = make_vote(&kp, 20, 1);
         // Vote B: source=30, target=40
@@ -298,8 +302,8 @@ mod tests {
 
     #[test]
     fn test_no_surround_vote_different_validators() {
-        let kp1 = Keypair::generate();
-        let kp2 = Keypair::generate();
+        let kp1 = BlsKeypair::generate();
+        let kp2 = BlsKeypair::generate();
         let vote_a = make_vote(&kp1, 100, 1);
         let vote_b = make_vote(&kp2, 50, 2);
 
@@ -324,7 +328,7 @@ mod tests {
 
     #[test]
     fn test_apply_slash_returns_event() {
-        let kp = Keypair::generate();
+        let kp = BlsKeypair::generate();
         let vote1 = make_vote(&kp, 100, 1);
         let vote2 = make_vote(&kp, 100, 2);
         let proof = detect_double_sign(&vote1, &vote2).unwrap();

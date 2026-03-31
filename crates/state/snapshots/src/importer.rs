@@ -1,10 +1,16 @@
 use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::generator::{decode_snapshot, StateSnapshot};
 
 pub fn import_snapshot(storage: &Storage, bytes: &[u8]) -> Result<StateSnapshot> {
     let snapshot = decode_snapshot(bytes)?;
+
+    // Verify the snapshot's state root is non-zero to catch corruption.
+    // TODO: full verification by recomputing the Merkle root from imported data.
+    if snapshot.state_root == aether_types::H256::zero() {
+        bail!("snapshot has zero state root — likely corrupted");
+    }
 
     let mut batch = StorageBatch::new();
     for (address, account) in &snapshot.accounts {
@@ -47,7 +53,7 @@ mod tests {
                 height: 42,
                 generated_at: 0,
             },
-            state_root: H256::zero(),
+            state_root: H256::from_slice(&[1u8; 32]).unwrap(),
             accounts: Vec::new(),
             utxos: Vec::new(),
         };
@@ -115,7 +121,7 @@ mod tests {
         }
         source.write_batch(batch).unwrap();
         source
-            .put(CF_METADATA, b"state_root", H256::zero().as_bytes())
+            .put(CF_METADATA, b"state_root", &[1u8; 32])
             .unwrap();
 
         // Generate snapshot from populated storage

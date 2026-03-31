@@ -159,7 +159,7 @@ impl WasmVm {
         let gas_used = context.gas_limit.saturating_sub(remaining_fuel);
 
         // Collect results from host state
-        let state = host_state.lock().unwrap();
+        let state = host_state.lock().map_err(|_| anyhow::anyhow!("host state mutex poisoned"))?;
 
         Ok(ExecutionResult {
             success,
@@ -208,7 +208,10 @@ impl WasmVm {
                 };
 
                 let value = {
-                    let state = caller.data().lock().unwrap();
+                    let state = match caller.data().lock() {
+                        Ok(s) => s,
+                        Err(_) => return -1,
+                    };
                     state.storage.get(&key).cloned()
                 };
                 match value {
@@ -239,7 +242,8 @@ impl WasmVm {
              val_len: i32|
              -> i32 {
                 // Charge fuel for host function call (base + per-byte)
-                let fuel_cost = 5000u64 + (val_len as u64 * 20);
+                let val_cost = (val_len as u64).checked_mul(20).unwrap_or(u64::MAX);
+                let fuel_cost = 5000u64.saturating_add(val_cost);
                 if let Ok(fuel) = caller.get_fuel() {
                     if fuel < fuel_cost { return -1; }
                     let _ = caller.set_fuel(fuel - fuel_cost);
@@ -265,7 +269,10 @@ impl WasmVm {
                 let key = data[key_start..key_end].to_vec();
                 let value = data[val_start..val_end].to_vec();
 
-                let mut state = caller.data().lock().unwrap();
+                let mut state = match caller.data().lock() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
                 state.storage.insert(key, value);
                 0
             },
@@ -281,7 +288,8 @@ impl WasmVm {
              data_len: i32|
              -> i32 {
                 // Charge fuel for host function call
-                let fuel_cost = 375u64 + (data_len as u64 * 8);
+                let log_byte_cost = (data_len as u64).checked_mul(8).unwrap_or(u64::MAX);
+                let fuel_cost = 375u64.saturating_add(log_byte_cost);
                 if let Ok(fuel) = caller.get_fuel() {
                     if fuel < fuel_cost { return -1; }
                     let _ = caller.set_fuel(fuel - fuel_cost);
@@ -300,7 +308,10 @@ impl WasmVm {
                 };
 
                 let log_data = data[start..end].to_vec();
-                let mut state = caller.data().lock().unwrap();
+                let mut state = match caller.data().lock() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
                 state.logs.push(Log {
                     topics: vec![],
                     data: log_data,
@@ -327,7 +338,10 @@ impl WasmVm {
                 };
 
                 let ret_data = data[start..end].to_vec();
-                let mut state = caller.data().lock().unwrap();
+                let mut state = match caller.data().lock() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
                 state.return_data = ret_data;
                 0
             },
@@ -338,7 +352,10 @@ impl WasmVm {
             "env",
             "block_number",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i64 {
-                let state = caller.data().lock().unwrap();
+                let state = match caller.data().lock() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
                 state.context.block_number as i64
             },
         )?;
@@ -348,7 +365,10 @@ impl WasmVm {
             "env",
             "timestamp",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i64 {
-                let state = caller.data().lock().unwrap();
+                let state = match caller.data().lock() {
+                    Ok(s) => s,
+                    Err(_) => return -1,
+                };
                 state.context.timestamp as i64
             },
         )?;

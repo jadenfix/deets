@@ -86,18 +86,33 @@ impl ParallelScheduler {
         batches
     }
 
+    /// Check if tx at `idx` depends on an EARLIER unscheduled tx.
+    /// This enforces ordering: a tx that reads from an address written by
+    /// an earlier tx must wait for the writer to be scheduled first.
     fn has_pending_dependencies(
         tx: &Transaction,
         idx: usize,
         remaining: &[Transaction],
         used_indices: &HashSet<usize>,
     ) -> bool {
+        // Read-after-write: this tx reads addr X, an earlier tx writes X
         for addr in &tx.reads {
             for (j, other) in remaining.iter().enumerate() {
-                if j == idx || used_indices.contains(&j) {
-                    continue;
+                if j >= idx || used_indices.contains(&j) {
+                    continue; // Only check EARLIER transactions
                 }
                 if other.writes.contains(addr) {
+                    return true;
+                }
+            }
+        }
+        // Write-after-read: this tx writes addr X, an earlier tx reads X
+        for addr in &tx.writes {
+            for (j, other) in remaining.iter().enumerate() {
+                if j >= idx || used_indices.contains(&j) {
+                    continue; // Only check EARLIER transactions
+                }
+                if other.reads.contains(addr) {
                     return true;
                 }
             }

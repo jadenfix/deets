@@ -116,8 +116,10 @@ fn test_exponential_backoff() {
 fn test_byzantine_double_vote_detected() {
     use aether_consensus::slashing::*;
 
-    let kp = aether_crypto_primitives::Keypair::generate();
-    let pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+    // Use BLS keypair since votes are BLS-signed
+    let bls_kp = aether_crypto_bls::BlsKeypair::generate();
+    let bls_pubkey_bytes = bls_kp.public_key();
+    let pubkey = PublicKey::from_bytes(bls_pubkey_bytes.clone());
     let validator = pubkey.to_address();
 
     // Create two conflicting votes for the same slot
@@ -131,7 +133,7 @@ fn test_byzantine_double_vote_detected() {
             signature: aether_types::Signature::from_bytes(vec![]),
         };
         let msg = v.signing_message();
-        v.signature = aether_types::Signature::from_bytes(kp.sign(&msg));
+        v.signature = aether_types::Signature::from_bytes(bls_kp.sign(&msg));
         v
     };
 
@@ -142,7 +144,7 @@ fn test_byzantine_double_vote_detected() {
     let proof = detect_double_sign(&vote1, &vote2);
     assert!(proof.is_some(), "double sign must be detected");
 
-    // Verify the proof (checks real signatures)
+    // Verify the proof (checks real BLS signatures)
     let proof = proof.unwrap();
     assert!(verify_slash_proof(&proof).is_ok(), "proof must verify");
 }

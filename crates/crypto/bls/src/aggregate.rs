@@ -182,4 +182,55 @@ mod tests {
         // Aggregation should be deterministic
         assert_eq!(agg1, agg2);
     }
+
+    #[test]
+    fn test_rejects_duplicate_signatures() {
+        // Generate one BLS keypair, sign the same message, then try to aggregate
+        // the same signature twice. Should fail with "duplicate signature" error.
+        let kp = BlsKeypair::generate();
+        let msg = b"test message";
+        let sig = kp.sign(msg);
+        let result = aggregate_signatures(&[sig.clone(), sig.clone(), kp.sign(b"other")]);
+        assert!(result.is_err(), "should reject duplicate signatures");
+        assert!(result.unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn test_rejects_non_96_byte_signature() {
+        // A signature that's not 96 bytes should be rejected
+        let result = aggregate_signatures(&[vec![0u8; 95]]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rejects_non_48_byte_pubkey() {
+        // A pubkey that's not 48 bytes should be rejected
+        let result = aggregate_public_keys(&[vec![0u8; 47]]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_rejects_duplicate_signatures_two_keypairs() {
+        // Create 2 unique signatures, then duplicate one
+        // aggregate_signatures should reject duplicates
+        let kp1 = BlsKeypair::generate();
+        let kp2 = BlsKeypair::generate();
+        let msg = b"test message";
+        let sig1 = kp1.sign(msg);
+        let sig2 = kp2.sign(msg);
+        let result = aggregate_signatures(&[sig1.clone(), sig2, sig1]);
+        assert!(result.is_err(), "duplicate signatures should be rejected");
+    }
+
+    #[test]
+    fn test_rejects_wrong_length_signature() {
+        let result = aggregate_signatures(&[vec![0u8; 48]]); // 48 bytes, not 96
+        assert!(result.is_err(), "wrong-length signature should be rejected");
+    }
+
+    #[test]
+    fn test_rejects_wrong_length_pubkey() {
+        let result = aggregate_public_keys(&[vec![0u8; 32]]); // 32 bytes, not 48
+        assert!(result.is_err(), "wrong-length pubkey should be rejected");
+    }
 }

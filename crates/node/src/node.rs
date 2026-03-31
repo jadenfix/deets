@@ -303,7 +303,9 @@ impl Node {
         // For now, credit the local validator if present.
         if let Some(ref keypair) = self.validator_key {
             if let Ok(addr) = Address::from_slice(&keypair.to_address()) {
-                let _ = self.ledger.credit_account(&addr, emission);
+                if let Err(e) = self.ledger.credit_account(&addr, emission) {
+                    tracing::warn!("failed to credit emission reward to validator: {e}");
+                }
             }
         }
 
