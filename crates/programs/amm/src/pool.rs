@@ -55,8 +55,12 @@ impl LiquidityPool {
         }
 
         let lp_tokens = if self.lp_token_supply == 0 {
-            // Initial liquidity
-            let liquidity = (amount_a.checked_mul(amount_b).ok_or("overflow")?).integer_sqrt();
+            // Initial liquidity: use sqrt(a) * sqrt(b) to avoid u128 overflow in a*b
+            let sqrt_a = amount_a.integer_sqrt();
+            let sqrt_b = amount_b.integer_sqrt();
+            let liquidity = sqrt_a
+                .checked_mul(sqrt_b)
+                .ok_or("overflow in initial liquidity")?;
 
             if liquidity < 1000 {
                 return Err("insufficient initial liquidity".to_string());
@@ -68,9 +72,9 @@ impl LiquidityPool {
 
             liquidity
         } else {
-            // Proportional liquidity
-            let liquidity_a = (amount_a * self.lp_token_supply) / self.reserve_a;
-            let liquidity_b = (amount_b * self.lp_token_supply) / self.reserve_b;
+            // Proportional liquidity — multiply before dividing for precision
+            let liquidity_a = mul_div(amount_a, self.lp_token_supply, self.reserve_a)?;
+            let liquidity_b = mul_div(amount_b, self.lp_token_supply, self.reserve_b)?;
 
             let liquidity = liquidity_a.min(liquidity_b);
 
@@ -123,6 +127,11 @@ impl LiquidityPool {
             return Err("amount must be non-zero".to_string());
         }
 
+        let k_old = self
+            .reserve_a
+            .checked_mul(self.reserve_b)
+            .ok_or("overflow")?;
+
         let amount_out = self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)?;
 
         if amount_out < min_amount_out {
@@ -132,8 +141,8 @@ impl LiquidityPool {
         self.reserve_a += amount_in;
         self.reserve_b -= amount_out;
 
-        // Verify invariant
-        self.check_invariant()?;
+        // Verify invariant: k must not decrease
+        self.check_invariant(k_old)?;
 
         Ok(amount_out)
     }
@@ -144,6 +153,11 @@ impl LiquidityPool {
             return Err("amount must be non-zero".to_string());
         }
 
+        let k_old = self
+            .reserve_b
+            .checked_mul(self.reserve_a)
+            .ok_or("overflow")?;
+
         let amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)?;
 
         if amount_out < min_amount_out {
@@ -153,8 +167,8 @@ impl LiquidityPool {
         self.reserve_b += amount_in;
         self.reserve_a -= amount_out;
 
-        // Verify invariant
-        self.check_invariant()?;
+        // Verify invariant: k must not decrease
+        self.check_invariant(k_old)?;
 
         Ok(amount_out)
     }
@@ -192,16 +206,20 @@ impl LiquidityPool {
         Ok(amount_out)
     }
 
-    /// Check constant product invariant (with tolerance for rounding)
-    fn check_invariant(&self) -> Result<(), String> {
+    /// Check constant product invariant: k_new must be >= k_old
+    fn check_invariant(&self, k_old: u128) -> Result<(), String> {
         let k_new = self
             .reserve_a
             .checked_mul(self.reserve_b)
             .ok_or("overflow")?;
 
-        // Invariant should not decrease (may increase slightly due to fees)
         if k_new == 0 {
             return Err("invariant violated: k = 0".to_string());
+        }
+
+        // Invariant must not decrease (may increase slightly due to fees)
+        if k_new < k_old {
+            return Err("invariant violated: k decreased".to_string());
         }
 
         Ok(())
@@ -215,6 +233,14 @@ impl LiquidityPool {
 
         Ok((self.reserve_b * 1_000_000) / self.reserve_a)
     }
+}
+
+/// Safe multiplication then division: computes a * b / c without intermediate overflow
+/// when possible, falling back to an error if the product overflows u128.
+fn mul_div(a: u128, b: u128, c: u128) -> Result<u128, String> {
+    a.checked_mul(b)
+        .map(|ab| ab / c)
+        .ok_or_else(|| "overflow in proportional calculation".to_string())
 }
 
 trait IntegerSqrt {
@@ -256,11 +282,12 @@ mod tests {
     fn test_add_initial_liquidity() {
         let mut pool = test_pool();
 
-        let lp_tokens = pool.add_liquidity(1000, 1000, 0).unwrap();
+        let lp_tokens = pool.add_liquidity(10000, 10000, 0).unwrap();
 
-        assert_eq!(pool.reserve_a, 1000);
-        assert_eq!(pool.reserve_b, 1000);
-        assert_eq!(lp_tokens, 1000);
+        assert_eq!(pool.reserve_a, 10000);
+        assert_eq!(pool.reserve_b, 10000);
+        // sqrt(10000) * sqrt(10000) = 100 * 100 = 10000
+        assert_eq!(lp_tokens, 10000);
     }
 
     #[test]
@@ -304,7 +331,7 @@ mod tests {
     fn test_constant_product() {
         let mut pool = test_pool();
 
-        pool.add_liquidity(1000, 1000, 0).unwrap();
+        pool.add_liquidity(10000, 10000, 0).unwrap();
         let k_before = pool.reserve_a * pool.reserve_b;
 
         pool.swap_a_to_b(100, 0).unwrap();
@@ -323,5 +350,31 @@ mod tests {
 
         // Price should be 2:1 (2_000_000)
         assert_eq!(price, 2_000_000);
+    }
+
+    // ── Adversarial tests ────────────────────────────────────
+
+    #[test]
+    fn test_invariant_cannot_decrease_after_swap() {
+        let mut pool = test_pool();
+        pool.add_liquidity(100_000, 100_000, 0).unwrap();
+
+        let k_before = pool.reserve_a * pool.reserve_b;
+        pool.swap_a_to_b(5_000, 0).unwrap();
+        let k_after = pool.reserve_a * pool.reserve_b;
+
+        assert!(
+            k_after >= k_before,
+            "invariant decreased: k_before={k_before}, k_after={k_after}"
+        );
+    }
+
+    #[test]
+    fn test_swap_with_zero_amount_rejected() {
+        let mut pool = test_pool();
+        pool.add_liquidity(10_000, 10_000, 0).unwrap();
+
+        let result = pool.swap_a_to_b(0, 0);
+        assert!(result.is_err(), "swap of 0 tokens should be rejected");
     }
 }

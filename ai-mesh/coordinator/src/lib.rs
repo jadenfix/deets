@@ -173,7 +173,7 @@ impl MeshCoordinator {
             ReputationEventType::Timeout => -30,
         };
 
-        worker.reputation_score += score_change;
+        worker.reputation_score = (worker.reputation_score + score_change).clamp(-100, 1000);
 
         // Record event
         let event = ReputationEvent {
@@ -188,7 +188,7 @@ impl MeshCoordinator {
             .push(event);
 
         // Ban worker if reputation too low
-        if worker.reputation_score < -100 {
+        if worker.reputation_score <= -100 {
             worker.available = false;
             println!(
                 "Worker {:?} banned (low reputation)",

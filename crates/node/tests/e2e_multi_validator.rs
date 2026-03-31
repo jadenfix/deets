@@ -10,9 +10,10 @@ use aether_node::{
     ValidatorKeypair,
 };
 use aether_types::{
-    Address, Block, PublicKey, Signature, Slot, Transaction, ValidatorInfo, Vote, H256,
+    Address, Block, ChainConfig, PublicKey, Signature, Slot, Transaction, ValidatorInfo, Vote, H256,
 };
 use std::collections::HashSet;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 /// In-memory network that delivers messages between nodes.
@@ -65,6 +66,7 @@ impl TestNetwork {
                 consensus,
                 Some(keypair.ed25519),
                 Some(keypair.bls),
+                Arc::new(ChainConfig::devnet()),
             )
             .expect("create node");
 

@@ -6,12 +6,14 @@ use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
 use aether_state_storage::{Storage, CF_BLOCKS, CF_RECEIPTS, CF_METADATA};
 use aether_types::{
-    Account, Address, Block, PublicKey, Slot, Transaction, TransactionReceipt, Vote, H256,
+    Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
+    H256,
 };
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time;
@@ -23,9 +25,9 @@ use crate::poh::{PohMetrics, PohRecorder};
 const MAX_OUTBOUND_BUFFER: usize = 10_000;
 const MAX_CACHED_BLOCKS: usize = 10_000;
 const MAX_CACHED_RECEIPTS: usize = 50_000;
-const EPOCH_LENGTH: u64 = 100;
 
 pub struct Node {
+    chain_config: Arc<ChainConfig>,
     ledger: Ledger,
     mempool: Mempool,
     consensus: Box<dyn ConsensusEngine>,
@@ -55,10 +57,11 @@ impl Node {
         consensus: Box<dyn ConsensusEngine>,
         validator_key: Option<Keypair>,
         bls_key: Option<BlsKeypair>,
+        chain_config: Arc<ChainConfig>,
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
-        let mempool = Mempool::new();
+        let mempool = Mempool::new(chain_config.fees.clone());
 
         // Warn on asymmetric key configuration
         if validator_key.is_some() != bls_key.is_some() {
@@ -77,7 +80,18 @@ impl Node {
             println!("Recovered {} blocks from disk (tip: slot {:?})", blocks_by_hash.len(), latest_block_slot);
         }
 
+        let fee_market = FeeMarket::new(
+            chain_config.fees.a,
+            chain_config.chain.block_bytes_max as u64,
+            chain_config.fees.min_base_fee,
+        );
+        let emission_schedule = EmissionSchedule::new(
+            chain_config.tokens.swr_initial_supply,
+            chain_config.chain.slot_ms,
+            chain_config.chain.epoch_slots,
+        );
         Ok(Node {
+            chain_config,
             ledger,
             mempool,
             consensus,
@@ -86,8 +100,8 @@ impl Node {
             running: false,
             poh: PohRecorder::new(),
             last_poh_metrics: None,
-            fee_market: FeeMarket::new(10_000, 5_000_000),
-            emission_schedule: EmissionSchedule::new(1_000_000_000_000_000), // 1B tokens
+            fee_market,
+            emission_schedule,
             current_epoch: 0,
             fork_choice: ForkChoice::new(),
             latest_block_hash,
@@ -224,7 +238,7 @@ impl Node {
         self.mempool.set_current_slot(slot);
 
         // Check for epoch transition
-        let epoch = slot / EPOCH_LENGTH;
+        let epoch = slot / self.chain_config.chain.epoch_slots;
         if epoch > self.current_epoch {
             self.process_epoch_transition(epoch)?;
         }
@@ -677,8 +691,8 @@ impl Node {
 
                 // Update epoch randomness ONCE per epoch from the first finalized block
                 // of that epoch to ensure deterministic randomness across all nodes.
-                let finalized_epoch = slot / EPOCH_LENGTH;
-                let epoch_start = finalized_epoch * EPOCH_LENGTH;
+                let finalized_epoch = slot / self.chain_config.chain.epoch_slots;
+                let epoch_start = finalized_epoch * self.chain_config.chain.epoch_slots;
                 if slot == epoch_start {
                     if let Some(block) = self.get_block_by_slot(slot) {
                         if block.header.vrf_proof.output != [0u8; 32] {
@@ -807,7 +821,7 @@ mod tests {
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
 
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
 
         node.process_slot().unwrap();
         let first_metrics = node.poh_metrics().cloned().unwrap();
@@ -825,7 +839,7 @@ mod tests {
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
 
         // Push more than MAX_OUTBOUND_BUFFER messages
         for _ in 0..MAX_OUTBOUND_BUFFER + 100 {
@@ -847,7 +861,7 @@ mod tests {
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None).unwrap();
+        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
 
         let block = Block::new(
             0,

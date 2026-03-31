@@ -16,7 +16,7 @@ export class Transaction {
   readonly writes: string[];
 
   constructor(fields: TransactionFields) {
-    if (!fields.signature || fields.signature.length < 64) {
+    if (!fields.signature || fields.signature.length < 128) {
       throw new Error("signature must be at least 64 characters");
     }
 

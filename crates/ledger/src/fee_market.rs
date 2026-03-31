@@ -39,12 +39,12 @@ pub struct BlockFeeResult {
 }
 
 impl FeeMarket {
-    pub fn new(initial_base_fee: u128, max_gas: u64) -> Self {
+    pub fn new(initial_base_fee: u128, max_gas: u64, min_base_fee: u128) -> Self {
         FeeMarket {
             base_fee: initial_base_fee,
             target_gas: max_gas / 2,
             max_gas,
-            min_base_fee: 1_000, // Floor: 1000 units per gas
+            min_base_fee,
             total_burned: 0,
             total_priority_fees: 0,
         }
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_base_fee_stable_at_target() {
-        let mut fm = FeeMarket::new(10_000, 1_000_000);
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
 
         // Gas used exactly at target (500,000)
         let result = fm.process_block(500_000, 10_000_000_000);
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn test_base_fee_increases_above_target() {
-        let mut fm = FeeMarket::new(10_000, 1_000_000);
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
 
         // Gas used at max (1,000,000) — double the target
         let result = fm.process_block(1_000_000, 20_000_000_000);
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_base_fee_decreases_below_target() {
-        let mut fm = FeeMarket::new(10_000, 1_000_000);
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
 
         // Empty block (0 gas)
         let result = fm.process_block(0, 0);
@@ -159,8 +159,7 @@ mod tests {
 
     #[test]
     fn test_base_fee_floor() {
-        let mut fm = FeeMarket::new(1_000, 1_000_000);
-        fm.min_base_fee = 1_000;
+        let mut fm = FeeMarket::new(1_000, 1_000_000, 1_000);
 
         // Many empty blocks — fee should hit floor
         for _ in 0..100 {
@@ -171,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_burn_calculation() {
-        let mut fm = FeeMarket::new(10_000, 1_000_000);
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
 
         // Block with 100,000 gas, total fees = 2,000,000,000
         let result = fm.process_block(100_000, 2_000_000_000);
@@ -184,7 +183,7 @@ mod tests {
 
     #[test]
     fn test_total_burned_accumulates() {
-        let mut fm = FeeMarket::new(10_000, 1_000_000);
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
 
         fm.process_block(100_000, 2_000_000_000);
         fm.process_block(100_000, 2_000_000_000);
@@ -195,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_min_fee_for_gas() {
-        let fm = FeeMarket::new(10_000, 1_000_000);
+        let fm = FeeMarket::new(10_000, 1_000_000, 1_000);
         assert_eq!(fm.min_fee_for_gas(21_000), 210_000_000);
     }
 }

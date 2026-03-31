@@ -46,22 +46,27 @@ impl ReedSolomonEncoder {
 
     /// Encode data into data+parity shards using Reed-Solomon erasure coding
     pub fn encode(&self, data: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let chunk_size = self.shard_size(data.len());
+        // Prepend a u64 little-endian length prefix so the decoder can
+        // strip padding without corrupting data that ends in 0x00.
+        let mut prefixed = (data.len() as u64).to_le_bytes().to_vec();
+        prefixed.extend_from_slice(data);
+
+        let chunk_size = self.shard_size(prefixed.len());
         if chunk_size == 0 {
             return Ok(vec![vec![]; self.data_shards + self.parity_shards]);
         }
 
-        // Split data into equal-sized shards
+        // Split prefixed data into equal-sized shards
         let mut shards = Vec::with_capacity(self.data_shards + self.parity_shards);
 
         // Create data shards
         for shard_index in 0..self.data_shards {
             let start = shard_index * chunk_size;
-            let end = (start + chunk_size).min(data.len());
+            let end = (start + chunk_size).min(prefixed.len());
             let mut chunk = vec![0u8; chunk_size];
 
-            if start < data.len() {
-                chunk[..end - start].copy_from_slice(&data[start..end]);
+            if start < prefixed.len() {
+                chunk[..end - start].copy_from_slice(&prefixed[start..end]);
             }
 
             shards.push(chunk);
@@ -96,6 +101,8 @@ mod tests {
         let data = b"hello world";
         let shards = encoder.encode(data).unwrap();
         assert_eq!(shards.len(), 5);
-        assert_eq!(shards[0].len(), encoder.shard_size(data.len()));
+        // Shard size accounts for the 8-byte length prefix
+        let prefixed_len = data.len() + 8;
+        assert_eq!(shards[0].len(), encoder.shard_size(prefixed_len));
     }
 }

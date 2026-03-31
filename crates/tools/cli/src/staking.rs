@@ -1,12 +1,10 @@
+use aether_types::ChainConfig;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::config::ResolvedConfig;
 use crate::io::parse_address;
 use crate::transfers::{perform_transfer, TransferParams};
-
-const STAKING_DELEGATE_ADDRESS: &str = "0x00000000000000000000000000000000000000ab";
-const STAKING_WITHDRAW_ADDRESS: &str = "0x00000000000000000000000000000000000000ac";
 
 #[derive(Subcommand, Debug)]
 pub enum StakeCommand {
@@ -18,12 +16,13 @@ pub enum StakeCommand {
 
 impl StakeCommand {
     pub async fn execute(&self, config: &ResolvedConfig) -> Result<()> {
-        let (target, args) = match self {
-            StakeCommand::Delegate(args) => (STAKING_DELEGATE_ADDRESS, args),
-            StakeCommand::Withdraw(args) => (STAKING_WITHDRAW_ADDRESS, args),
+        let well_known = ChainConfig::devnet().well_known_addresses();
+        let (target_addr, args) = match self {
+            StakeCommand::Delegate(args) => (well_known.staking_delegate, args),
+            StakeCommand::Withdraw(args) => (well_known.staking_withdraw, args),
         };
 
-        let recipient = parse_address(target)?;
+        let recipient = target_addr;
         let memo = args.memo.clone().unwrap_or_else(|| match self {
             StakeCommand::Delegate(_) => "stake:delegate".to_string(),
             StakeCommand::Withdraw(_) => "stake:withdraw".to_string(),

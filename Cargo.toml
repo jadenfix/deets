@@ -155,6 +155,9 @@ wasmtime = "16"
 anyhow = "1"
 thiserror = "1"
 
+# Configuration
+toml = "0.8"
+
 # Serialization (already defined above)
 
 # Telemetry

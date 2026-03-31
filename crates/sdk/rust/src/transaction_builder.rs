@@ -90,7 +90,8 @@ impl TransferBuilder {
         }
         tx.signature = Signature::from_bytes(signature);
         tx.verify_signature()?;
-        tx.calculate_fee()?;
+        let fee_params = aether_types::ChainConfig::devnet().fees;
+        tx.calculate_fee(&fee_params)?;
         Ok(tx)
     }
 }

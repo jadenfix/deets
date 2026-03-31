@@ -197,6 +197,9 @@ impl GovernanceState {
         // Check quorum
         let total_votes = proposal.votes_for + proposal.votes_against;
         let quorum_threshold = (self.total_voting_power * self.quorum_percentage as u128) / 100;
+        if quorum_threshold == 0 {
+            return Err("quorum is zero: no voting power registered".to_string());
+        }
 
         if total_votes < quorum_threshold {
             proposal.status = ProposalStatus::Failed;
@@ -266,7 +269,9 @@ impl GovernanceState {
     /// Update voting power (called from staking module).
     pub fn update_voting_power(&mut self, account: Address, power: u128) {
         let old_power = self.voting_power.get(&account).copied().unwrap_or(0);
-        self.total_voting_power = self.total_voting_power - old_power + power;
+        self.total_voting_power = self.total_voting_power
+            .saturating_sub(old_power)
+            .saturating_add(power);
         self.voting_power.insert(account, power);
         self.recompute_effective_power();
     }
@@ -647,5 +652,69 @@ mod tests {
         // Insufficient funds
         let result = state.execute_treasury_allocation(&addr(2), 999_999);
         assert!(result.is_err());
+    }
+
+    // ── Adversarial tests ────────────────────────────────────
+
+    #[test]
+    fn test_zero_voting_power_cannot_finalize() {
+        let mut state = GovernanceState::new();
+        // total_voting_power stays 0 — no one has registered voting power
+
+        // Manually insert a proposal (bypass propose() which requires stake)
+        let proposal_id = H256::zero();
+        let proposal = Proposal {
+            proposal_id,
+            proposer: addr(1),
+            proposal_type: ProposalType::ParameterChange {
+                parameter: "test".to_string(),
+                value: 1,
+            },
+            description: "adversarial test".to_string(),
+            votes_for: 0,
+            votes_against: 0,
+            status: ProposalStatus::Active,
+            start_slot: 1000,
+            end_slot: 1000 + state.voting_period_slots,
+            execution_slot: None,
+            voters: HashMap::new(),
+        };
+        state.proposals.insert(proposal_id, proposal);
+
+        // Try to finalize after voting period ends
+        let after_voting = 1000 + state.voting_period_slots + 1;
+        let result = state.finalize(proposal_id, after_voting);
+        assert!(result.is_err(), "finalize should fail when quorum is zero");
+        assert!(
+            result.unwrap_err().contains("quorum is zero"),
+            "error should mention zero quorum"
+        );
+    }
+
+    #[test]
+    fn test_voting_power_update_saturates() {
+        let mut state = GovernanceState::new();
+
+        // Give addr(1) a small amount of voting power
+        state.update_voting_power(addr(1), 100);
+        assert_eq!(state.total_voting_power, 100);
+
+        // Now update with old_power (100) being subtracted via saturating_sub.
+        // Set new power to 0 so total should go to 0, not underflow.
+        state.update_voting_power(addr(1), 0);
+        assert_eq!(state.total_voting_power, 0);
+
+        // Simulate a bug scenario: manually set total_voting_power very low,
+        // then update a user whose recorded power is much larger.
+        state.voting_power.insert(addr(2), 1_000_000);
+        state.total_voting_power = 10; // Artificially low
+
+        // update_voting_power should use saturating_sub so total doesn't underflow
+        state.update_voting_power(addr(2), 500);
+        assert!(
+            state.total_voting_power >= 500,
+            "total_voting_power should not underflow; got {}",
+            state.total_voting_power
+        );
     }
 }

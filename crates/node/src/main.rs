@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use aether_node::{
 };
 use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
-use aether_types::{Address, Block, Transaction, TransactionReceipt, Vote, H256};
+use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, Vote, H256};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -90,6 +91,7 @@ impl RpcBackend for NodeRpcBackend {
 async fn run_slot_loop(
     node: Arc<RwLock<Node>>,
     mut net_rx: mpsc::UnboundedReceiver<aether_p2p::network::NetworkEvent>,
+    slot_ms: u64,
 ) -> Result<()> {
     loop {
         // Drain all pending network messages
@@ -106,7 +108,7 @@ async fn run_slot_loop(
                 .map_err(|_| anyhow::anyhow!("node lock poisoned"))?;
             guard.tick()?;
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(slot_ms)).await;
     }
 }
 
@@ -153,8 +155,28 @@ async fn run_p2p_outbound(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Aether Node v0.2.0");
+    println!("Aether Node v0.3.0");
     println!("=================\n");
+
+    // Load chain configuration
+    let chain_config = if let Ok(config_path) = env::var("AETHER_CONFIG_PATH") {
+        println!("Loading config from: {config_path}");
+        ChainConfig::from_toml_file(Path::new(&config_path))?
+    } else {
+        let network = env::var("AETHER_NETWORK").unwrap_or_else(|_| "devnet".to_string());
+        println!("Using {network} preset config");
+        match network.as_str() {
+            "mainnet" => ChainConfig::mainnet(),
+            "testnet" => ChainConfig::testnet(),
+            _ => ChainConfig::devnet(),
+        }
+    };
+
+    let chain_config = Arc::new(chain_config);
+    println!(
+        "Chain: {} (numeric ID: {})",
+        chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
+    );
 
     let validator_keypair = ValidatorKeypair::generate();
     let validators = vec![validator_info_from_keypair(&validator_keypair, 1_000_000)];
@@ -163,8 +185,8 @@ async fn main() -> Result<()> {
     let consensus = Box::new(create_hybrid_consensus(
         validators,
         Some(&validator_keypair),
-        0.8, // tau: leader rate
-        100, // epoch length in slots
+        chain_config.consensus.tau,
+        chain_config.chain.epoch_slots,
     )?);
 
     let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
@@ -182,12 +204,14 @@ async fn main() -> Result<()> {
         consensus,
         Some(validator_keypair.ed25519),
         Some(validator_keypair.bls),
+        chain_config.clone(),
     )?;
 
     // Seed validator with genesis balance (only on first run)
+    let genesis_balance = chain_config.tokens.swr_initial_supply;
     if node.get_account(validator_address)?.is_none() {
-        node.seed_account(&validator_address, 1_000_000_000_000)?;
-        println!("Genesis: funded validator with 1_000_000_000_000");
+        node.seed_account(&validator_address, genesis_balance)?;
+        println!("Genesis: funded validator with {genesis_balance}");
     } else {
         println!("Node already initialized, skipping genesis funding");
     }
@@ -217,6 +241,10 @@ async fn main() -> Result<()> {
     println!("Consensus: VRF + HotStuff + BLS");
     println!("P2P listening on 0.0.0.0:{p2p_port}");
     println!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
+    println!(
+        "Slot duration: {}ms, Epoch: {} slots",
+        chain_config.chain.slot_ms, chain_config.chain.epoch_slots
+    );
     println!("Press Ctrl-C to stop.\n");
 
     // Connect to bootstrap peers if specified
@@ -232,7 +260,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    let slot_task = tokio::spawn(run_slot_loop(shared_node, net_rx));
+    let slot_ms = chain_config.chain.slot_ms;
+    let slot_task = tokio::spawn(run_slot_loop(shared_node, net_rx, slot_ms));
     let rpc_task = tokio::spawn(async move { rpc_server.run().await });
     let p2p_task = tokio::spawn(run_p2p_outbound(p2p, outbound_rx, net_tx));
 

@@ -11,6 +11,7 @@
 
 [chain]
 chain_id = "aether-dev-1"
+chain_id_numeric = 900           # Devnet numeric chain ID (1=mainnet, 100=testnet)
 slot_ms = 500                    # 500ms slots for 2s finality target
 block_bytes_max = 2_000_000      # 2MB max block size
 epoch_slots = 43200              # ~6 hours per epoch at 500ms slots
@@ -40,6 +41,13 @@ d = 1                            # Per memory byte
 congestion_base = 1.0
 congestion_max = 100.0
 target_utilization = 0.75
+
+# EIP-1559 fee market floor
+min_base_fee = 1_000
+
+# Blob transaction fees (EIP-4844 style)
+blob_per_blob_fee = 100_000
+blob_per_byte_fee = 1
 
 [rent]
 # State rent (anti-spam, reclaim unused state)

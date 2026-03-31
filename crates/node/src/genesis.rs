@@ -1,21 +1,33 @@
-use aether_types::{Address, Block, PublicKey, ValidatorInfo, VrfProof, H256};
+use aether_types::{Address, Block, ChainConfig, PublicKey, ValidatorInfo, VrfProof, H256};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 
 /// Genesis configuration for bootstrapping a new network.
+///
+/// Embeds the full `ChainConfig` (consensus, fees, networking, etc.)
+/// alongside the initial validator set and account allocations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisConfig {
-    /// Chain identifier.
-    pub chain_id: String,
+    /// Full chain configuration (loaded from genesis.toml).
+    #[serde(flatten)]
+    pub chain_config: ChainConfig,
     /// Initial validators with their stakes.
+    #[serde(default)]
     pub validators: Vec<GenesisValidator>,
     /// Initial account balances.
+    #[serde(default)]
     pub accounts: Vec<GenesisAccount>,
-    /// Genesis timestamp.
+    /// Genesis timestamp (unix seconds).
+    #[serde(default)]
     pub timestamp: u64,
     /// Initial protocol version.
+    #[serde(default = "default_protocol_version")]
     pub protocol_version: u32,
+}
+
+fn default_protocol_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +54,21 @@ pub struct GenesisResult {
 }
 
 impl GenesisConfig {
+    /// Create a genesis config from a ChainConfig preset with the given validators/accounts.
+    pub fn new(
+        chain_config: ChainConfig,
+        validators: Vec<GenesisValidator>,
+        accounts: Vec<GenesisAccount>,
+    ) -> Self {
+        GenesisConfig {
+            chain_config,
+            validators,
+            accounts,
+            timestamp: 0,
+            protocol_version: 1,
+        }
+    }
+
     /// Build the genesis block and initial state from the config.
     pub fn build(&self) -> GenesisResult {
         // Build validator set
@@ -57,7 +84,8 @@ impl GenesisConfig {
             .collect();
 
         let total_stake: u128 = validator_set.iter().map(|v| v.stake).sum();
-        let total_supply: u128 = self.accounts.iter().map(|a| a.balance).sum::<u128>() + total_stake;
+        let total_supply: u128 =
+            self.accounts.iter().map(|a| a.balance).sum::<u128>() + total_stake;
 
         // Compute genesis state root from accounts
         let state_root = self.compute_state_root();
@@ -95,7 +123,7 @@ impl GenesisConfig {
 
     fn compute_state_root(&self) -> H256 {
         let mut hasher = Sha256::new();
-        hasher.update(self.chain_id.as_bytes());
+        hasher.update(self.chain_config.chain.chain_id.as_bytes());
         for account in &self.accounts {
             hasher.update(account.address.as_bytes());
             hasher.update(account.balance.to_le_bytes());
@@ -108,19 +136,18 @@ impl GenesisConfig {
     }
 
     /// Validate the genesis config.
-    pub fn validate(&self) -> Result<(), String> {
-        if self.chain_id.is_empty() {
-            return Err("chain_id must not be empty".into());
-        }
+    pub fn validate(&self) -> Result<()> {
+        self.chain_config.validate()?;
+
         if self.validators.is_empty() {
-            return Err("must have at least one validator".into());
+            bail!("must have at least one validator");
         }
         for v in &self.validators {
             if v.stake == 0 {
-                return Err(format!("validator {} has zero stake", v.name));
+                bail!("validator {} has zero stake", v.name);
             }
             if v.pubkey.is_empty() {
-                return Err(format!("validator {} has empty pubkey", v.name));
+                bail!("validator {} has empty pubkey", v.name);
             }
         }
         Ok(())
@@ -133,7 +160,7 @@ mod tests {
 
     fn test_config() -> GenesisConfig {
         GenesisConfig {
-            chain_id: "aether-test-1".into(),
+            chain_config: ChainConfig::devnet(),
             validators: vec![
                 GenesisValidator {
                     name: "validator-1".into(),
@@ -148,12 +175,10 @@ mod tests {
                     commission_bps: 300,
                 },
             ],
-            accounts: vec![
-                GenesisAccount {
-                    address: Address::from_slice(&[10u8; 20]).unwrap(),
-                    balance: 100_000_000,
-                },
-            ],
+            accounts: vec![GenesisAccount {
+                address: Address::from_slice(&[10u8; 20]).unwrap(),
+                balance: 100_000_000,
+            }],
             timestamp: 1700000000,
             protocol_version: 1,
         }
@@ -189,13 +214,13 @@ mod tests {
         assert!(bad.validate().is_err());
 
         let mut bad2 = test_config();
-        bad2.chain_id = String::new();
+        bad2.chain_config.chain.chain_id = String::new();
         assert!(bad2.validate().is_err());
     }
 
     #[test]
     fn test_state_root_changes_with_accounts() {
-        let mut c1 = test_config();
+        let c1 = test_config();
         let mut c2 = test_config();
         c2.accounts[0].balance = 999;
 

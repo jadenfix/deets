@@ -6,10 +6,11 @@
 
 use crate::{ConsensusEngine, Pacemaker};
 use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
-use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair, VrfProof};
+use aether_crypto_vrf::{check_leader_eligibility_integer, verify_proof, VrfKeypair, VrfProof};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, Vote, H256};
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -50,7 +51,9 @@ pub struct HybridConsensus {
     epoch_length: u64,
 
     // === VRF-PoS Parameters ===
-    tau: f64, // Leader rate (0 < tau <= 1)
+    tau: f64, // Leader rate (0 < tau <= 1) — kept for API compatibility
+    tau_numerator: u128,   // Integer numerator for deterministic eligibility check
+    tau_denominator: u128, // Integer denominator for deterministic eligibility check
     my_vrf_keypair: Option<VrfKeypair>,
     my_bls_keypair: Option<BlsKeypair>,
     my_address: Option<Address>,
@@ -82,6 +85,7 @@ pub struct HybridConsensus {
     // === Finality ===
     committed_slot: Slot,
     finalized_slot: Slot,
+    last_reported_finalized: Slot,
 }
 
 impl HybridConsensus {
@@ -99,6 +103,10 @@ impl HybridConsensus {
             .map(|v| (v.pubkey.to_address(), v))
             .collect();
 
+        // Convert f64 tau to integer fraction: multiply by 10000 to preserve 4 decimal places
+        let tau_numerator = (tau * 10000.0).round() as u128;
+        let tau_denominator = 10000u128;
+
         HybridConsensus {
             validators: validators_map,
             total_stake,
@@ -107,6 +115,8 @@ impl HybridConsensus {
             epoch_randomness: H256::zero(),
             epoch_length,
             tau,
+            tau_numerator,
+            tau_denominator,
             my_vrf_keypair,
             my_bls_keypair,
             my_address,
@@ -123,6 +133,7 @@ impl HybridConsensus {
             pacemaker: Pacemaker::new(Duration::from_millis(500)),
             committed_slot: 0,
             finalized_slot: 0,
+            last_reported_finalized: 0,
         }
     }
 
@@ -141,7 +152,13 @@ impl HybridConsensus {
         let proof = vrf_keypair.prove(&input);
 
         // Check eligibility threshold
-        if check_leader_eligibility(&proof.output, validator.stake, self.total_stake, self.tau) {
+        if check_leader_eligibility_integer(
+            &proof.output,
+            validator.stake,
+            self.total_stake,
+            self.tau_numerator,
+            self.tau_denominator,
+        ) {
             Some(proof)
         } else {
             None
@@ -181,12 +198,13 @@ impl HybridConsensus {
             return Ok(false);
         }
 
-        // Check eligibility threshold
-        Ok(check_leader_eligibility(
+        // Check eligibility threshold (using deterministic integer arithmetic)
+        Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
             self.total_stake,
-            self.tau,
+            self.tau_numerator,
+            self.tau_denominator,
         ))
     }
 
@@ -225,8 +243,28 @@ impl HybridConsensus {
     }
 
     /// Register a validator's BLS public key for vote signature verification.
-    pub fn register_bls_pubkey(&mut self, address: Address, bls_pubkey: Vec<u8>) {
+    ///
+    /// Requires a valid proof-of-possession (PoP) signature to prevent rogue key attacks.
+    /// The PoP proves the registrant knows the secret key corresponding to the public key.
+    pub fn register_bls_pubkey(
+        &mut self,
+        address: Address,
+        bls_pubkey: Vec<u8>,
+        pop_signature: &[u8],
+    ) -> Result<()> {
+        if bls_pubkey.len() != 48 {
+            bail!("BLS pubkey must be 48 bytes, got {}", bls_pubkey.len());
+        }
+        // Verify proof-of-possession to prevent rogue key attacks
+        match aether_crypto_bls::verify_pop(&bls_pubkey, pop_signature)? {
+            true => {}
+            false => bail!(
+                "invalid proof-of-possession for BLS pubkey registered by {:?}",
+                address
+            ),
+        }
         self.bls_pubkeys.insert(address, bls_pubkey);
+        Ok(())
     }
 
     /// Record a block's parent relationship (for 2-chain finality).
@@ -302,21 +340,26 @@ impl HybridConsensus {
         // Equivocation detection: check if this validator already voted for a DIFFERENT block
         // at this slot. Only checked AFTER signature verification so invalid-sig votes
         // can't poison the record.
+        // Uses entry() API for atomic check-then-insert (no TOCTOU race).
         let vote_key = (vote.slot, voter_addr);
-        if let Some(prev_block) = self.vote_record.get(&vote_key) {
-            if *prev_block != vote.block_hash {
-                println!(
-                    "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
-                    voter_addr, prev_block, vote.block_hash, vote.slot
-                );
-                bail!(
-                    "equivocation detected: validator {:?} double-voted at slot {}",
-                    voter_addr,
-                    vote.slot
-                );
+        match self.vote_record.entry(vote_key) {
+            Entry::Occupied(e) => {
+                if *e.get() != vote.block_hash {
+                    println!(
+                        "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
+                        voter_addr, e.get(), vote.block_hash, vote.slot
+                    );
+                    bail!(
+                        "equivocation detected: validator {:?} double-voted at slot {}",
+                        voter_addr,
+                        vote.slot
+                    );
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert(vote.block_hash);
             }
         }
-        self.vote_record.insert(vote_key, vote.block_hash);
 
         // Deduplicate: one vote per validator per (slot, phase, block)
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
@@ -539,8 +582,13 @@ impl ConsensusEngine for HybridConsensus {
     }
 
     fn check_finality(&mut self, slot: Slot) -> bool {
-        // Check if slot is already finalized
-        slot <= self.finalized_slot
+        // Only report true when a slot NEWLY becomes finalized
+        if slot <= self.finalized_slot && slot > self.last_reported_finalized {
+            self.last_reported_finalized = slot;
+            true
+        } else {
+            false
+        }
     }
 
     fn finalized_slot(&self) -> Slot {
@@ -616,8 +664,9 @@ mod tests {
         slot: Slot,
     ) -> Vote {
         let addr = vi.pubkey.to_address();
-        // Register BLS key if not already
-        consensus.register_bls_pubkey(addr, bls_kp.public_key());
+        // Register BLS key with proof-of-possession if not already registered
+        let pop = bls_kp.proof_of_possession();
+        let _ = consensus.register_bls_pubkey(addr, bls_kp.public_key(), &pop);
         // Sign the vote message: block_hash || slot
         let mut msg = Vec::new();
         msg.extend_from_slice(block_hash.as_bytes());
@@ -884,7 +933,8 @@ mod tests {
     fn test_vote_rejected_with_wrong_signature_length() {
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
-        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key());
+        let pop = bls1.proof_of_possession();
+        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop).unwrap();
 
         let vote = Vote {
             slot: 0,
@@ -902,7 +952,8 @@ mod tests {
     fn test_vote_rejected_with_invalid_bls_signature() {
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
-        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key());
+        let pop = bls1.proof_of_possession();
+        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop).unwrap();
 
         // Sign a DIFFERENT message than what process_vote expects
         let wrong_sig = bls1.sign(b"completely wrong message");

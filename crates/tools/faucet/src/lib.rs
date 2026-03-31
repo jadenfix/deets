@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
@@ -83,12 +83,15 @@ enum FaucetError {
     Throttled,
 }
 
+static GITHUB_HANDLE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap()
+});
+
 fn validate_github(handle: &str) -> Result<(), FaucetError> {
     if handle.trim().is_empty() {
         return Err(FaucetError::MissingGithub);
     }
-    let re = regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap();
-    if re.is_match(handle) {
+    if GITHUB_HANDLE_RE.is_match(handle) {
         Ok(())
     } else {
         Err(FaucetError::InvalidGithub)

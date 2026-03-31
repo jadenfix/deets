@@ -1,3 +1,4 @@
+use crate::chain_config::FeeParams;
 use crate::primitives::{Address, PublicKey, Signature, H256};
 use aether_crypto_primitives::ed25519;
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use std::collections::HashSet;
 
 pub const TRANSFER_PROGRAM_ID: H256 = H256([1u8; 32]);
 
-/// Chain ID constants for replay protection across networks.
+// Legacy chain ID constants -- prefer ChainConfig presets for new code.
 pub const MAINNET_CHAIN_ID: u64 = 1;
 pub const TESTNET_CHAIN_ID: u64 = 100;
 
@@ -123,20 +124,22 @@ impl Transaction {
         .map_err(|e| anyhow::anyhow!("signature verification failed: {e:?}"))
     }
 
-    pub fn calculate_fee(&self) -> anyhow::Result<u128> {
-        const A: u128 = 10_000; // base cost
-        const B: u128 = 5; // per byte
-        const C: u128 = 2; // per gas unit
-
+    pub fn calculate_fee(&self, fee_params: &FeeParams) -> anyhow::Result<u128> {
         let bytes = bincode::serialize(self)
             .map_err(|e| anyhow::anyhow!("serialize failed: {}", e))?
             .len() as u128;
 
-        let byte_cost = B.checked_mul(bytes)
+        let byte_cost = fee_params
+            .b
+            .checked_mul(bytes)
             .ok_or_else(|| anyhow::anyhow!("fee overflow: B*bytes"))?;
-        let gas_cost = C.checked_mul(self.gas_limit as u128)
+        let gas_cost = fee_params
+            .c
+            .checked_mul(self.gas_limit as u128)
             .ok_or_else(|| anyhow::anyhow!("fee overflow: C*gas"))?;
-        let computed_fee = A.checked_add(byte_cost)
+        let computed_fee = fee_params
+            .a
+            .checked_add(byte_cost)
             .and_then(|v| v.checked_add(gas_cost))
             .ok_or_else(|| anyhow::anyhow!("fee calculation overflow"))?;
 
@@ -353,8 +356,8 @@ impl BlobTransaction {
         use sha2::{Digest, Sha256};
         let mut tx = self.clone();
         tx.signature = Signature::from_bytes(vec![]);
-        let bytes = bincode::serialize(&tx).unwrap();
-        H256::from_slice(&Sha256::digest(&bytes)).unwrap()
+        let bytes = bincode::serialize(&tx).expect("blob tx serialization infallible");
+        H256::from_slice(&Sha256::digest(&bytes)).expect("SHA256 produces 32 bytes")
     }
 
     /// Validate blob transaction constraints.
@@ -387,10 +390,9 @@ impl BlobTransaction {
     }
 
     /// Calculate the blob fee (separate from execution gas fee).
-    pub fn blob_fee(&self) -> u128 {
-        let per_blob_fee: u128 = 100_000; // Base fee per blob
-        let per_byte_fee: u128 = 1; // Per byte of blob data
-        per_blob_fee * self.blob_count as u128 + per_byte_fee * self.total_blob_size as u128
+    pub fn blob_fee(&self, fee_params: &FeeParams) -> u128 {
+        fee_params.blob_per_blob_fee * self.blob_count as u128
+            + fee_params.blob_per_byte_fee * self.total_blob_size as u128
     }
 }
 
@@ -443,7 +445,8 @@ mod blob_tests {
     #[test]
     fn test_blob_fee_calculation() {
         let tx = make_blob_tx(2, 200_000);
-        let fee = tx.blob_fee();
+        let fee_params = crate::chain_config::ChainConfig::devnet().fees;
+        let fee = tx.blob_fee(&fee_params);
         // 2 * 100_000 (per blob) + 200_000 * 1 (per byte)
         assert_eq!(fee, 400_000);
     }

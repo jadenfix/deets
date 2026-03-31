@@ -58,9 +58,27 @@ pub struct VcrValidator {
 }
 
 impl VcrValidator {
-    pub fn new() -> Self {
+    /// Create a VCR validator with explicit configuration.
+    /// Use `new_for_test()` for development/testing only.
+    pub fn new(
+        kzg_verifier: KzgVerifier,
+        tee_verifier: TeeVerifier,
+        quorum_size: usize,
+        challenge_window: u64,
+    ) -> Self {
+        VcrValidator {
+            quorum_size,
+            challenge_window,
+            tee_verifier,
+            kzg_verifier,
+        }
+    }
+
+    /// Create a VCR validator for development/testing with insecure defaults.
+    /// WARNING: Do NOT use in production — uses test KZG parameters and
+    /// accepts the default simulation TEE measurement.
+    pub fn new_for_test() -> Self {
         let mut tee_verifier = TeeVerifier::new();
-        // Default measurement for simulation/dev flows.
         tee_verifier.add_approved_measurement(vec![1u8; 48]);
 
         VcrValidator {
@@ -204,7 +222,7 @@ impl VerifiableComputeReceipt {
 
 impl Default for VcrValidator {
     fn default() -> Self {
-        Self::new()
+        Self::new_for_test()
     }
 }
 
@@ -264,7 +282,7 @@ mod tests {
 
     #[test]
     fn test_verify_single_vcr() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
         let worker = Keypair::generate();
         let vcr = create_test_vcr(&worker, 5);
 
@@ -273,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_quorum_consensus() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
 
         // 3 workers, all agree
         let vcrs = vec![
@@ -287,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_insufficient_quorum() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
 
         // Only 2 workers (need 3)
         let vcrs = vec![
@@ -300,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_no_consensus() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
 
         // 3 workers, no agreement
         let vcrs = vec![
@@ -314,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_mismatched_job_ids() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
 
         let mut vcrs = vec![
             create_test_vcr(&Keypair::generate(), 5),
@@ -330,7 +348,7 @@ mod tests {
 
     #[test]
     fn test_rejects_bad_signature() {
-        let validator = VcrValidator::new();
+        let validator = VcrValidator::new_for_test();
         let worker = Keypair::generate();
         let mut vcr = create_test_vcr(&worker, 5);
         vcr.signature[0] ^= 0x01;

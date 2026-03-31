@@ -1,4 +1,4 @@
-use aether_types::{Address, Transaction, H256};
+use aether_types::{Address, FeeParams, Transaction, H256};
 use anyhow::Result;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
@@ -67,10 +67,12 @@ pub struct Mempool {
     current_time: u64,
     /// Current slot number (updated externally for forced inclusion tracking).
     current_slot: u64,
+    /// Fee parameters for validating transaction fees.
+    fee_params: FeeParams,
 }
 
 impl Mempool {
-    pub fn new() -> Self {
+    pub fn new(fee_params: FeeParams) -> Self {
         Mempool {
             pending: BinaryHeap::new(),
             by_hash: HashMap::new(),
@@ -80,7 +82,13 @@ impl Mempool {
             rate_limits: HashMap::new(),
             current_time: 0,
             current_slot: 0,
+            fee_params,
         }
+    }
+
+    /// Create with devnet fee defaults (convenience for tests).
+    pub fn with_defaults() -> Self {
+        Self::new(aether_types::ChainConfig::devnet().fees)
     }
 
     /// Update the current slot (for forced inclusion age tracking).
@@ -98,7 +106,7 @@ impl Mempool {
         tx.verify_signature()
             .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
 
-        tx.calculate_fee()
+        tx.calculate_fee(&self.fee_params)
             .map_err(|e| anyhow::anyhow!("invalid fee: {}", e))?;
 
         if tx.fee < MIN_FEE {
@@ -375,7 +383,7 @@ impl Mempool {
 
 impl Default for Mempool {
     fn default() -> Self {
-        Self::new()
+        Self::with_defaults()
     }
 }
 
@@ -417,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_add_transaction() {
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
         let tx = create_test_tx(0, 60_000);
         mempool.add_transaction(tx).unwrap();
         assert_eq!(mempool.len(), 1);
@@ -425,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_priority_ordering() {
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         // All nonce 0 from different senders — all go to pending
         let tx1 = create_test_tx(0, 110_000);
@@ -444,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_gas_limit() {
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
         let tx1 = create_test_tx(0, 90_000);
         let tx2 = create_test_tx(1, 120_000);
 
@@ -457,7 +465,7 @@ mod tests {
 
     #[test]
     fn test_remove_transactions() {
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
         let tx1 = create_test_tx(0, 90_000);
         let tx2 = create_test_tx(1, 120_000);
 
@@ -471,7 +479,7 @@ mod tests {
     #[test]
     fn test_nonce_ordering_sequential() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         // Nonces 0, 1, 2 in order — all go to pending
         let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
@@ -489,7 +497,7 @@ mod tests {
     #[test]
     fn test_nonce_gap_queues_future() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         // Submit nonce 0, then skip to nonce 5
         let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
@@ -505,7 +513,7 @@ mod tests {
     #[test]
     fn test_nonce_too_low_rejected() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
         let sender = sender_pubkey.to_address();
@@ -521,7 +529,7 @@ mod tests {
     #[test]
     fn test_queued_promotion() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         // Submit nonces out of order: 0, 3, 1, 2
         let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
@@ -547,7 +555,7 @@ mod tests {
     #[test]
     fn test_reorg_readds_reverted_txs() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
         let tx1 = create_test_tx_with_keypair(&kp, 1, 60_000);
@@ -563,7 +571,7 @@ mod tests {
         new_nonces.insert(sender, 0);
 
         // Test add_transaction directly first
-        let mut mempool2 = Mempool::new();
+        let mut mempool2 = Mempool::with_defaults();
         let r = mempool2.add_transaction(tx0.clone());
         assert!(r.is_ok(), "tx0 add failed: {:?}", r.err());
         let r = mempool2.add_transaction(tx1.clone());
@@ -578,7 +586,7 @@ mod tests {
     #[test]
     fn test_rate_limiting() {
         let kp = Keypair::generate();
-        let mut mempool = Mempool::new();
+        let mut mempool = Mempool::with_defaults();
 
         // Submit 100 txs — should succeed
         for i in 0..100u64 {

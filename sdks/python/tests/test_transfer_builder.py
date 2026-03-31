@@ -76,7 +76,7 @@ def test_transfer_builder_submits_over_rpc():
             .build(
                 sender="0x1111111111111111111111111111111111111111",
                 sender_public_key="0x" + "a1" * 32,
-                signature="0x" + "b2" * 32,
+                signature="0x" + "b2" * 64,
                 nonce=42,
             )
         )

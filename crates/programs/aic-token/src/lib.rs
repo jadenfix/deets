@@ -81,7 +81,7 @@ impl AicTokenState {
             return Err("insufficient balance".to_string());
         }
 
-        *balance -= amount;
+        *balance = balance.checked_sub(amount).ok_or("burn underflow")?;
         self.total_supply = self.total_supply.checked_sub(amount).ok_or("underflow")?;
         self.total_burned = self.total_burned.checked_add(amount).ok_or("overflow")?;
 
@@ -142,7 +142,7 @@ impl AicTokenState {
             return Err("insufficient allowance".to_string());
         }
 
-        *allowance -= amount;
+        *allowance = allowance.checked_sub(amount).ok_or("allowance underflow")?;
 
         // Transfer
         self.transfer(from, to, amount)?;
@@ -215,5 +215,37 @@ mod tests {
         assert_eq!(state.balance_of(&addr(2)), 700);
         assert_eq!(state.balance_of(&addr(4)), 300);
         assert_eq!(state.allowance_of(&addr(2), &addr(3)), 200);
+    }
+
+    // ── Adversarial tests ────────────────────────────────────
+
+    #[test]
+    fn test_burn_more_than_balance_rejected() {
+        let mut state = AicTokenState::new(addr(1));
+
+        state.mint(addr(1), addr(2), 100).unwrap();
+
+        let result = state.burn(addr(2), 200);
+        assert!(result.is_err(), "burning more than balance should fail");
+
+        // Balance and supply unchanged
+        assert_eq!(state.balance_of(&addr(2)), 100);
+        assert_eq!(state.total_supply, 100);
+    }
+
+    #[test]
+    fn test_transfer_from_exceeds_allowance_rejected() {
+        let mut state = AicTokenState::new(addr(1));
+
+        state.mint(addr(1), addr(2), 1000).unwrap();
+        state.approve(addr(2), addr(3), 50).unwrap();
+
+        let result = state.transfer_from(addr(3), addr(2), addr(4), 100);
+        assert!(result.is_err(), "transfer_from exceeding allowance should fail");
+
+        // Nothing changed
+        assert_eq!(state.balance_of(&addr(2)), 1000);
+        assert_eq!(state.balance_of(&addr(4)), 0);
+        assert_eq!(state.allowance_of(&addr(2), &addr(3)), 50);
     }
 }

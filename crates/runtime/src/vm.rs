@@ -147,7 +147,7 @@ impl WasmVm {
                         let start_func = instance.get_typed_func::<(), ()>(&mut store, "_start");
                         match start_func {
                             Ok(f) => f.call(&mut store, ()).is_ok(),
-                            Err(_) => true, // Module loaded successfully, just no entry point
+                            Err(_) => false, // Module has no entry point, treat as failure
                         }
                     }
                 }
@@ -575,5 +575,27 @@ mod tests {
             Ok(r) => assert!(!r.success || r.gas_used >= 100),
             Err(_) => {} // Out of fuel is acceptable
         }
+    }
+
+    #[test]
+    fn test_no_entrypoint_returns_failure() {
+        let mut vm = WasmVm::new(1_000_000);
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Minimal WASM module with no exported functions at all
+        let wasm = wat::parse_str("(module)").unwrap();
+
+        let result = vm.execute(&wasm, &context, b"").unwrap();
+        assert!(
+            !result.success,
+            "module with no entrypoint should not report success"
+        );
     }
 }

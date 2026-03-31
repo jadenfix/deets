@@ -71,12 +71,19 @@ impl ReedSolomonDecoder {
             }
         }
 
-        // Remove padding zeros
-        while data.last() == Some(&0u8) {
-            data.pop();
+        // Read the length prefix and truncate to the original size
+        if data.len() < 8 {
+            bail!("decoded data too short: missing length prefix");
         }
-
-        Ok(data)
+        let original_len = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+        if original_len > data.len() - 8 {
+            bail!(
+                "length prefix {} exceeds decoded data size {}",
+                original_len,
+                data.len() - 8
+            );
+        }
+        Ok(data[8..8 + original_len].to_vec())
     }
 
     pub fn shard_config(&self) -> (usize, usize) {
@@ -156,6 +163,17 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_preserves_trailing_zeros() {
+        let encoder = ReedSolomonEncoder::new(2, 1).unwrap();
+        let decoder = ReedSolomonDecoder::new(2, 1).unwrap();
+        let data = b"hello\x00\x00\x00";
+        let shards = encoder.encode(data).unwrap();
+        let with_options: Vec<_> = shards.into_iter().map(Some).collect();
+        let recovered = decoder.decode(&with_options).unwrap();
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
     fn fails_with_too_many_missing_shards() {
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
@@ -171,5 +189,20 @@ mod tests {
 
         // Should fail - not enough shards
         assert!(decoder.decode(&received_shards).is_err());
+    }
+
+    #[test]
+    fn test_all_zeros_data_roundtrips() {
+        let encoder = ReedSolomonEncoder::new(2, 1).unwrap();
+        let decoder = ReedSolomonDecoder::new(2, 1).unwrap();
+
+        let data = [0u8; 32];
+        let shards = encoder.encode(&data).unwrap();
+        let with_options: Vec<_> = shards.into_iter().map(Some).collect();
+        let recovered = decoder.decode(&with_options).unwrap();
+        assert_eq!(
+            recovered, data,
+            "all-zeros data should roundtrip exactly (length-prefix fix)"
+        );
     }
 }

@@ -67,13 +67,18 @@ mod tests {
 
     #[test]
     fn reconstructs_when_enough_shreds() {
+        // Use the encoder to produce properly length-prefixed shards
+        let encoder = aether_da_erasure::ReedSolomonEncoder::new(2, 1).unwrap();
+        let data = b"hello ";
+        let shards = encoder.encode(data).unwrap();
+
         let mut receiver = TurbineReceiver::new(2, 1).unwrap();
         let block_id = H256::zero();
-        let s1 = make_shred(block_id, 0, b"hel");
-        let s2 = make_shred(block_id, 1, b"lo ");
+        let s1 = make_shred(block_id, 0, &shards[0]);
+        let s2 = make_shred(block_id, 1, &shards[1]);
 
         assert!(receiver.ingest_shred(s1).unwrap().is_none());
         let recovered = receiver.ingest_shred(s2).unwrap().unwrap();
-        assert_eq!(recovered, b"hello ");
+        assert_eq!(recovered, data);
     }
 }

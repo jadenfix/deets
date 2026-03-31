@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::{Filter, Reply};
@@ -165,6 +166,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
 
         let rpc = warp::post()
             .and(warp::path::end())
+            .and(warp::body::content_length_limit(1024 * 256)) // 256KB max
             .and(warp::body::json())
             .and(with_backend(backend))
             .and_then(handle_rpc_request);
@@ -183,7 +185,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             });
 
         let cors = warp::cors()
-            .allow_any_origin()
+            .allow_origins(vec!["http://localhost:3000", "http://127.0.0.1:3000"])
             .allow_methods(vec!["POST", "GET", "OPTIONS"])
             .allow_headers(vec!["content-type"]);
 
@@ -202,11 +204,22 @@ async fn handle_ws_connection(ws: WebSocket, subs: Arc<SubscriptionManager>) {
     let mut rx = subs.subscribe();
 
     // Spawn task to forward subscription events to this WebSocket client
+    let timeout_duration = Duration::from_secs(300); // 5 minute idle timeout
     let send_task = tokio::spawn(async move {
-        while let Ok(event) = rx.recv().await {
-            let msg = serde_json::to_string(&event).unwrap_or_default();
-            if ws_tx.send(Message::text(msg)).await.is_err() {
-                break; // Client disconnected
+        loop {
+            match tokio::time::timeout(timeout_duration, rx.recv()).await {
+                Ok(Ok(event)) => {
+                    let msg = serde_json::to_string(&event).unwrap_or_default();
+                    if ws_tx.send(Message::text(msg)).await.is_err() {
+                        break; // Client disconnected
+                    }
+                }
+                Ok(Err(_)) => break, // Channel closed
+                Err(_) => {
+                    // Idle timeout reached, close connection
+                    tracing::info!("WebSocket idle timeout reached, closing connection");
+                    break;
+                }
             }
         }
     });

@@ -1,4 +1,4 @@
-use aether_crypto_vrf::{check_leader_eligibility, VrfKeypair, VrfProof};
+use aether_crypto_vrf::{check_leader_eligibility_integer, VrfKeypair, VrfProof};
 use aether_types::{Address, Block, Slot, ValidatorInfo, H256};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -33,8 +33,10 @@ pub struct VrfPosConsensus {
     /// Total stake in the network
     total_stake: u128,
 
-    /// Leader rate parameter (0 < tau <= 1)
+    /// Leader rate parameter (0 < tau <= 1) — kept for API compatibility
     tau: f64,
+    tau_numerator: u128,
+    tau_denominator: u128,
 
     /// Finalized slot (2/3 stake voted)
     finalized_slot: Slot,
@@ -51,6 +53,10 @@ impl VrfPosConsensus {
             .map(|v| (v.pubkey.to_address(), v))
             .collect();
 
+        // Convert f64 tau to integer fraction: multiply by 10000 to preserve 4 decimal places
+        let tau_numerator = (tau * 10000.0).round() as u128;
+        let tau_denominator = 10000u128;
+
         VrfPosConsensus {
             epoch_randomness: H256::zero(), // Genesis randomness
             current_epoch: 0,
@@ -58,6 +64,8 @@ impl VrfPosConsensus {
             validators: validators_map,
             total_stake,
             tau,
+            tau_numerator,
+            tau_denominator,
             finalized_slot: 0,
             epoch_length,
         }
@@ -84,9 +92,14 @@ impl VrfPosConsensus {
         // Evaluate VRF
         let proof = vrf_keypair.prove(&input);
 
-        // Check eligibility
-        let eligible =
-            check_leader_eligibility(&proof.output, validator.stake, self.total_stake, self.tau);
+        // Check eligibility (using deterministic integer arithmetic)
+        let eligible = check_leader_eligibility_integer(
+            &proof.output,
+            validator.stake,
+            self.total_stake,
+            self.tau_numerator,
+            self.tau_denominator,
+        );
 
         if eligible {
             Ok(Some(proof))
@@ -120,12 +133,13 @@ impl VrfPosConsensus {
             .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
         aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)?;
 
-        // Check eligibility threshold
-        let eligible = check_leader_eligibility(
+        // Check eligibility threshold (using deterministic integer arithmetic)
+        let eligible = check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
             self.total_stake,
-            self.tau,
+            self.tau_numerator,
+            self.tau_denominator,
         );
 
         Ok(eligible)

@@ -300,6 +300,7 @@ fn proof_to_hash(gamma: &EdwardsPoint) -> [u8; 32] {
     output
 }
 
+#[deprecated(note = "Use check_leader_eligibility_integer for deterministic consensus; f64 loses precision")]
 /// Convert VRF output to a value in [0, 1) for threshold comparison.
 pub fn output_to_value(output: &[u8; 32]) -> f64 {
     let mut bytes = [0u8; 8];

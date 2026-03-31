@@ -77,7 +77,10 @@ mod tests {
         let event = NetworkEvent::BlockReceived(data);
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(b)) => assert_eq!(b.header.slot, 1),
-            other => panic!("expected BlockReceived, got {:?}", other),
+            other => {
+                tracing::warn!("expected BlockReceived, got {:?}", other);
+                unreachable!("expected BlockReceived, got {:?}", other);
+            }
         }
     }
 
@@ -94,7 +97,10 @@ mod tests {
         let event = NetworkEvent::VoteReceived(data);
         match decode_network_event(event) {
             Some(NodeMessage::VoteReceived(v)) => assert_eq!(v.slot, 5),
-            other => panic!("expected VoteReceived, got {:?}", other),
+            other => {
+                tracing::warn!("expected VoteReceived, got {:?}", other);
+                unreachable!("expected VoteReceived, got {:?}", other);
+            }
         }
     }
 
@@ -119,7 +125,10 @@ mod tests {
         let event = NetworkEvent::TransactionReceived(data);
         match decode_network_event(event) {
             Some(NodeMessage::TransactionReceived(_)) => {}
-            other => panic!("expected TransactionReceived, got {:?}", other),
+            other => {
+                tracing::warn!("expected TransactionReceived, got {:?}", other);
+                unreachable!("expected TransactionReceived, got {:?}", other);
+            }
         }
     }
 

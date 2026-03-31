@@ -36,9 +36,16 @@ impl ForkChoice {
             return is_fork;
         }
 
-        // First block or override: set canonical to first-seen
-        if !self.canonical.contains_key(&slot) {
-            self.canonical.insert(slot, block_hash);
+        // Deterministic tiebreak: prefer lower hash (compare raw bytes)
+        match self.canonical.entry(slot) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(block_hash);
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if block_hash.as_bytes() < e.get().as_bytes() {
+                    e.insert(block_hash);
+                }
+            }
         }
 
         is_fork
@@ -108,7 +115,7 @@ mod tests {
         let is_fork = fc.add_block(1, hash(2));
         assert!(is_fork, "Second block at same slot should be a fork");
         assert!(fc.has_fork(1));
-        // First-seen wins
+        // Lower hash wins (deterministic tiebreak)
         assert_eq!(fc.canonical_block(1), Some(hash(1)));
     }
 
@@ -139,5 +146,26 @@ mod tests {
         let fc = ForkChoice::new();
         assert_eq!(fc.canonical_block(99), None);
         assert!(!fc.has_fork(99));
+    }
+
+    #[test]
+    fn test_competing_blocks_deterministic() {
+        let mut fc = ForkChoice::new();
+
+        let high_hash = hash(0xFF); // higher hash value
+        let low_hash = hash(0x01); // lower hash value
+
+        // Add the higher hash first
+        fc.add_block(5, high_hash);
+        assert_eq!(fc.canonical_block(5), Some(high_hash));
+
+        // Now add the lower hash — it should win the tiebreak
+        let is_fork = fc.add_block(5, low_hash);
+        assert!(is_fork, "second block at same slot should be a fork");
+        assert_eq!(
+            fc.canonical_block(5),
+            Some(low_hash),
+            "canonical block should be the one with the lower hash, not first-seen"
+        );
     }
 }

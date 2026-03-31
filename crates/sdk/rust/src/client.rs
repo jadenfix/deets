@@ -47,7 +47,8 @@ impl AetherClient {
 
     pub async fn submit(&self, tx: Transaction) -> Result<SubmitResponse> {
         tx.verify_signature()?;
-        tx.calculate_fee()?;
+        let fee_params = aether_types::ChainConfig::devnet().fees;
+        tx.calculate_fee(&fee_params)?;
 
         let tx_hash = tx.hash();
         let payload = SubmitRpcRequest::new(tx)?;

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use blst::min_pk::{AggregatePublicKey, AggregateSignature, Signature as BlstSignature};
+use std::collections::HashSet;
 
 /// BLS Signature Aggregation
 ///
@@ -22,10 +23,21 @@ pub fn aggregate_signatures(signatures: &[Vec<u8>]) -> Result<Vec<u8>> {
         anyhow::bail!("cannot aggregate empty signature list");
     }
 
-    // Validate all signatures are 96 bytes
+    // Validate all signatures are 96 bytes and pass subgroup check
+    let mut seen = HashSet::new();
     for (i, sig) in signatures.iter().enumerate() {
         if sig.len() != 96 {
             anyhow::bail!("signature {} has invalid length: {}", i, sig.len());
+        }
+        // Subgroup check: ensure the deserialized point is in the correct G2 subgroup
+        let blst_sig = BlstSignature::from_bytes(sig.as_slice())
+            .map_err(|e| anyhow!("signature {} deserialization failed: {:?}", i, e))?;
+        if !blst_sig.subgroup_check() {
+            anyhow::bail!("signature {} failed subgroup check", i);
+        }
+        // Duplicate detection: reject identical signatures (could inflate voting power)
+        if !seen.insert(sig.as_slice()) {
+            anyhow::bail!("duplicate signature detected at index {}", i);
         }
     }
 
@@ -55,8 +67,9 @@ pub fn aggregate_public_keys(public_keys: &[Vec<u8>]) -> Result<Vec<u8>> {
 
     let pk_refs: Vec<&[u8]> = public_keys.iter().map(|pk| pk.as_slice()).collect();
 
+    // The `true` flag enables subgroup validation on each key during aggregation.
     let agg = AggregatePublicKey::aggregate_serialized(&pk_refs, true)
-        .map_err(|e| anyhow!("failed to aggregate public keys: {:?}", e))?;
+        .map_err(|e| anyhow!("failed to aggregate public keys (subgroup check): {:?}", e))?;
 
     Ok(agg.to_public_key().to_bytes().to_vec())
 }

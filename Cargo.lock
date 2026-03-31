@@ -500,6 +500,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -551,6 +552,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "warp",
 ]
 
@@ -565,6 +567,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 1.0.69",
+ "tracing",
  "wasmtime",
  "wat",
 ]
@@ -645,6 +648,7 @@ dependencies = [
  "serde",
  "sha2",
  "thiserror 1.0.69",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -665,6 +669,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

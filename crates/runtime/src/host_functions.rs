@@ -2,6 +2,26 @@ use aether_types::{Address, H256};
 use anyhow::Result;
 use std::collections::HashMap;
 
+/// Execution context injected into host functions for each contract call.
+#[derive(Debug, Clone)]
+pub struct ExecutionContext {
+    pub block_number: u64,
+    pub timestamp: u64,
+    pub caller: Address,
+    pub contract_address: Address,
+}
+
+impl Default for ExecutionContext {
+    fn default() -> Self {
+        ExecutionContext {
+            block_number: 0,
+            timestamp: 0,
+            caller: Address::from_slice(&[0u8; 20]).unwrap(),
+            contract_address: Address::from_slice(&[0u8; 20]).unwrap(),
+        }
+    }
+}
+
 /// Host Functions for WASM Contracts
 ///
 /// These functions are imported into the WASM environment and allow
@@ -18,21 +38,31 @@ pub struct HostFunctions {
     storage: HashMap<Vec<u8>, Vec<u8>>,
 
     /// Account balances
-    balances: HashMap<Address, u128>,
+    pub balances: HashMap<Address, u128>,
 
     /// Gas meter
     gas_used: u64,
     gas_limit: u64,
+
+    /// Execution context (block number, timestamp, caller, etc.)
+    context: ExecutionContext,
 }
 
 impl HostFunctions {
-    pub fn new(gas_limit: u64) -> Self {
+    /// Create with execution context.
+    pub fn new(gas_limit: u64, context: ExecutionContext) -> Self {
         HostFunctions {
             storage: HashMap::new(),
             balances: HashMap::new(),
             gas_used: 0,
             gas_limit,
+            context,
         }
+    }
+
+    /// Create with default/zeroed context (convenience for tests).
+    pub fn new_for_test(gas_limit: u64) -> Self {
+        Self::new(gas_limit, ExecutionContext::default())
     }
 
     /// Read from contract storage
@@ -76,7 +106,9 @@ impl HostFunctions {
         let to_balance = self.balances.get(to).copied().unwrap_or(0);
 
         self.balances.insert(*from, from_balance - amount);
-        self.balances.insert(*to, to_balance + amount);
+        let new_to_balance = to_balance.checked_add(amount)
+            .ok_or_else(|| anyhow::anyhow!("balance overflow"))?;
+        self.balances.insert(*to, new_to_balance);
 
         Ok(())
     }
@@ -99,7 +131,7 @@ impl HostFunctions {
         self.charge_gas(375 + 8 * data.len() as u64)?;
 
         // In production: store logs for receipts
-        println!("LOG: topics={:?}, data_len={}", topics, data.len());
+        tracing::debug!(topics = ?topics, data_len = data.len(), "contract log emitted");
 
         Ok(())
     }
@@ -108,28 +140,28 @@ impl HostFunctions {
     /// Cost: 2 gas
     pub fn block_number(&mut self) -> Result<u64> {
         self.charge_gas(2)?;
-        Ok(1000) // Placeholder
+        Ok(self.context.block_number)
     }
 
     /// Get current timestamp
     /// Cost: 2 gas
     pub fn timestamp(&mut self) -> Result<u64> {
         self.charge_gas(2)?;
-        Ok(1234567890) // Placeholder
+        Ok(self.context.timestamp)
     }
 
     /// Get caller address
     /// Cost: 2 gas
     pub fn caller(&mut self) -> Result<Address> {
         self.charge_gas(2)?;
-        Ok(Address::from_slice(&[1u8; 20]).unwrap()) // Placeholder
+        Ok(self.context.caller)
     }
 
     /// Get contract address
     /// Cost: 2 gas
     pub fn address(&mut self) -> Result<Address> {
         self.charge_gas(2)?;
-        Ok(Address::from_slice(&[2u8; 20]).unwrap()) // Placeholder
+        Ok(self.context.contract_address)
     }
 
     fn charge_gas(&mut self, amount: u64) -> Result<()> {
@@ -156,7 +188,7 @@ mod tests {
 
     #[test]
     fn test_storage_operations() {
-        let mut host = HostFunctions::new(100_000);
+        let mut host = HostFunctions::new_for_test(100_000);
 
         // Write
         host.storage_write(b"key1".to_vec(), b"value1".to_vec())
@@ -173,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_balance_operations() {
-        let mut host = HostFunctions::new(100_000);
+        let mut host = HostFunctions::new_for_test(100_000);
 
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
@@ -187,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_transfer() {
-        let mut host = HostFunctions::new(100_000);
+        let mut host = HostFunctions::new_for_test(100_000);
 
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
@@ -203,7 +235,7 @@ mod tests {
 
     #[test]
     fn test_transfer_insufficient_balance() {
-        let mut host = HostFunctions::new(100_000);
+        let mut host = HostFunctions::new_for_test(100_000);
 
         let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
         let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
@@ -217,15 +249,26 @@ mod tests {
 
     #[test]
     fn test_sha256() {
-        let mut host = HostFunctions::new(100_000);
+        let mut host = HostFunctions::new_for_test(100_000);
 
         let hash = host.sha256(b"hello world").unwrap();
         assert_eq!(hash.as_bytes().len(), 32);
     }
 
     #[test]
+    fn test_transfer_overflow() {
+        let mut host = HostFunctions::new_for_test(100_000);
+        let addr1 = Address::from_slice(&[1u8; 20]).unwrap();
+        let addr2 = Address::from_slice(&[2u8; 20]).unwrap();
+        host.balances.insert(addr1, 100);
+        host.balances.insert(addr2, u128::MAX);
+        let result = host.transfer(&addr1, &addr2, 100);
+        assert!(result.is_err(), "transfer to account at max balance should fail");
+    }
+
+    #[test]
     fn test_gas_limits() {
-        let mut host = HostFunctions::new(5_000); // Low limit
+        let mut host = HostFunctions::new_for_test(5_000); // Low limit
 
         // First operation succeeds
         assert!(host.storage_read(b"key").is_ok());
@@ -233,5 +276,24 @@ mod tests {
         // Second operation should fail (out of gas)
         let result = host.storage_write(b"key".to_vec(), b"value".to_vec());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_execution_context() {
+        let caller = Address::from_slice(&[0xaa; 20]).unwrap();
+        let contract = Address::from_slice(&[0xbb; 20]).unwrap();
+        let ctx = ExecutionContext {
+            block_number: 42,
+            timestamp: 1700000000,
+            caller,
+            contract_address: contract,
+        };
+
+        let mut host = HostFunctions::new(100_000, ctx);
+
+        assert_eq!(host.block_number().unwrap(), 42);
+        assert_eq!(host.timestamp().unwrap(), 1700000000);
+        assert_eq!(host.caller().unwrap(), caller);
+        assert_eq!(host.address().unwrap(), contract);
     }
 }

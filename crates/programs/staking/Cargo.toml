@@ -7,3 +7,4 @@ edition.workspace = true
 aether-types = { path = "../../types" }
 serde.workspace = true
 anyhow.workspace = true
+thiserror.workspace = true

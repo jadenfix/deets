@@ -163,8 +163,28 @@ impl HotStuffConsensus {
     }
 
     /// Register a BLS public key (48 bytes) for a validator address.
-    pub fn register_bls_pubkey(&mut self, address: Address, bls_pk: Vec<u8>) {
+    ///
+    /// Requires a valid proof-of-possession (PoP) signature to prevent rogue key attacks.
+    /// The PoP proves the registrant knows the secret key corresponding to the public key.
+    pub fn register_bls_pubkey(
+        &mut self,
+        address: Address,
+        bls_pk: Vec<u8>,
+        pop_signature: &[u8],
+    ) -> Result<()> {
+        if bls_pk.len() != 48 {
+            bail!("BLS pubkey must be 48 bytes, got {}", bls_pk.len());
+        }
+        // Verify proof-of-possession to prevent rogue key attacks
+        match aether_crypto_bls::verify_pop(&bls_pk, pop_signature)? {
+            true => {}
+            false => bail!(
+                "invalid proof-of-possession for BLS pubkey registered by {:?}",
+                address
+            ),
+        }
         self.bls_pubkeys.insert(address, bls_pk);
+        Ok(())
     }
 
     /// Advance to next phase.
@@ -265,6 +285,12 @@ impl HotStuffConsensus {
                     .copied()
                     .unwrap_or(vote.parent_hash);
 
+                // TODO: vote.slot.checked_sub(1) assumes the parent block is exactly
+                // one slot behind. This does not handle empty/skipped slots where
+                // the parent may be multiple slots back. Ideally we would look up
+                // the parent's actual slot from a block_slots map (like HybridConsensus
+                // does). For now, fall back to slot-1 which is correct when there are
+                // no empty slots.
                 if let Some(parent_slot) = vote.slot.checked_sub(1) {
                     // Look for parent block's prevote QC using the PARENT's hash
                     if self
@@ -704,7 +730,8 @@ mod tests {
         let bls_kp = BlsKeypair::generate();
         let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
         let addr = validators[0].pubkey.to_address();
-        consensus.register_bls_pubkey(addr, bls_kp.public_key());
+        let pop = bls_kp.proof_of_possession();
+        consensus.register_bls_pubkey(addr, bls_kp.public_key(), &pop).unwrap();
 
         // Sign wrong message
         let wrong_sig = bls_kp.sign(b"wrong message");
