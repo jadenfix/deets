@@ -1,5 +1,6 @@
 use aether_p2p::network::NetworkEvent;
 use aether_types::{Block, Transaction, Vote};
+use bincode::Options;
 
 /// Decoded message types from the P2P network.
 #[derive(Debug)]
@@ -22,23 +23,33 @@ const MAX_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4MB
 const MAX_VOTE_SIZE: usize = 4 * 1024; // 4KB
 const MAX_TX_SIZE: usize = 128 * 1024; // 128KB
 
+/// Deserialize with a bincode size limit to prevent DoS via deeply nested structures.
+fn deserialize_bounded<T: serde::de::DeserializeOwned>(data: &[u8], max_size: usize) -> Option<T> {
+    if data.len() > max_size {
+        return None;
+    }
+    bincode::options()
+        .with_limit(max_size as u64)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .deserialize(data)
+        .ok()
+}
+
 /// Decode a raw P2P NetworkEvent into a typed NodeMessage.
 /// Enforces message size limits before deserialization to prevent DoS.
 pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
     match event {
         NetworkEvent::BlockReceived(data) if data.len() <= MAX_BLOCK_SIZE => {
-            bincode::deserialize(&data)
-                .ok()
+            deserialize_bounded(&data, MAX_BLOCK_SIZE)
                 .map(NodeMessage::BlockReceived)
         }
         NetworkEvent::VoteReceived(data) if data.len() <= MAX_VOTE_SIZE => {
-            bincode::deserialize(&data)
-                .ok()
+            deserialize_bounded(&data, MAX_VOTE_SIZE)
                 .map(NodeMessage::VoteReceived)
         }
         NetworkEvent::TransactionReceived(data) if data.len() <= MAX_TX_SIZE => {
-            bincode::deserialize(&data)
-                .ok()
+            deserialize_bounded(&data, MAX_TX_SIZE)
                 .map(NodeMessage::TransactionReceived)
         }
         _ => None, // Silently drop oversized or unknown messages
@@ -91,6 +102,7 @@ mod tests {
     fn test_decode_transaction_event() {
         let tx = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender: Address::from_slice(&[0u8; 20]).unwrap(),
             sender_pubkey: PublicKey::from_bytes(vec![0u8; 32]),
             inputs: vec![],

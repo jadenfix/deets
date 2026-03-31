@@ -10,6 +10,11 @@ const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 /// Verifies that an aggregated signature is valid for the given
 /// aggregated public key and message.
 ///
+/// NOTE: BLS signatures on G2 are malleable (negation of a valid signature is also valid).
+/// This is acceptable in Aether because vote deduplication is based on
+/// (slot, phase, block_hash, validator_address), not on signature content.
+/// A malleable signature cannot be used to double-count a vote.
+///
 /// Verification equation: e(agg_pk, H(m)) == e(G1, agg_sig)
 /// where:
 /// - e() is the pairing function (Ate pairing on BLS12-381)
@@ -66,18 +71,38 @@ pub fn batch_verify_aggregated(
         .collect::<Result<Vec<bool>>>()
 }
 
-/// Fast path for verifying when you have proof-of-possession
+/// Verify an aggregated BLS signature with proof-of-possession enforcement.
 ///
-/// Proof-of-possession (PoP) prevents rogue key attacks.
-/// If all signers have proven they know their secret key,
-/// we can use a faster verification path.
+/// Proof-of-possession (PoP) prevents rogue key attacks: each signer must
+/// prove they know the secret key for their public key before their key
+/// can be included in aggregation.
+///
+/// This function first verifies each individual PoP, then aggregates the
+/// public keys and verifies the aggregated signature.
 pub fn verify_aggregated_with_pop(
-    aggregated_pubkey: &[u8],
+    individual_pubkeys: &[Vec<u8>],
+    pop_signatures: &[Vec<u8>],
     message: &[u8],
     aggregated_signature: &[u8],
 ) -> Result<bool> {
-    // Same as regular verification, but we know we're safe from rogue key attacks
-    verify_aggregated(aggregated_pubkey, message, aggregated_signature)
+    if individual_pubkeys.len() != pop_signatures.len() {
+        anyhow::bail!("pubkey count must match PoP count");
+    }
+    if individual_pubkeys.is_empty() {
+        anyhow::bail!("cannot verify with empty signer set");
+    }
+
+    // Verify each PoP first — reject if any signer hasn't proven key ownership
+    for (i, (pk, pop)) in individual_pubkeys.iter().zip(pop_signatures.iter()).enumerate() {
+        match crate::keypair::verify_pop(pk, pop)? {
+            true => {}
+            false => anyhow::bail!("invalid proof-of-possession for signer {}", i),
+        }
+    }
+
+    // All PoPs valid — aggregate pubkeys and verify the aggregate signature
+    let agg_pk = crate::aggregate::aggregate_public_keys(individual_pubkeys)?;
+    verify_aggregated(&agg_pk, message, aggregated_signature)
 }
 
 #[cfg(test)]
@@ -199,5 +224,37 @@ mod tests {
             "Throughput {} too low",
             throughput
         );
+    }
+
+    #[test]
+    fn test_verify_aggregated_with_pop_enforces_pop() {
+        let kp1 = BlsKeypair::generate();
+        let kp2 = BlsKeypair::generate();
+        let message = b"test aggregate with pop";
+
+        let sig1 = kp1.sign(message);
+        let sig2 = kp2.sign(message);
+        let agg_sig = aggregate_signatures(&[sig1, sig2]).unwrap();
+
+        let pop1 = kp1.proof_of_possession();
+        let pop2 = kp2.proof_of_possession();
+
+        // Valid: correct PoPs
+        let result = verify_aggregated_with_pop(
+            &[kp1.public_key(), kp2.public_key()],
+            &[pop1.clone(), pop2.clone()],
+            message,
+            &agg_sig,
+        ).unwrap();
+        assert!(result, "Valid PoPs + valid aggregate should verify");
+
+        // Invalid: swap PoPs (kp1's PoP for kp2's key)
+        let result = verify_aggregated_with_pop(
+            &[kp1.public_key(), kp2.public_key()],
+            &[pop2, pop1],
+            message,
+            &agg_sig,
+        );
+        assert!(result.is_err(), "Swapped PoPs should be rejected");
     }
 }

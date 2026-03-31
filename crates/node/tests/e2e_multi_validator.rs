@@ -155,7 +155,7 @@ impl TestNetwork {
 // ============================================================================
 
 #[test]
-fn e2e_multi_validator_block_production() {
+fn test_e2e_multi_validator_block_production() {
     let mut network = TestNetwork::new(4);
 
     network.run_slots(20);
@@ -182,7 +182,7 @@ fn e2e_multi_validator_block_production() {
 // ============================================================================
 
 #[test]
-fn e2e_block_propagation() {
+fn test_e2e_block_propagation() {
     let mut network = TestNetwork::new(4);
 
     network.run_slots(30);
@@ -242,7 +242,7 @@ fn e2e_block_propagation() {
 // ============================================================================
 
 #[test]
-fn e2e_state_consistency() {
+fn test_e2e_state_consistency() {
     let mut network = TestNetwork::new(4);
 
     network.run_slots(20);
@@ -284,7 +284,7 @@ fn e2e_state_consistency() {
 // ============================================================================
 
 #[test]
-fn e2e_vote_distribution() {
+fn test_e2e_vote_distribution() {
     let mut network = TestNetwork::new(4);
 
     network.run_slots(30);
@@ -308,7 +308,7 @@ fn e2e_vote_distribution() {
 // ============================================================================
 
 #[test]
-fn e2e_transaction_submission() {
+fn test_e2e_transaction_submission() {
     let mut network = TestNetwork::new(2);
 
     // Seed a specific account on all nodes
@@ -320,6 +320,7 @@ fn e2e_transaction_submission() {
     // Create a transfer tx (will fail signature check, but tests mempool/propagation flow)
     let tx = Transaction {
         nonce: 0,
+        chain_id: 1,
         sender: sender_addr,
         sender_pubkey: PublicKey::from_bytes(vec![0xAA; 32]),
         inputs: vec![],
@@ -352,7 +353,7 @@ fn e2e_transaction_submission() {
 // ============================================================================
 
 #[test]
-fn e2e_block_rejection() {
+fn test_e2e_block_rejection() {
     let mut network = TestNetwork::new(2);
     network.run_slots(5);
 
@@ -386,7 +387,7 @@ fn e2e_block_rejection() {
 // ============================================================================
 
 #[test]
-fn e2e_fee_market() {
+fn test_e2e_fee_market() {
     let mut network = TestNetwork::new(1);
 
     let initial_base_fee = network.nodes[0].base_fee();
@@ -408,7 +409,7 @@ fn e2e_fee_market() {
 // ============================================================================
 
 #[test]
-fn e2e_block_header_roots() {
+fn test_e2e_block_header_roots() {
     let mut network = TestNetwork::new(1);
     network.run_slots(10);
 
@@ -442,7 +443,7 @@ fn e2e_block_header_roots() {
 // ============================================================================
 
 #[test]
-fn e2e_fee_market_no_double_count() {
+fn test_e2e_fee_market_no_double_count() {
     let mut network = TestNetwork::new(1);
 
     let initial_fee = network.nodes[0].base_fee();
@@ -471,7 +472,7 @@ fn e2e_fee_market_no_double_count() {
 // ============================================================================
 
 #[test]
-fn e2e_outbound_buffer_bounded() {
+fn test_e2e_outbound_buffer_bounded() {
     let mut network = TestNetwork::new(1);
 
     // Run many slots without draining — buffer should not grow unbounded

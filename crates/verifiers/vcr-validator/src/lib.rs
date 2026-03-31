@@ -67,7 +67,7 @@ impl VcrValidator {
             quorum_size: 3,
             challenge_window: 10,
             tee_verifier,
-            kzg_verifier: KzgVerifier::new(1024),
+            kzg_verifier: KzgVerifier::new_insecure_test(1024),
         }
     }
 
@@ -182,39 +182,23 @@ impl VcrValidator {
 }
 
 impl VerifiableComputeReceipt {
+    /// Compute the deterministic signing message using direct hash construction.
+    /// This avoids bincode's non-canonical serialization which could differ across versions.
     fn signing_message(&self) -> Result<Vec<u8>> {
-        #[derive(Serialize)]
-        struct VcrSigningPayload<'a> {
-            job_id: H256,
-            worker_id: &'a [u8],
-            model_hash: H256,
-            input_hash: H256,
-            output_hash: H256,
-            trace_commitment: &'a [u8],
-            trace_proof: &'a [u8],
-            trace_evaluation: &'a [u8],
-            trace_point: &'a [u8],
-            tee_attestation: &'a [u8],
-            timestamp: u64,
-        }
-
-        let payload = VcrSigningPayload {
-            job_id: self.job_id,
-            worker_id: &self.worker_id,
-            model_hash: self.model_hash,
-            input_hash: self.input_hash,
-            output_hash: self.output_hash,
-            trace_commitment: &self.trace_commitment,
-            trace_proof: &self.trace_proof,
-            trace_evaluation: &self.trace_evaluation,
-            trace_point: &self.trace_point,
-            tee_attestation: &self.tee_attestation,
-            timestamp: self.timestamp,
-        };
-
-        let bytes = bincode::serialize(&payload).context("failed to encode signing payload")?;
-        let digest = Sha256::digest(&bytes);
-        Ok(digest.to_vec())
+        let mut hasher = Sha256::new();
+        hasher.update(b"VCR-v1"); // Version domain separator
+        hasher.update(self.job_id.as_bytes());
+        hasher.update(&self.worker_id);
+        hasher.update(self.model_hash.as_bytes());
+        hasher.update(self.input_hash.as_bytes());
+        hasher.update(self.output_hash.as_bytes());
+        hasher.update(&self.trace_commitment);
+        hasher.update(&self.trace_proof);
+        hasher.update(&self.trace_evaluation);
+        hasher.update(&self.trace_point);
+        hasher.update(&self.tee_attestation);
+        hasher.update(&self.timestamp.to_le_bytes());
+        Ok(hasher.finalize().to_vec())
     }
 }
 
@@ -249,7 +233,7 @@ mod tests {
         };
 
         // Create valid KZG commitment/proof using the real verifier
-        let kzg = aether_crypto_kzg::KzgVerifier::new(16);
+        let kzg = aether_crypto_kzg::KzgVerifier::new_insecure_test(16);
         let mut coeffs = [[0u8; 32]; 2];
         coeffs[0][0] = 3;
         coeffs[1][0] = 1;

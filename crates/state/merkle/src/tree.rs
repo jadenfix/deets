@@ -160,7 +160,14 @@ impl Default for SparseMerkleTree {
 /// defaults[d] = internal_hash(defaults[d-1], defaults[d-1])
 fn precompute_defaults(depth: usize) -> Vec<H256> {
     let mut defaults = Vec::with_capacity(depth + 1);
-    defaults.push(H256::zero());
+    // Domain-separated empty leaf: SHA256(0x00) — not raw zero
+    let empty_leaf = {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update([0x00]); // Leaf domain separator with no key/value
+        H256::from_slice(&h.finalize()).unwrap()
+    };
+    defaults.push(empty_leaf);
     for _ in 1..=depth {
         let prev = defaults.last().unwrap();
         defaults.push(internal_hash(prev, prev));

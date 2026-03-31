@@ -9,5 +9,5 @@ thiserror.workspace = true
 serde.workspace = true
 rand.workspace = true
 
-aether-crypto-kzg = { path = "../../crypto/kzg" }
+aether-crypto-kzg = { path = "../../crypto/kzg", features = ["test-utils"] }
 aether-types = { path = "../../types" }

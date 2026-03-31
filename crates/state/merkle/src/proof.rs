@@ -44,7 +44,12 @@ impl MerkleProof {
         // Start with the leaf hash
         let mut current = match &self.value_hash {
             Some(vh) => leaf_hash(&self.key, vh),
-            None => H256::zero(), // Empty leaf
+            None => {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update([0x00]); // Leaf domain separator with no key/value
+                H256::from_slice(&h.finalize()).unwrap()
+            },
         };
 
         // Walk up: siblings[0] pairs with key_bits[depth-1] (deepest bit),

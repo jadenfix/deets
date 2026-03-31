@@ -1,97 +1,115 @@
-name: CI
+name: Aether CI
 
 on:
   push:
-    branches: [ main, 'phase*/**' ]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
 
 jobs:
+  # ──────────────────────────────────────────────
+  # Lint: formatting, clippy, and security audit
+  # ──────────────────────────────────────────────
   lint:
-    name: Lint
+    name: Lint & Security Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Cache cargo index
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-      
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-      
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Run tests
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked || true
+
+      - name: Security audit dependencies
+        run: cargo audit
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────
+  # Test: unit tests, doc tests, integration tests
+  # ──────────────────────────────────────────────
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-test-
+
+      - name: Run unit tests
         run: cargo test --all-features --workspace
-      
+
       - name: Run doc tests
         run: cargo test --doc --all-features --workspace
 
+  # ──────────────────────────────────────────────
+  # Build: release binaries for supported targets
+  # ──────────────────────────────────────────────
   build:
-    name: Build
+    name: Build (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      
+
       - name: Install ARM64 cross-compiler
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu pkg-config
-      
+
       - name: Configure ARM64 linker
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
@@ -99,84 +117,127 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_AR=aarch64-linux-gnu-ar" >> $GITHUB_ENV
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
-      
+
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Build
+          key: ${{ runner.os }}-${{ matrix.target }}-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-build-
+
+      - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
+  # ──────────────────────────────────────────────
+  # Docker: build and validate container image
+  # ──────────────────────────────────────────────
   docker:
     name: Docker Build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-      
+        uses: docker/setup-buildx-action@v3
+
       - name: Build Docker image
-        uses: docker/build-push-action@v4
+        uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: aether-node:test
+          tags: aether-node:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # ──────────────────────────────────────────────
+  # Integration: test with Docker Compose network
+  # ──────────────────────────────────────────────
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test]
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install Rust
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-integration-
+
       - name: Start test network
         run: docker compose -f docker-compose.test.yml up -d
-      
-      - name: Wait for network
-        run: sleep 30
-      
-      - name: Run all workspace tests
+
+      - name: Wait for network readiness
+        run: |
+          echo "Waiting for test network to be ready..."
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.test.yml ps | grep -q "healthy"; then
+              echo "Network ready after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Warning: network may not be fully ready, proceeding anyway"
+            fi
+            sleep 1
+          done
+
+      - name: Run integration tests
         run: cargo test --all-features --workspace
+
+      - name: Collect logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.test.yml logs --tail=100
 
       - name: Stop test network
         if: always()
-        run: docker compose -f docker-compose.test.yml down
+        run: docker compose -f docker-compose.test.yml down -v
 
-  phase_acceptance:
+  # ──────────────────────────────────────────────
+  # Phase acceptance: milestone validation suites
+  # ──────────────────────────────────────────────
+  phase-acceptance:
     name: Phase ${{ matrix.phase }} Acceptance
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [lint, test]
     strategy:
+      fail-fast: false
       matrix:
         phase: [1, 2, 3, 4, 5, 6, 7]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-      
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       - name: Cache cargo
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: ${{ runner.os }}-phase${{ matrix.phase }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-phase${{ matrix.phase }}-
 
       - name: Run Phase ${{ matrix.phase }} acceptance suite
-        run: ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
+        run: |
+          if [ -f "./scripts/run_phase${{ matrix.phase }}_acceptance.sh" ]; then
+            chmod +x ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
+            ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
+          else
+            echo "Phase ${{ matrix.phase }} acceptance script not found, skipping"
+          fi

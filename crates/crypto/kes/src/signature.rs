@@ -29,6 +29,12 @@ impl KesSignature {
             return false;
         }
 
+        // Validate auth path length matches expected tree depth
+        let expected_depth = (vk.max_periods as f64).log2().ceil() as usize;
+        if self.auth_path.len() != expected_depth {
+            return false;
+        }
+
         // Step 1: Verify Ed25519 signature
         let verifying_key = match VerifyingKey::from_bytes(&self.leaf_pubkey) {
             Ok(vk) => vk,
@@ -80,7 +86,7 @@ mod tests {
     use crate::evolution::KesKey;
 
     #[test]
-    fn verify_roundtrip() {
+    fn test_kes_verify_roundtrip() {
         let mut key = KesKey::generate(8);
         let vk = key.verification_key();
         let sig = key.sign(3, b"msg").unwrap();
@@ -90,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn signature_at_different_periods() {
+    fn test_kes_signature_at_different_periods() {
         let mut key = KesKey::generate(8);
         let vk = key.verification_key();
 
@@ -105,5 +111,41 @@ mod tests {
         // Cross-verification should fail
         assert!(!sig0.verify(&vk, b"three"));
         assert!(!sig3.verify(&vk, b"zero"));
+    }
+
+    #[test]
+    fn test_oversized_auth_path_rejected() {
+        let mut key = KesKey::generate(8); // depth=3 (8 periods -> 2^3)
+        let vk = key.verification_key();
+        let message = b"test message";
+
+        // Get a valid signature first
+        let sig = key.sign(0, message).unwrap();
+        assert!(sig.verify(&vk, message), "Valid signature should verify");
+
+        // Create a tampered signature with extra auth_path elements
+        let mut tampered = sig.clone();
+        tampered.auth_path.push([0xAA; 32]); // Add extra element
+        assert!(
+            !tampered.verify(&vk, message),
+            "Oversized auth_path must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_undersized_auth_path_rejected() {
+        let mut key = KesKey::generate(8); // depth=3
+        let vk = key.verification_key();
+        let message = b"test message";
+
+        let sig = key.sign(0, message).unwrap();
+
+        // Create a tampered signature with missing auth_path elements
+        let mut tampered = sig.clone();
+        tampered.auth_path.pop(); // Remove last element
+        assert!(
+            !tampered.verify(&vk, message),
+            "Undersized auth_path must be rejected"
+        );
     }
 }

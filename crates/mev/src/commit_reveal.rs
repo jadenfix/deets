@@ -158,6 +158,7 @@ mod tests {
     fn make_tx(sender_byte: u8, nonce: u64) -> Transaction {
         Transaction {
             nonce,
+            chain_id: 1,
             sender: Address::from_slice(&[sender_byte; 20]).unwrap(),
             sender_pubkey: PublicKey::from_bytes(vec![sender_byte; 32]),
             inputs: vec![],

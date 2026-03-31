@@ -87,6 +87,17 @@ pub struct AggregatedVote {
     pub aggregated_pubkey: Vec<u8>,
 }
 
+/// Deterministic canonical phase encoding for vote messages.
+/// Using a single byte prevents non-determinism from Debug format strings.
+fn phase_to_byte(phase: &Phase) -> u8 {
+    match phase {
+        Phase::Propose => 0,
+        Phase::Prevote => 1,
+        Phase::Precommit => 2,
+        Phase::Commit => 3,
+    }
+}
+
 pub struct HotStuffConsensus {
     current_phase: Phase,
     current_slot: Slot,
@@ -114,6 +125,10 @@ pub struct HotStuffConsensus {
 
     my_keypair: Option<BlsKeypair>,
     my_address: Option<Address>,
+
+    /// Registered BLS public keys (48 bytes each) for vote verification.
+    /// Validators must have a registered BLS key to have their votes accepted.
+    bls_pubkeys: HashMap<Address, Vec<u8>>,
 }
 
 impl HotStuffConsensus {
@@ -143,7 +158,13 @@ impl HotStuffConsensus {
             finalized_slot: 0,
             my_keypair,
             my_address,
+            bls_pubkeys: HashMap::new(),
         }
+    }
+
+    /// Register a BLS public key (48 bytes) for a validator address.
+    pub fn register_bls_pubkey(&mut self, address: Address, bls_pk: Vec<u8>) {
+        self.bls_pubkeys.insert(address, bls_pk);
     }
 
     /// Advance to next phase.
@@ -375,7 +396,7 @@ impl HotStuffConsensus {
         msg.extend_from_slice(block_hash.as_bytes());
         msg.extend_from_slice(parent_hash.as_bytes());
         msg.extend_from_slice(&self.current_slot.to_le_bytes());
-        msg.extend_from_slice(format!("{:?}", phase).as_bytes());
+        msg.push(phase_to_byte(&phase)); // canonical single-byte encoding
 
         let signature = keypair.sign(&msg);
 
@@ -391,24 +412,32 @@ impl HotStuffConsensus {
         }))
     }
 
-    /// Verify a vote's BLS signature.
+    /// Verify a vote's BLS signature using registered BLS public keys.
     fn verify_vote(&self, vote: &HotStuffVote) -> Result<()> {
-        let validator = self
+        let _validator = self
             .validators
             .get(&vote.validator)
-            .ok_or_else(|| anyhow::anyhow!("unknown validator"))?;
+            .ok_or_else(|| anyhow::anyhow!("unknown validator {:?}", vote.validator))?;
+
+        let bls_pk = self.bls_pubkeys.get(&vote.validator)
+            .ok_or_else(|| anyhow::anyhow!("no BLS pubkey registered for {:?}", vote.validator))?;
+        if bls_pk.len() != 48 {
+            bail!("BLS pubkey invalid length {} for {:?}", bls_pk.len(), vote.validator);
+        }
+        if vote.signature.len() != 96 {
+            bail!("vote signature invalid length {} from {:?}", vote.signature.len(), vote.validator);
+        }
 
         let mut msg = Vec::new();
         msg.extend_from_slice(vote.block_hash.as_bytes());
         msg.extend_from_slice(vote.parent_hash.as_bytes());
         msg.extend_from_slice(&vote.slot.to_le_bytes());
-        msg.extend_from_slice(format!("{:?}", vote.phase).as_bytes());
+        msg.push(phase_to_byte(&vote.phase)); // canonical single-byte encoding
 
-        let pubkey_bytes: [u8; 48] = validator.pubkey.as_bytes()[..48]
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("invalid pubkey length"))?;
-        aether_crypto_bls::keypair::verify(&pubkey_bytes, &msg, &vote.signature)?;
-
+        let valid = aether_crypto_bls::keypair::verify(bls_pk, &msg, &vote.signature)?;
+        if !valid {
+            bail!("invalid BLS signature from {:?}", vote.validator);
+        }
         Ok(())
     }
 
@@ -417,13 +446,11 @@ impl HotStuffConsensus {
         let pubkeys: Vec<Vec<u8>> = votes
             .iter()
             .map(|v| {
-                let bytes = v.validator_pubkey.as_bytes();
-                let mut padded = vec![0u8; 48];
-                let copy_len = bytes.len().min(48);
-                padded[..copy_len].copy_from_slice(&bytes[..copy_len]);
-                padded
+                self.bls_pubkeys.get(&v.validator)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no BLS pubkey for {:?}", v.validator))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
 
         let agg_sig = aggregate_signatures(&signatures)?;
         let agg_pk = aggregate_public_keys(&pubkeys)?;
@@ -642,5 +669,56 @@ mod tests {
         consensus.on_timeout_certificate(&tc);
         assert_eq!(consensus.current_slot(), initial_slot + 1);
         assert_eq!(*consensus.current_phase(), Phase::Propose);
+    }
+
+    #[test]
+    fn test_phase_to_byte_canonical() {
+        assert_eq!(phase_to_byte(&Phase::Propose), 0);
+        assert_eq!(phase_to_byte(&Phase::Prevote), 1);
+        assert_eq!(phase_to_byte(&Phase::Precommit), 2);
+        assert_eq!(phase_to_byte(&Phase::Commit), 3);
+    }
+
+    #[test]
+    fn test_verify_vote_rejects_without_bls_key() {
+        let validators = create_test_validators(2);
+        let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
+        // No BLS keys registered
+        let vote = HotStuffVote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            parent_hash: H256::zero(),
+            phase: Phase::Prevote,
+            validator: validators[0].pubkey.to_address(),
+            validator_pubkey: validators[0].pubkey.clone(),
+            stake: 1000,
+            signature: vec![0u8; 96],
+        };
+        let result = consensus.on_vote(vote);
+        assert!(result.is_err(), "Vote without registered BLS key must be rejected");
+    }
+
+    #[test]
+    fn test_verify_vote_rejects_invalid_signature() {
+        let validators = create_test_validators(2);
+        let bls_kp = BlsKeypair::generate();
+        let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
+        let addr = validators[0].pubkey.to_address();
+        consensus.register_bls_pubkey(addr, bls_kp.public_key());
+
+        // Sign wrong message
+        let wrong_sig = bls_kp.sign(b"wrong message");
+        let vote = HotStuffVote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            parent_hash: H256::zero(),
+            phase: Phase::Prevote,
+            validator: addr,
+            validator_pubkey: validators[0].pubkey.clone(),
+            stake: 1000,
+            signature: wrong_sig,
+        };
+        let result = consensus.on_vote(vote);
+        assert!(result.is_err(), "Vote with invalid BLS signature must be rejected");
     }
 }

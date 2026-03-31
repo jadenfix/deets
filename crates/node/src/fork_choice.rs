@@ -76,6 +76,13 @@ impl ForkChoice {
     pub fn is_finalized(&self, slot: Slot) -> bool {
         self.finalized.contains_key(&slot)
     }
+
+    /// Prune data for slots before `min_slot` to bound memory.
+    pub fn prune_before(&mut self, min_slot: Slot) {
+        self.candidates.retain(|&s, _| s >= min_slot);
+        self.canonical.retain(|&s, _| s >= min_slot);
+        self.finalized.retain(|&s, _| s >= min_slot);
+    }
 }
 
 #[cfg(test)]

@@ -254,6 +254,7 @@ mod tests {
         let sender = sender_pubkey.to_address();
         let mut tx = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender,
             sender_pubkey,
             inputs: vec![],

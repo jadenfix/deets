@@ -172,19 +172,10 @@ impl HybridConsensus {
             proof: block.header.vrf_proof.proof.clone(),
         };
 
-        // Look up VRF public key — first check registered VRF keys, then fall back
-        // to using the validator's Ed25519 key (for backwards compatibility)
-        let vrf_pubkey: [u8; 32] = if let Some(vrf_pk) = self.vrf_pubkeys.get(&proposer_addr) {
-            *vrf_pk
-        } else {
-            validator
-                .pubkey
-                .as_bytes()
-                .get(..32)
-                .ok_or_else(|| anyhow::anyhow!("invalid pubkey length"))?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("pubkey conversion failed"))?
-        };
+        let vrf_pubkey: [u8; 32] = *self.vrf_pubkeys.get(&proposer_addr)
+            .ok_or_else(|| anyhow::anyhow!(
+                "no VRF public key registered for proposer {:?}", proposer_addr
+            ))?;
 
         if !verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
@@ -284,19 +275,28 @@ impl HybridConsensus {
         }
 
         // Verify BLS signature FIRST (before equivocation check, to prevent
-        // an attacker from poisoning the equivocation record with invalid-sig votes)
-        if let Some(bls_pk) = self.bls_pubkeys.get(&voter_addr) {
-            let mut vote_msg = Vec::new();
-            vote_msg.extend_from_slice(vote.block_hash.as_bytes());
-            vote_msg.extend_from_slice(&vote.slot.to_le_bytes());
-            let sig_bytes = vote.signature.as_bytes();
-            if sig_bytes.len() == 96 && bls_pk.len() == 48 {
-                match aether_crypto_bls::keypair::verify(bls_pk, &vote_msg, sig_bytes) {
-                    Ok(true) => {} // Valid signature
-                    Ok(false) => bail!("invalid BLS signature on vote from {:?}", voter_addr),
-                    Err(e) => bail!("BLS verification error: {e}"),
-                }
-            }
+        // an attacker from poisoning the equivocation record with invalid-sig votes).
+        // Mandatory: every validator MUST have a registered BLS key, and every vote
+        // MUST carry a valid 96-byte BLS signature.
+        let bls_pk = self.bls_pubkeys.get(&voter_addr)
+            .ok_or_else(|| anyhow::anyhow!("no BLS public key registered for validator {:?}", voter_addr))?;
+        if bls_pk.len() != 48 {
+            bail!("registered BLS pubkey has invalid length {} for {:?}", bls_pk.len(), voter_addr);
+        }
+        let vote_msg = {
+            let mut msg = Vec::new();
+            msg.extend_from_slice(vote.block_hash.as_bytes());
+            msg.extend_from_slice(&vote.slot.to_le_bytes());
+            msg
+        };
+        let sig_bytes = vote.signature.as_bytes();
+        if sig_bytes.len() != 96 {
+            bail!("vote signature has invalid length {} from {:?}", sig_bytes.len(), voter_addr);
+        }
+        match aether_crypto_bls::keypair::verify(bls_pk, &vote_msg, sig_bytes) {
+            Ok(true) => {} // Valid signature
+            Ok(false) => bail!("invalid BLS signature on vote from {:?}", voter_addr),
+            Err(e) => bail!("BLS verification error for {:?}: {e}", voter_addr),
         }
 
         // Equivocation detection: check if this validator already voted for a DIFFERENT block
@@ -461,6 +461,17 @@ impl ConsensusEngine for HybridConsensus {
         self.current_phase = Phase::Propose;
         self.votes.clear();
 
+        // Prune old consensus state to bound memory growth.
+        // Keep only data from the last 200 slots.
+        let prune_before = self.current_slot.saturating_sub(200);
+        self.vote_record.retain(|(slot, _), _| *slot >= prune_before);
+        self.qcs.retain(|(slot, _, _), _| *slot >= prune_before);
+        // Prune block parent tracking for very old blocks
+        self.block_slots.retain(|_, slot| *slot >= prune_before);
+        let slots_to_keep: std::collections::HashSet<&H256> =
+            self.block_slots.keys().collect();
+        self.block_parents.retain(|k, _| slots_to_keep.contains(k));
+
         // Check for epoch transition
         if self.current_slot % self.epoch_length == 0 {
             // Default epoch randomness update (deterministic fallback).
@@ -583,6 +594,44 @@ mod tests {
         }
     }
 
+    /// Create a test validator with an associated BLS keypair for signing votes.
+    fn create_test_validator_with_bls(stake: u128) -> (ValidatorInfo, BlsKeypair) {
+        let keypair = Keypair::generate();
+        let bls_kp = BlsKeypair::generate();
+        let vi = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(keypair.public_key()),
+            stake,
+            commission: 0,
+            active: true,
+        };
+        (vi, bls_kp)
+    }
+
+    /// Register BLS keys for validators and create a signed vote.
+    fn make_signed_vote(
+        consensus: &mut HybridConsensus,
+        vi: &ValidatorInfo,
+        bls_kp: &BlsKeypair,
+        block_hash: H256,
+        slot: Slot,
+    ) -> Vote {
+        let addr = vi.pubkey.to_address();
+        // Register BLS key if not already
+        consensus.register_bls_pubkey(addr, bls_kp.public_key());
+        // Sign the vote message: block_hash || slot
+        let mut msg = Vec::new();
+        msg.extend_from_slice(block_hash.as_bytes());
+        msg.extend_from_slice(&slot.to_le_bytes());
+        let sig = bls_kp.sign(&msg);
+        Vote {
+            slot,
+            block_hash,
+            validator: vi.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(sig),
+            stake: vi.stake,
+        }
+    }
+
     #[test]
     fn test_hybrid_consensus_creation() {
         let validators = vec![
@@ -628,24 +677,17 @@ mod tests {
     #[test]
     fn test_vote_deduplication_rejects_duplicate() {
         // 4 validators — no single validator can reach quorum (2/3 of 4000 = 2667)
-        let v1 = create_test_validator(1000);
-        let v2 = create_test_validator(1000);
-        let v3 = create_test_validator(1000);
-        let v4 = create_test_validator(1000);
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, _bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
+        let (v4, _bls4) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
             0.8, 100, None, None, None,
         );
 
         let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
-
-        let vote = Vote {
-            slot: 0,
-            block_hash,
-            validator: v1.pubkey.clone(),
-            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
-            stake: v1.stake,
-        };
+        let vote = make_signed_vote(&mut consensus, &v1, &bls1, block_hash, 0);
 
         // First vote: accepted (no quorum yet)
         let result1 = consensus.process_vote(vote.clone());
@@ -663,16 +705,12 @@ mod tests {
 
     #[test]
     fn test_vote_rejects_inflated_stake() {
-        let v1 = create_test_validator(1000);
+        let (v1, bls1) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
 
-        let vote = Vote {
-            slot: 0,
-            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
-            validator: v1.pubkey.clone(),
-            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
-            stake: 999_999, // Inflated stake (registered = 1000)
-        };
+        // Register BLS key, create a signed vote, then tamper with stake
+        let mut vote = make_signed_vote(&mut consensus, &v1, &bls1, H256::from_slice(&[1u8; 32]).unwrap(), 0);
+        vote.stake = 999_999; // Inflated stake (registered = 1000)
 
         let result = consensus.process_vote(vote);
         assert!(result.is_err(), "Inflated stake should be rejected");
@@ -688,7 +726,7 @@ mod tests {
             slot: 0,
             block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
             validator: unknown.pubkey.clone(), // Not in validator set
-            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 96]),
             stake: unknown.stake,
         };
 
@@ -699,24 +737,18 @@ mod tests {
     #[test]
     fn test_byzantine_cannot_forge_quorum_with_duplicates() {
         // 3 validators with equal stake — quorum requires 2/3 = 2000 out of 3000
-        let v1 = create_test_validator(1000);
-        let v2 = create_test_validator(1000);
-        let v3 = create_test_validator(1000);
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, _bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
         let mut consensus =
             HybridConsensus::new(vec![v1.clone(), v2.clone(), v3.clone()], 0.8, 100, None, None, None);
 
         let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+        let vote = make_signed_vote(&mut consensus, &v1, &bls1, block_hash, 0);
 
         // Byzantine validator v1 submits vote 1000 times
         for _ in 0..1000 {
-            let vote = Vote {
-                slot: 0,
-                block_hash,
-                validator: v1.pubkey.clone(),
-                signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
-                stake: v1.stake,
-            };
-            let _ = consensus.process_vote(vote);
+            let _ = consensus.process_vote(vote.clone());
         }
 
         // Only 1 vote should be counted (1000 stake, not 1,000,000)
@@ -771,10 +803,10 @@ mod tests {
 
     #[test]
     fn test_equivocation_detection_rejects_double_vote() {
-        let v1 = create_test_validator(1000);
-        let v2 = create_test_validator(1000);
-        let v3 = create_test_validator(1000);
-        let v4 = create_test_validator(1000);
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, _bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
+        let (v4, _bls4) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
             0.8, 100, None, None, None,
@@ -784,23 +816,11 @@ mod tests {
         let block_b = H256::from_slice(&[2u8; 32]).unwrap();
 
         // v1 votes for block A
-        let vote_a = Vote {
-            slot: 0,
-            block_hash: block_a,
-            validator: v1.pubkey.clone(),
-            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
-            stake: v1.stake,
-        };
+        let vote_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 0);
         assert!(consensus.process_vote(vote_a).is_ok());
 
         // v1 tries to vote for block B at the same slot — EQUIVOCATION!
-        let vote_b = Vote {
-            slot: 0,
-            block_hash: block_b,
-            validator: v1.pubkey.clone(),
-            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
-            stake: v1.stake,
-        };
+        let vote_b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 0);
         let result = consensus.process_vote(vote_b);
         assert!(
             result.is_err(),
@@ -838,5 +858,62 @@ mod tests {
             result.is_err(),
             "Block with future timestamp should be rejected"
         );
+    }
+
+    #[test]
+    fn test_vote_rejected_without_bls_key() {
+        let v1 = create_test_validator(1000);
+        let v2 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone()], 0.8, 100, None, None, None,
+        );
+        // Do NOT register BLS key for v1
+        let vote = Vote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 96]),
+            stake: v1.stake,
+        };
+        let result = consensus.process_vote(vote);
+        assert!(result.is_err(), "Vote without BLS key should be rejected");
+        assert!(result.unwrap_err().to_string().contains("no BLS public key"));
+    }
+
+    #[test]
+    fn test_vote_rejected_with_wrong_signature_length() {
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key());
+
+        let vote = Vote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]), // Wrong: 64 instead of 96
+            stake: v1.stake,
+        };
+        let result = consensus.process_vote(vote);
+        assert!(result.is_err(), "Vote with wrong sig length should be rejected");
+        assert!(result.unwrap_err().to_string().contains("invalid length"));
+    }
+
+    #[test]
+    fn test_vote_rejected_with_invalid_bls_signature() {
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key());
+
+        // Sign a DIFFERENT message than what process_vote expects
+        let wrong_sig = bls1.sign(b"completely wrong message");
+        let vote = Vote {
+            slot: 0,
+            block_hash: H256::from_slice(&[1u8; 32]).unwrap(),
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(wrong_sig),
+            stake: v1.stake,
+        };
+        let result = consensus.process_vote(vote);
+        assert!(result.is_err(), "Vote with invalid BLS sig should be rejected");
     }
 }

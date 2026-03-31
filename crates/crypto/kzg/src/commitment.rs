@@ -79,7 +79,8 @@ pub struct KzgVerifier {
 
 impl KzgVerifier {
     /// Create a verifier with an insecure setup (for testing).
-    pub fn new(max_degree: usize) -> Self {
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_insecure_test(max_degree: usize) -> Self {
         let tau_bytes = Sha256::digest(b"aether-kzg-test-setup-DO-NOT-USE-IN-PRODUCTION");
         let mut tau = [0u8; 32];
         tau.copy_from_slice(&tau_bytes);
@@ -535,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_commitment_produces_48_bytes() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let commitment = verifier.commit(&coeffs).unwrap();
         assert_eq!(commitment.commitment.len(), 48);
@@ -543,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_proof_produces_correct_sizes() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let z = test_point();
         let proof = verifier.create_proof(&coeffs, &z).unwrap();
@@ -553,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_valid_proof_verifies() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let z = test_point();
 
@@ -566,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_wrong_evaluation_fails() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let z = test_point();
 
@@ -582,7 +583,7 @@ mod tests {
 
     #[test]
     fn test_wrong_point_fails() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let z = test_point();
 
@@ -599,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_wrong_commitment_fails() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
         let z = test_point();
 
@@ -616,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_commitment() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs = test_coefficients();
 
         let c1 = verifier.commit(&coeffs).unwrap();
@@ -627,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_batch_verify() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         let coeffs1 = test_coefficients();
 
         let mut coeffs2 = vec![[0u8; 32]; 2];
@@ -651,13 +652,13 @@ mod tests {
 
     #[test]
     fn test_empty_coefficients_rejected() {
-        let verifier = KzgVerifier::new(16);
+        let verifier = KzgVerifier::new_insecure_test(16);
         assert!(verifier.commit(&[]).is_err());
     }
 
     #[test]
     fn test_degree_exceeds_max_rejected() {
-        let verifier = KzgVerifier::new(2);
+        let verifier = KzgVerifier::new_insecure_test(2);
         let coeffs = vec![[0u8; 32]; 10]; // degree 9, max is 2
         assert!(verifier.commit(&coeffs).is_err());
     }

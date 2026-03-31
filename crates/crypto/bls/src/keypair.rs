@@ -5,6 +5,8 @@ use blst::min_pk::{
 use blst::BLST_ERROR;
 
 const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+/// Domain separation tag for proof-of-possession (prevents rogue key attacks).
+const DST_POP: &[u8] = b"BLS_POP_BLS12381G2_XMD:SHA-256_SSWU_RO_POP_";
 
 /// BLS12-381 Keypair for signing and verification
 ///
@@ -69,6 +71,36 @@ impl BlsKeypair {
     pub fn secret_key(&self) -> Vec<u8> {
         self.secret.to_bytes().to_vec()
     }
+
+    /// Generate a proof-of-possession: sign the public key bytes with a distinct DST.
+    /// PoP proves the holder knows the secret key corresponding to their public key,
+    /// preventing rogue key attacks in BLS aggregate signatures.
+    pub fn proof_of_possession(&self) -> Vec<u8> {
+        let pk_bytes = self.public.to_bytes();
+        self.secret
+            .sign(&pk_bytes, DST_POP, &[])
+            .to_bytes()
+            .to_vec()
+    }
+}
+
+/// Verify a proof-of-possession for a BLS public key.
+/// Returns true if the PoP is valid (the key holder proved knowledge of the secret key).
+pub fn verify_pop(public_key: &[u8], pop_signature: &[u8]) -> Result<bool> {
+    if public_key.len() != 48 {
+        anyhow::bail!("BLS public key must be 48 bytes for PoP verification");
+    }
+    if pop_signature.len() != 96 {
+        anyhow::bail!("PoP signature must be 96 bytes");
+    }
+
+    let pk = BlstPublicKey::from_bytes(public_key)
+        .map_err(|e| anyhow!("invalid public key: {:?}", e))?;
+    let sig = BlstSignature::from_bytes(pop_signature)
+        .map_err(|e| anyhow!("invalid PoP signature: {:?}", e))?;
+
+    // Verify: the PoP is a signature over the public key bytes using DST_POP
+    Ok(sig.verify(true, public_key, DST_POP, &[], &pk, true) == BLST_ERROR::BLST_SUCCESS)
 }
 
 /// Verify a single BLS signature
@@ -142,5 +174,34 @@ mod tests {
 
         let verified = verify(&keypair.public_key(), message, &signature).unwrap();
         assert!(verified);
+    }
+
+    #[test]
+    fn test_proof_of_possession_valid() {
+        let keypair = BlsKeypair::generate();
+        let pop = keypair.proof_of_possession();
+        assert_eq!(pop.len(), 96, "PoP should be 96 bytes");
+
+        let valid = verify_pop(&keypair.public_key(), &pop).unwrap();
+        assert!(valid, "Valid PoP should verify");
+    }
+
+    #[test]
+    fn test_proof_of_possession_invalid() {
+        let kp1 = BlsKeypair::generate();
+        let kp2 = BlsKeypair::generate();
+
+        // Use kp1's PoP with kp2's public key — should fail
+        let pop1 = kp1.proof_of_possession();
+        let valid = verify_pop(&kp2.public_key(), &pop1).unwrap();
+        assert!(!valid, "PoP from different keypair must not verify");
+    }
+
+    #[test]
+    fn test_proof_of_possession_deterministic() {
+        let keypair = BlsKeypair::generate();
+        let pop1 = keypair.proof_of_possession();
+        let pop2 = keypair.proof_of_possession();
+        assert_eq!(pop1, pop2, "PoP should be deterministic for same keypair");
     }
 }

@@ -10,3 +10,6 @@ thiserror.workspace = true
 blst.workspace = true
 rand.workspace = true
 sha2.workspace = true
+
+[features]
+test-utils = []

@@ -80,6 +80,7 @@ fn generate_transfer(sender_key: &Keypair, recipient: Address, nonce: u64) -> Re
 
     let mut tx = Transaction {
         nonce,
+        chain_id: 1,
         sender,
         sender_pubkey,
         inputs: vec![],

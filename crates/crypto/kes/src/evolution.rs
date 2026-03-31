@@ -191,6 +191,7 @@ fn compute_merkle_root(leaf_pubkeys: &[[u8; 32]]) -> [u8; 32] {
         .iter()
         .map(|pk| {
             let mut h = Sha256::new();
+            h.update([0x00]);
             h.update(pk);
             h.finalize().into()
         })
@@ -201,6 +202,7 @@ fn compute_merkle_root(leaf_pubkeys: &[[u8; 32]]) -> [u8; 32] {
         let mut next_level = Vec::with_capacity(current_level.len() / 2);
         for pair in current_level.chunks(2) {
             let mut h = Sha256::new();
+            h.update([0x01]);
             h.update(pair[0]);
             if pair.len() > 1 {
                 h.update(pair[1]);
@@ -222,6 +224,7 @@ fn compute_auth_path(leaf_pubkeys: &[[u8; 32]], leaf_index: usize) -> Vec<[u8; 3
         .iter()
         .map(|pk| {
             let mut h = Sha256::new();
+            h.update([0x00]);
             h.update(pk);
             h.finalize().into()
         })
@@ -243,6 +246,7 @@ fn compute_auth_path(leaf_pubkeys: &[[u8; 32]], leaf_index: usize) -> Vec<[u8; 3
         let mut next_level = Vec::with_capacity(current_level.len() / 2);
         for pair in current_level.chunks(2) {
             let mut h = Sha256::new();
+            h.update([0x01]);
             h.update(pair[0]);
             if pair.len() > 1 {
                 h.update(pair[1]);
@@ -266,9 +270,18 @@ pub(crate) fn verify_auth_path(
     auth_path: &[[u8; 32]],
     expected_root: &[u8; 32],
 ) -> bool {
+    if auth_path.is_empty() {
+        return false;
+    }
+    let max_leaves = 1usize << auth_path.len();
+    if leaf_index >= max_leaves {
+        return false;
+    }
+
     // Hash the leaf public key
     let mut current_hash: [u8; 32] = {
         let mut h = Sha256::new();
+        h.update([0x00]);
         h.update(leaf_pubkey);
         h.finalize().into()
     };
@@ -276,6 +289,7 @@ pub(crate) fn verify_auth_path(
     let mut idx = leaf_index;
     for sibling in auth_path {
         let mut h = Sha256::new();
+        h.update([0x01]);
         if idx % 2 == 0 {
             h.update(current_hash);
             h.update(sibling);
@@ -295,7 +309,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generates_and_signs() {
+    fn test_kes_generates_and_signs() {
         let mut key = KesKey::generate(16);
         let vk = key.verification_key();
 
@@ -306,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn monotonic_period() {
+    fn test_kes_monotonic_period() {
         let mut key = KesKey::generate(4);
         key.sign(1, b"test").unwrap();
         let err = key.sign(0, b"regress").unwrap_err();
@@ -320,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn bounds_check() {
+    fn test_kes_period_bounds_check() {
         let mut key = KesKey::generate(4);
         // max_periods is rounded up to 4 (2^2)
         key.sign(0, b"test").unwrap();
@@ -335,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_secrecy_erases_keys() {
+    fn test_kes_forward_secrecy_erases_keys() {
         let mut key = KesKey::generate(4);
         let vk = key.verification_key();
 
@@ -355,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn all_periods_sign_and_verify() {
+    fn test_kes_all_periods_sign_and_verify() {
         let mut key = KesKey::generate(8);
         let vk = key.verification_key();
 
@@ -371,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_message_fails_verification() {
+    fn test_kes_wrong_message_fails_verification() {
         let mut key = KesKey::generate(4);
         let vk = key.verification_key();
 
@@ -380,7 +394,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_verification_key_fails() {
+    fn test_kes_wrong_verification_key_fails() {
         let mut key1 = KesKey::generate(4);
         let key2 = KesKey::generate(4);
 
@@ -391,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_from_seed() {
+    fn test_kes_deterministic_from_seed() {
         let seed = [42u8; 32];
         let key1 = KesKey::from_seed(seed, 8);
         let key2 = KesKey::from_seed(seed, 8);
@@ -404,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn merkle_root_consistency() {
+    fn test_kes_merkle_root_consistency() {
         let key = KesKey::generate(8);
         let vk = key.verification_key();
 

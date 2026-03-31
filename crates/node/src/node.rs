@@ -298,22 +298,28 @@ impl Node {
 
     /// Evict oldest cached blocks/receipts to keep memory bounded.
     fn evict_old_cache(&mut self) {
-        if self.blocks_by_hash.len() > MAX_CACHED_BLOCKS {
-            // Find the lowest slot and remove it
+        // Evict blocks exceeding cache limit (oldest first)
+        while self.blocks_by_hash.len() > MAX_CACHED_BLOCKS {
             if let Some(&min_slot) = self.blocks_by_slot.keys().min() {
                 if let Some(hash) = self.blocks_by_slot.remove(&min_slot) {
                     self.blocks_by_hash.remove(&hash);
                 }
+            } else {
+                break;
             }
         }
 
+        // Evict old receipts
         if self.receipts.len() > MAX_CACHED_RECEIPTS {
-            // Remove a batch of old receipts (they're on disk via persist_block)
             let to_remove: Vec<H256> = self.receipts.keys().take(1000).cloned().collect();
             for key in to_remove {
                 self.receipts.remove(&key);
             }
         }
+
+        // Prune fork choice for finalized slots (no longer need candidates)
+        let finalized = self.consensus.finalized_slot();
+        self.fork_choice.prune_before(finalized);
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
@@ -514,11 +520,10 @@ impl Node {
         // Validate block via consensus (VRF proof, locked block check)
         self.consensus.validate_block(&block)?;
 
-        // Validate transactions_root matches actual transactions
+        // Validate transactions_root matches actual transactions (unconditional —
+        // empty blocks naturally produce H256::zero() so zero roots still pass)
         let computed_tx_root = compute_transactions_root(&block.transactions);
-        if block.header.transactions_root != H256::zero()
-            && computed_tx_root != block.header.transactions_root
-        {
+        if computed_tx_root != block.header.transactions_root {
             bail!(
                 "transactions_root mismatch: computed={}, block={}",
                 computed_tx_root,
@@ -542,10 +547,8 @@ impl Node {
         let (receipts, overlay) =
             self.ledger.apply_block_speculatively(&block.transactions)?;
 
-        // Validate state root matches before committing
-        if block.header.state_root != H256::zero()
-            && overlay.state_root != block.header.state_root
-        {
+        // Validate state root matches before committing (unconditional)
+        if overlay.state_root != block.header.state_root {
             // Discard overlay — state is UNCHANGED (rollback!)
             bail!(
                 "state root mismatch: computed={}, block={} — block rejected, state unchanged",
@@ -869,6 +872,7 @@ mod tests {
     fn transactions_root_is_deterministic() {
         let tx1 = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender: Address::from_slice(&[1u8; 20]).unwrap(),
             sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
             inputs: vec![],

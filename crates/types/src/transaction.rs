@@ -5,9 +5,14 @@ use std::collections::HashSet;
 
 pub const TRANSFER_PROGRAM_ID: H256 = H256([1u8; 32]);
 
+/// Chain ID constants for replay protection across networks.
+pub const MAINNET_CHAIN_ID: u64 = 1;
+pub const TESTNET_CHAIN_ID: u64 = 100;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Transaction {
     pub nonce: u64,
+    pub chain_id: u64,
     pub sender: Address,
     pub sender_pubkey: PublicKey,
     pub inputs: Vec<UtxoId>,
@@ -77,9 +82,28 @@ impl Transaction {
         H256::from_slice(&hash).expect("SHA256 produces 32 bytes")
     }
 
+    /// Validate that the transaction's chain_id matches the expected network.
+    pub fn validate_chain_id(&self, expected: u64) -> anyhow::Result<()> {
+        if self.chain_id != expected {
+            anyhow::bail!(
+                "chain_id mismatch: tx has {}, expected {}",
+                self.chain_id,
+                expected
+            );
+        }
+        Ok(())
+    }
+
     pub fn verify_signature(&self) -> anyhow::Result<()> {
         if self.signature.as_bytes().is_empty() {
             anyhow::bail!("signature is empty");
+        }
+        // M3: Bound signature size to prevent DoS via oversized signatures
+        if self.signature.as_bytes().len() > 128 {
+            anyhow::bail!(
+                "signature too large: {} bytes (max 128)",
+                self.signature.as_bytes().len()
+            );
         }
 
         // Verify the sender address matches the public key
@@ -169,6 +193,7 @@ mod tests {
         let address = H160::from_slice(&keypair.to_address()).unwrap();
         let mut tx = Transaction {
             nonce: 0,
+            chain_id: TESTNET_CHAIN_ID,
             sender: address,
             sender_pubkey: TxPublicKey::from_bytes(keypair.public_key()),
             inputs: vec![],
@@ -202,6 +227,78 @@ mod tests {
         tx.signature = TxSignature::from_bytes(vec![0; 64]);
         assert!(tx.verify_signature().is_err());
     }
+
+    #[test]
+    fn test_chain_id_in_hash() {
+        let keypair = Keypair::generate();
+        let address = H160::from_slice(&keypair.to_address()).unwrap();
+        let mut tx1 = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: TxPublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: TxSignature::from_bytes(vec![]),
+        };
+        let mut tx2 = tx1.clone();
+        tx2.chain_id = 2;
+
+        assert_ne!(tx1.hash(), tx2.hash(), "Different chain_id must produce different hash");
+    }
+
+    #[test]
+    fn test_validate_chain_id() {
+        let keypair = Keypair::generate();
+        let address = H160::from_slice(&keypair.to_address()).unwrap();
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 100,
+            sender: address,
+            sender_pubkey: TxPublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: TxSignature::from_bytes(vec![]),
+        };
+        assert!(tx.validate_chain_id(100).is_ok(), "Matching chain_id should pass");
+        assert!(tx.validate_chain_id(1).is_err(), "Mismatched chain_id should fail");
+    }
+
+    #[test]
+    fn test_oversized_signature_rejected() {
+        let keypair = Keypair::generate();
+        let address = H160::from_slice(&keypair.to_address()).unwrap();
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: super::TESTNET_CHAIN_ID,
+            sender: address,
+            sender_pubkey: TxPublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: TxSignature::from_bytes(vec![0u8; 256]), // 256 bytes > 128 limit
+        };
+        let result = tx.verify_signature();
+        assert!(result.is_err(), "Oversized signature should be rejected");
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
 }
 
 // ============================================================
@@ -219,6 +316,7 @@ mod tests {
 pub struct BlobTransaction {
     /// Standard transaction fields.
     pub nonce: u64,
+    pub chain_id: u64,
     pub sender: Address,
     pub sender_pubkey: PublicKey,
     pub gas_limit: u64,
@@ -303,6 +401,7 @@ mod blob_tests {
     fn make_blob_tx(blob_count: u32, blob_size: u64) -> BlobTransaction {
         BlobTransaction {
             nonce: 0,
+            chain_id: TESTNET_CHAIN_ID,
             sender: Address::from_slice(&[1u8; 20]).unwrap(),
             sender_pubkey: PublicKey::from_bytes(vec![2u8; 32]),
             gas_limit: 21000,

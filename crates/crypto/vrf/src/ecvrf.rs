@@ -29,6 +29,15 @@ pub struct VrfProof {
     pub output: [u8; 32], // Beta string (hash of Gamma)
 }
 
+impl Drop for VrfKeypair {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        // Overwrite secret scalar with zero to prevent memory recovery
+        self.secret = Scalar::ZERO;
+        self.public_bytes.zeroize();
+    }
+}
+
 impl VrfKeypair {
     /// Generate a new VRF keypair from random bytes.
     pub fn generate() -> Self {
@@ -73,11 +82,6 @@ impl VrfKeypair {
     /// Get compressed public key bytes.
     pub fn public_key(&self) -> &[u8; 32] {
         &self.public_bytes
-    }
-
-    /// Get secret key bytes (use with caution!).
-    pub fn secret_key(&self) -> &[u8; 32] {
-        &self.public_bytes // Return public key for safety; secret is internal
     }
 
     /// Evaluate VRF: produce (output, proof) from input.
@@ -308,6 +312,7 @@ pub fn output_to_value(output: &[u8; 32]) -> f64 {
     }
 }
 
+#[deprecated(note = "Use check_leader_eligibility_integer for deterministic consensus")]
 /// Check if VRF output wins the lottery for slot leadership.
 ///
 /// threshold = tau * stake_i / total_stake
@@ -321,6 +326,41 @@ pub fn check_leader_eligibility(
     let output_value = output_to_value(vrf_output);
     let threshold = tau * (stake as f64 / total_stake as f64);
     output_value < threshold
+}
+
+/// Check leader eligibility using integer-only arithmetic (deterministic across platforms).
+///
+/// tau is represented as a fraction: tau_numerator / tau_denominator
+/// (e.g., tau=0.8 → numerator=4, denominator=5)
+///
+/// Eligible if: vrf_value * total_stake * tau_denominator < tau_numerator * stake * 2^64
+/// Rearranged to avoid overflow where possible.
+pub fn check_leader_eligibility_integer(
+    vrf_output: &[u8; 32],
+    stake: u128,
+    total_stake: u128,
+    tau_numerator: u128,
+    tau_denominator: u128,
+) -> bool {
+    if total_stake == 0 || tau_denominator == 0 {
+        return false;
+    }
+    // Interpret first 8 bytes as u64 (sufficient entropy for threshold comparison)
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&vrf_output[..8]);
+    let vrf_value = u64::from_le_bytes(bytes) as u128;
+
+    // eligible if: vrf_value / u64::MAX < tau * stake / total_stake
+    // Rearranged: vrf_value * total_stake * tau_denominator < tau_numerator * stake * (u64::MAX as u128 + 1)
+    // Use saturating arithmetic to avoid overflow
+    let lhs = vrf_value
+        .saturating_mul(total_stake)
+        .saturating_mul(tau_denominator);
+    let rhs = tau_numerator
+        .saturating_mul(stake)
+        .saturating_mul(u64::MAX as u128 + 1);
+
+    lhs < rhs
 }
 
 #[cfg(test)]
@@ -529,6 +569,42 @@ mod tests {
             "eligibility rate {} outside expected range",
             rate
         );
+    }
+
+    #[test]
+    fn test_integer_leader_eligibility_basic() {
+        // Low VRF output should be eligible with reasonable stake
+        let low_output = [0u8; 32];
+        assert!(check_leader_eligibility_integer(&low_output, 5000, 10_000, 4, 5));
+
+        // High VRF output should not be eligible with small stake
+        let high_output = [255u8; 32];
+        assert!(!check_leader_eligibility_integer(&high_output, 100, 10_000, 4, 5));
+    }
+
+    #[test]
+    fn test_integer_leader_eligibility_edge_cases() {
+        // Zero total_stake should return false
+        assert!(!check_leader_eligibility_integer(&[0u8; 32], 100, 0, 4, 5));
+
+        // Zero tau_denominator should return false
+        assert!(!check_leader_eligibility_integer(&[0u8; 32], 100, 1000, 4, 0));
+
+        // Full stake (stake == total_stake) with tau=1 (1/1) should always be eligible for low output
+        assert!(check_leader_eligibility_integer(&[0u8; 32], 1000, 1000, 1, 1));
+
+        // Zero stake should never be eligible
+        assert!(!check_leader_eligibility_integer(&[0u8; 32], 0, 1000, 4, 5));
+    }
+
+    #[test]
+    fn test_integer_leader_eligibility_no_overflow() {
+        // Test with very large stake values that could overflow
+        let output = [1u8; 32]; // low-ish
+        let large_stake: u128 = u64::MAX as u128;
+        let large_total: u128 = u64::MAX as u128 * 2;
+        // Should not panic
+        let _ = check_leader_eligibility_integer(&output, large_stake, large_total, 4, 5);
     }
 }
 

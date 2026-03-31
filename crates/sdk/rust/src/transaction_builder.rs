@@ -69,6 +69,7 @@ impl TransferBuilder {
 
         let mut tx = Transaction {
             nonce,
+            chain_id: 1,
             sender: sender_address,
             sender_pubkey,
             inputs: Vec::new(),

@@ -15,7 +15,7 @@ use aether_types::{
 use tokio::sync::Mutex;
 
 #[test]
-fn phase1_ecvrf_leader_election() {
+fn test_phase1_ecvrf_leader_election() {
     let vrf = VrfKeypair::generate();
     let slot: Slot = 42;
     let mut input = Vec::new();
@@ -41,7 +41,7 @@ fn phase1_ecvrf_leader_election() {
 }
 
 #[test]
-fn phase1_bls_vote_aggregation() {
+fn test_phase1_bls_vote_aggregation() {
     let message = b"phase1-block-hash";
 
     let mut signatures = Vec::new();
@@ -65,7 +65,7 @@ fn phase1_bls_vote_aggregation() {
 }
 
 #[test]
-fn phase1_simple_consensus_finality() {
+fn test_phase1_simple_consensus_finality() {
     let validators: Vec<(Keypair, ValidatorInfo)> = (0..4)
         .map(|_| {
             let kp = Keypair::generate();
@@ -105,7 +105,7 @@ fn phase1_simple_consensus_finality() {
 }
 
 #[test]
-fn phase1_wasm_runtime_executes_minimal_contract() {
+fn test_phase1_wasm_runtime_executes_contract() {
     // Minimal valid WASM: (module (func (export "execute") (param i32 i32) (result i32) i32.const 0))
     let wasm: &[u8] = &[
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
@@ -133,7 +133,7 @@ fn phase1_wasm_runtime_executes_minimal_contract() {
 }
 
 #[test]
-fn phase1_parallel_scheduler_speedup() {
+fn test_phase1_parallel_scheduler_speedup() {
     let scheduler = ParallelScheduler::new();
     let txs: Vec<Transaction> = (0..12).map(create_synthetic_tx).collect();
 
@@ -197,6 +197,7 @@ fn create_synthetic_tx(index: u8) -> Transaction {
 
     Transaction {
         nonce: 0,
+        chain_id: 1,
         sender: H160::from_slice(&[index; 20]).unwrap(),
         sender_pubkey: pubkey,
         inputs: vec![],

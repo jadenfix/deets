@@ -120,6 +120,7 @@ mod tests {
         let txs: Vec<Transaction> = (0..num_txs)
             .map(|i| Transaction {
                 nonce: i as u64,
+                chain_id: 1,
                 sender: Address::from_slice(&[1u8; 20]).unwrap(),
                 sender_pubkey: PublicKey::from_bytes(vec![2u8; 32]),
                 inputs: vec![],

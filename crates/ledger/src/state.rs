@@ -653,6 +653,7 @@ mod tests {
         // Create transaction
         let mut tx = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender: address,
             sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
             inputs: vec![],
@@ -674,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_verification_marks_invalid_signatures() {
+    fn test_batch_verification_marks_invalid_signatures() {
         let temp_dir = TempDir::new().unwrap();
         let storage = Storage::open(temp_dir.path()).unwrap();
         let mut ledger = Ledger::new(storage).unwrap();
@@ -693,6 +694,7 @@ mod tests {
         // Build signed transaction
         let mut tx = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender: address,
             sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
             inputs: vec![],
@@ -728,7 +730,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_program_moves_balance_between_accounts() {
+    fn test_transfer_program_moves_balance() {
         let temp_dir = TempDir::new().unwrap();
         let storage = Storage::open(temp_dir.path()).unwrap();
         let mut ledger = Ledger::new(storage).unwrap();
@@ -752,6 +754,7 @@ mod tests {
         };
         let mut tx = Transaction {
             nonce: 0,
+            chain_id: 1,
             sender,
             sender_pubkey: PublicKey::from_bytes(sender_key.public_key()),
             inputs: vec![],

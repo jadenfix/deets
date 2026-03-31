@@ -211,6 +211,7 @@ mod tests {
 
         Transaction {
             nonce: 0,
+            chain_id: 1,
             sender: Address::from_slice(&[1u8; 20]).unwrap(),
             sender_pubkey: PublicKey::from_bytes(vec![2u8; 32]),
             inputs: vec![],
@@ -346,6 +347,7 @@ mod tests {
                 writes.insert(Address::from_slice(&addr_bytes).unwrap());
                 Transaction {
                     nonce: 0,
+                    chain_id: 1,
                     sender: Address::from_slice(&[1u8; 20]).unwrap(),
                     sender_pubkey: PublicKey::from_bytes(vec![2u8; 32]),
                     inputs: vec![],

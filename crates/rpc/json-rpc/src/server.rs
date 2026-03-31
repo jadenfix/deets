@@ -363,6 +363,7 @@ async fn handle_send_transaction<B: RpcBackend>(
 
     let tx = Transaction {
         nonce: transfer.nonce,
+        chain_id: 1,
         sender,
         sender_pubkey,
         inputs: Vec::new(),

@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 aether-types = { path = "../../types" }
-aether-crypto-kzg = { path = "../../crypto/kzg" }
+aether-crypto-kzg = { path = "../../crypto/kzg", features = ["test-utils"] }
 aether-crypto-primitives = { path = "../../crypto/primitives" }
 aether-verifiers-tee = { path = "../tee" }
 serde.workspace = true

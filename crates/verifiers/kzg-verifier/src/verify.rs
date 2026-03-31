@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn verifies_valid_openings() {
-        let verifier = KzgVerifier::new(1024);
+        let verifier = KzgVerifier::new_insecure_test(1024);
         let challenge = sample_challenge();
         let openings = make_valid_openings(&verifier);
         let response = KzgOpeningResponse::new(H256::zero(), openings);
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn detects_mismatch() {
-        let verifier = KzgVerifier::new(1024);
+        let verifier = KzgVerifier::new_insecure_test(1024);
         let mut challenge = sample_challenge();
         let openings = make_valid_openings(&verifier);
         let response =

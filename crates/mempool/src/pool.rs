@@ -194,7 +194,9 @@ impl Mempool {
     }
 
     fn add_to_pending(&mut self, tx: Transaction) {
-        let tx_size = bincode::serialize(&tx).unwrap().len() as u128;
+        let tx_size = bincode::serialize(&tx)
+            .map(|b| b.len() as u128)
+            .unwrap_or(1); // Fallback to 1 to avoid divide-by-zero
         let fee_rate = if tx_size > 0 { tx.fee / tx_size } else { tx.fee };
 
         // Advance expected nonce
@@ -248,13 +250,18 @@ impl Mempool {
     fn check_rate_limit(&mut self, sender: &Address) -> Result<()> {
         let now = Instant::now();
 
+        // Prune stale rate limit entries (older than 60s) to bound memory
+        if self.rate_limits.len() > 10_000 {
+            self.rate_limits
+                .retain(|_, e| now.duration_since(e.window_start).as_secs() < 60);
+        }
+
         let entry = self.rate_limits.entry(*sender).or_insert(RateLimitEntry {
             window_start: now,
             count: 0,
         });
 
         if now.duration_since(entry.window_start).as_secs() >= RATE_LIMIT_WINDOW_SECS {
-            // Reset window
             entry.window_start = now;
             entry.count = 1;
             Ok(())
@@ -383,6 +390,7 @@ mod tests {
         let sender = sender_pubkey.to_address();
         let mut tx = Transaction {
             nonce,
+            chain_id: 1,
             sender,
             sender_pubkey,
             inputs: vec![],
