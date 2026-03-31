@@ -268,31 +268,76 @@ impl StakingState {
         Ok(slash_amount)
     }
 
-    /// Distribute rewards
+    /// Distribute rewards proportionally to validators and their delegators.
+    ///
+    /// For each active validator:
+    ///   1. Compute their share: epoch_rewards * (validator_stake + delegated) / total_staked
+    ///   2. Validator takes commission (commission_rate bps) from that share
+    ///   3. Remaining reward is distributed to delegators proportionally by delegation amount
     pub fn distribute_rewards(&mut self, epoch_rewards: u128) {
+        if self.total_staked == 0 || epoch_rewards == 0 {
+            return;
+        }
+
         self.reward_pool += epoch_rewards;
 
-        // Distribute proportionally to validators
-        for validator in &mut self.validators {
-            if !validator.is_active {
+        // Collect validator reward info first (to avoid borrow issues)
+        let validator_infos: Vec<(Address, u128, u128, u16, bool)> = self
+            .validators
+            .iter()
+            .map(|v| {
+                (
+                    v.address,
+                    v.staked_amount,
+                    v.delegated_amount,
+                    v.commission_rate,
+                    v.is_active,
+                )
+            })
+            .collect();
+
+        for (val_addr, val_stake, delegated_amount, commission_rate, is_active) in &validator_infos
+        {
+            if !is_active {
                 continue;
             }
 
-            let total_stake = validator.staked_amount + validator.delegated_amount;
+            let total_stake = val_stake + delegated_amount;
             if total_stake == 0 {
                 continue;
             }
 
             let validator_reward = (epoch_rewards * total_stake) / self.total_staked;
+            let commission = (validator_reward * *commission_rate as u128) / 10000;
+            let delegator_pool = validator_reward - commission;
 
-            // Commission for validator
-            let commission = (validator_reward * validator.commission_rate as u128) / 10000;
+            // Credit commission to validator
+            if let Some(v) = self.validators.iter_mut().find(|v| v.address == *val_addr) {
+                v.staked_amount += commission;
+            }
 
-            // Rest goes to delegators
-            let _delegator_reward = validator_reward - commission;
-
-            // In production: distribute to delegators proportionally
-            validator.staked_amount += commission;
+            // Distribute remaining rewards to delegators proportionally.
+            // Track distributed amount to handle rounding remainder.
+            if *delegated_amount > 0 && delegator_pool > 0 {
+                let mut distributed = 0u128;
+                let mut last_delegation_idx = None;
+                for (idx, delegation) in self.delegations.iter_mut().enumerate() {
+                    if delegation.validator == *val_addr && delegation.amount > 0 {
+                        let delegator_share =
+                            (delegator_pool * delegation.amount) / delegated_amount;
+                        delegation.amount += delegator_share;
+                        distributed += delegator_share;
+                        last_delegation_idx = Some(idx);
+                    }
+                }
+                // Give rounding remainder to the last delegator to prevent reward leakage
+                let remainder = delegator_pool.saturating_sub(distributed);
+                if remainder > 0 {
+                    if let Some(idx) = last_delegation_idx {
+                        self.delegations[idx].amount += remainder;
+                    }
+                }
+            }
         }
     }
 

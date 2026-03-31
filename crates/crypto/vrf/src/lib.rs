@@ -25,6 +25,9 @@
 pub mod ecvrf;
 
 pub use ecvrf::{
-    check_leader_eligibility, check_leader_eligibility_integer, output_to_value, verify_proof,
-    VrfKeypair, VrfProof,
+    check_leader_eligibility_integer, verify_proof, VrfKeypair, VrfProof,
 };
+
+// Deprecated re-exports — available through ecvrf module directly if needed
+#[allow(deprecated)]
+pub use ecvrf::{check_leader_eligibility, output_to_value};

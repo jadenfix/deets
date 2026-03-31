@@ -42,8 +42,8 @@ impl FeeMarket {
     pub fn new(initial_base_fee: u128, max_gas: u64, min_base_fee: u128) -> Self {
         FeeMarket {
             base_fee: initial_base_fee,
-            target_gas: max_gas / 2,
-            max_gas,
+            target_gas: std::cmp::max(max_gas / 2, 1), // Prevent division by zero
+            max_gas: std::cmp::max(max_gas, 2),
             min_base_fee,
             total_burned: 0,
             total_priority_fees: 0,

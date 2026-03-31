@@ -1,5 +1,6 @@
 use aether_types::{BlockHeader, PublicKey, Slot, H256};
 use anyhow::{bail, Result};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 /// Validator info for light client verification.
@@ -16,6 +17,21 @@ pub struct FinalizedHeader {
     pub aggregate_signature: Vec<u8>,
     pub signer_pubkeys: Vec<PublicKey>,
     pub total_signing_stake: u128,
+}
+
+/// Check if `voted_stake` represents a 2/3 quorum of `total_stake`.
+/// Uses checked arithmetic to avoid overflow.
+fn has_quorum(voted_stake: u128, total_stake: u128) -> bool {
+    if total_stake == 0 {
+        return false;
+    }
+    match (voted_stake.checked_mul(3), total_stake.checked_mul(2)) {
+        (Some(lhs), Some(rhs)) => lhs >= rhs,
+        _ => {
+            let threshold = total_stake / 3 * 2 + if total_stake % 3 > 0 { 1 } else { 0 };
+            voted_stake >= threshold
+        }
+    }
 }
 
 /// Light client verifier — checks finality of headers using BLS signatures.
@@ -66,7 +82,7 @@ impl LightClientVerifier {
         }
 
         // Check quorum: signing stake must be ≥2/3 of total
-        if finalized.total_signing_stake * 3 < self.total_stake * 2 {
+        if !has_quorum(finalized.total_signing_stake, self.total_stake) {
             bail!(
                 "insufficient signing stake: {} < 2/3 of {}",
                 finalized.total_signing_stake,
@@ -83,7 +99,7 @@ impl LightClientVerifier {
             }
         }
 
-        if verified_stake * 3 < self.total_stake * 2 {
+        if !has_quorum(verified_stake, self.total_stake) {
             bail!(
                 "verified stake {} < 2/3 of total {}",
                 verified_stake,
@@ -91,9 +107,37 @@ impl LightClientVerifier {
             );
         }
 
-        // BLS aggregate signature verification would go here in production.
-        // For now, we trust the stake accounting above.
-        // In production: aether_crypto_bls::verify_aggregate(...)
+        // BLS aggregate signature verification:
+        // 1. Aggregate the individual signer public keys
+        // 2. Verify the aggregate signature over the header hash
+        let signer_pk_bytes: Vec<Vec<u8>> = finalized
+            .signer_pubkeys
+            .iter()
+            .map(|pk| pk.as_bytes().to_vec())
+            .collect();
+
+        // Compute the header hash that was signed
+        let mut hasher = Sha256::new();
+        hasher.update(header.slot.to_le_bytes());
+        hasher.update(header.parent_hash.as_bytes());
+        hasher.update(header.state_root.as_bytes());
+        hasher.update(header.transactions_root.as_bytes());
+        let header_msg = hasher.finalize().to_vec();
+
+        // Aggregate public keys and verify
+        if !finalized.aggregate_signature.is_empty() && !signer_pk_bytes.is_empty() {
+            let agg_pk = aether_crypto_bls::aggregate_public_keys(&signer_pk_bytes)
+                .map_err(|e| anyhow::anyhow!("failed to aggregate signer public keys: {e}"))?;
+
+            let valid = aether_crypto_bls::verify_aggregated(&agg_pk, &header_msg, &finalized.aggregate_signature)
+                .map_err(|e| anyhow::anyhow!("BLS verification error: {e}"))?;
+
+            if !valid {
+                bail!("invalid BLS aggregate signature on finalized header at slot {}", header.slot);
+            }
+        } else if finalized.aggregate_signature.is_empty() {
+            bail!("finalized header at slot {} has empty aggregate signature", header.slot);
+        }
 
         // Accept the header
         self.finalized_slot = header.slot;
@@ -124,101 +168,143 @@ impl LightClientVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto_bls::BlsKeypair;
     use aether_types::*;
 
-    fn make_validator(id: u8, stake: u128) -> ValidatorEntry {
-        ValidatorEntry {
-            pubkey: PublicKey::from_bytes(vec![id; 32]),
-            stake,
-        }
+    struct TestValidator {
+        bls_kp: BlsKeypair,
+        entry: ValidatorEntry,
     }
 
-    fn make_finalized_header(
-        slot: u64,
-        signers: &[ValidatorEntry],
-    ) -> FinalizedHeader {
-        let total_stake: u128 = signers.iter().map(|v| v.stake).sum();
-        FinalizedHeader {
-            header: BlockHeader {
-                version: 1,
-                slot,
-                parent_hash: H256::zero(),
-                state_root: H256::from_slice(&[slot as u8; 32]).unwrap(),
-                transactions_root: H256::zero(),
-                receipts_root: H256::zero(),
-                proposer: Address::from_slice(&[1u8; 20]).unwrap(),
-                vrf_proof: VrfProof {
-                    output: [0u8; 32],
-                    proof: vec![0u8; 80],
-                },
-                timestamp: 1000 + slot,
+    fn make_test_validator(stake: u128) -> TestValidator {
+        let bls_kp = BlsKeypair::generate();
+        let entry = ValidatorEntry {
+            pubkey: PublicKey::from_bytes(bls_kp.public_key()),
+            stake,
+        };
+        TestValidator { bls_kp, entry }
+    }
+
+    /// Compute the header message that signers sign (must match verifier).
+    fn header_message(header: &BlockHeader) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(header.slot.to_le_bytes());
+        hasher.update(header.parent_hash.as_bytes());
+        hasher.update(header.state_root.as_bytes());
+        hasher.update(header.transactions_root.as_bytes());
+        hasher.finalize().to_vec()
+    }
+
+    fn make_finalized_header(slot: u64, test_validators: &[&TestValidator]) -> FinalizedHeader {
+        let header = BlockHeader {
+            version: 1,
+            slot,
+            parent_hash: H256::zero(),
+            state_root: H256::from_slice(&[slot as u8; 32]).unwrap(),
+            transactions_root: H256::zero(),
+            receipts_root: H256::zero(),
+            proposer: Address::from_slice(&[1u8; 20]).unwrap(),
+            vrf_proof: VrfProof {
+                output: [0u8; 32],
+                proof: vec![0u8; 80],
             },
-            aggregate_signature: vec![0u8; 96],
-            signer_pubkeys: signers.iter().map(|v| v.pubkey.clone()).collect(),
+            timestamp: 1000 + slot,
+        };
+
+        let msg = header_message(&header);
+
+        // Each validator signs, then aggregate
+        let signatures: Vec<Vec<u8>> = test_validators
+            .iter()
+            .map(|tv| tv.bls_kp.sign(&msg))
+            .collect();
+
+        let agg_sig = aether_crypto_bls::aggregate_signatures(&signatures).unwrap();
+        let total_stake: u128 = test_validators.iter().map(|tv| tv.entry.stake).sum();
+
+        FinalizedHeader {
+            header,
+            aggregate_signature: agg_sig,
+            signer_pubkeys: test_validators.iter().map(|tv| tv.entry.pubkey.clone()).collect(),
             total_signing_stake: total_stake,
         }
     }
 
     #[test]
     fn test_verify_valid_header() {
-        let validators = vec![
-            make_validator(1, 1000),
-            make_validator(2, 1000),
-            make_validator(3, 1000),
-        ];
-        let mut verifier = LightClientVerifier::new(validators.clone());
+        let tvs: Vec<TestValidator> = (0..3).map(|_| make_test_validator(1000)).collect();
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
 
-        // 3/3 validators sign = 100% stake
-        let header = make_finalized_header(1, &validators);
+        let refs: Vec<&TestValidator> = tvs.iter().collect();
+        let header = make_finalized_header(1, &refs);
         assert!(verifier.verify_finalized_header(&header).is_ok());
         assert_eq!(verifier.finalized_slot(), 1);
     }
 
     #[test]
     fn test_reject_insufficient_stake() {
-        let validators = vec![
-            make_validator(1, 1000),
-            make_validator(2, 1000),
-            make_validator(3, 1000),
-        ];
-        let mut verifier = LightClientVerifier::new(validators);
+        let tvs: Vec<TestValidator> = (0..3).map(|_| make_test_validator(1000)).collect();
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
 
         // Only 1/3 validators sign = 33% < 67%
-        let header = make_finalized_header(1, &[make_validator(1, 1000)]);
+        let header = make_finalized_header(1, &[&tvs[0]]);
         assert!(verifier.verify_finalized_header(&header).is_err());
     }
 
     #[test]
     fn test_reject_slot_regression() {
-        let validators = vec![make_validator(1, 1000)];
-        let mut verifier = LightClientVerifier::new(validators.clone());
+        let tvs = vec![make_test_validator(1000)];
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
 
-        let h1 = make_finalized_header(10, &validators);
+        let refs: Vec<&TestValidator> = tvs.iter().collect();
+        let h1 = make_finalized_header(10, &refs);
         verifier.verify_finalized_header(&h1).unwrap();
 
-        // Try to verify a header with a lower slot
-        let h2 = make_finalized_header(5, &validators);
+        let h2 = make_finalized_header(5, &refs);
         assert!(verifier.verify_finalized_header(&h2).is_err());
     }
 
     #[test]
     fn test_reject_unknown_signer() {
-        let validators = vec![make_validator(1, 1000), make_validator(2, 1000)];
-        let mut verifier = LightClientVerifier::new(validators);
+        let tvs: Vec<TestValidator> = (0..2).map(|_| make_test_validator(1000)).collect();
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
 
         // Signer not in validator set
-        let header = make_finalized_header(1, &[make_validator(99, 2000)]);
+        let unknown = make_test_validator(2000);
+        let header = make_finalized_header(1, &[&unknown]);
         assert!(verifier.verify_finalized_header(&header).is_err());
     }
 
     #[test]
+    fn test_reject_forged_signature() {
+        let tvs: Vec<TestValidator> = (0..3).map(|_| make_test_validator(1000)).collect();
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
+
+        let refs: Vec<&TestValidator> = tvs.iter().collect();
+        let mut header = make_finalized_header(1, &refs);
+        // Forge the signature
+        header.aggregate_signature = vec![0u8; 96];
+        assert!(
+            verifier.verify_finalized_header(&header).is_err(),
+            "forged BLS signature must be rejected"
+        );
+    }
+
+    #[test]
     fn test_state_root_updates() {
-        let validators = vec![make_validator(1, 1000)];
-        let mut verifier = LightClientVerifier::new(validators.clone());
+        let tvs = vec![make_test_validator(1000)];
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
 
         assert_eq!(verifier.finalized_state_root(), H256::zero());
 
-        let h = make_finalized_header(1, &validators);
+        let refs: Vec<&TestValidator> = tvs.iter().collect();
+        let h = make_finalized_header(1, &refs);
         verifier.verify_finalized_header(&h).unwrap();
 
         assert_ne!(verifier.finalized_state_root(), H256::zero());

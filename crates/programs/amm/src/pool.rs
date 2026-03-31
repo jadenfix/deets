@@ -107,8 +107,10 @@ impl LiquidityPool {
             return Err("insufficient LP tokens".to_string());
         }
 
-        let amount_a = (lp_tokens * self.reserve_a) / self.lp_token_supply;
-        let amount_b = (lp_tokens * self.reserve_b) / self.lp_token_supply;
+        let amount_a = mul_div(lp_tokens, self.reserve_a, self.lp_token_supply)
+            .map_err(|e| format!("remove_liquidity amount_a: {}", e))?;
+        let amount_b = mul_div(lp_tokens, self.reserve_b, self.lp_token_supply)
+            .map_err(|e| format!("remove_liquidity amount_b: {}", e))?;
 
         if amount_a < min_amount_a || amount_b < min_amount_b {
             return Err("insufficient output amount".to_string());

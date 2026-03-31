@@ -192,12 +192,20 @@ impl JobEscrowState {
         Ok(())
     }
 
-    /// Challenge a result
-    pub fn challenge_job(&mut self, job_id: H256, _challenger: Address) -> Result<(), String> {
+    /// Challenge a result.
+    ///
+    /// Only the job requester can challenge a submitted result.
+    /// This puts the job into Disputed status, preventing automatic verification.
+    pub fn challenge_job(&mut self, job_id: H256, challenger: Address) -> Result<(), String> {
         let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Submitted {
             return Err("cannot challenge job".to_string());
+        }
+
+        // Only the job requester can challenge
+        if challenger != job.requester {
+            return Err("only job requester can challenge".to_string());
         }
 
         job.status = JobStatus::Disputed;

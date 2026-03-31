@@ -116,6 +116,9 @@ pub struct HotStuffConsensus {
     /// Block parent tracking: block_hash → parent_hash
     block_parents: HashMap<H256, H256>,
 
+    /// Block slot tracking: block_hash → slot (for correct finality with empty slots)
+    block_slots: HashMap<H256, Slot>,
+
     /// Locked block (safety: cannot vote for conflicting blocks)
     locked_block: Option<H256>,
     locked_slot: Slot,
@@ -152,6 +155,7 @@ impl HotStuffConsensus {
             qcs: HashMap::new(),
             timeout_votes: HashMap::new(),
             block_parents: HashMap::new(),
+            block_slots: HashMap::new(),
             locked_block: None,
             locked_slot: 0,
             committed_slot: 0,
@@ -207,9 +211,10 @@ impl HotStuffConsensus {
             bail!("not in propose phase");
         }
 
-        // Track parent relationship
+        // Track parent relationship and slot
         self.block_parents
             .insert(block.hash(), block.header.parent_hash);
+        self.block_slots.insert(block.hash(), block.header.slot);
 
         // Validate block extends from our locked block (if any)
         if let Some(locked) = &self.locked_block {
@@ -235,10 +240,11 @@ impl HotStuffConsensus {
     ) -> Result<(Option<AggregatedVote>, Vec<ConsensusAction>)> {
         self.verify_vote(&vote)?;
 
-        // Track parent
+        // Track parent and slot
         self.block_parents
             .entry(vote.block_hash)
             .or_insert(vote.parent_hash);
+        self.block_slots.entry(vote.block_hash).or_insert(vote.slot);
 
         // Store vote
         let phase_votes = self.votes.entry(vote.phase.clone()).or_default();
@@ -247,7 +253,7 @@ impl HotStuffConsensus {
 
         // Check for quorum
         let stake: u128 = block_votes.iter().map(|v| v.stake).sum();
-        let has_quorum = stake * 3 >= self.total_stake * 2;
+        let has_quorum = crate::has_quorum(stake, self.total_stake);
 
         if !has_quorum {
             return Ok((None, vec![]));
@@ -285,13 +291,16 @@ impl HotStuffConsensus {
                     .copied()
                     .unwrap_or(vote.parent_hash);
 
-                // TODO: vote.slot.checked_sub(1) assumes the parent block is exactly
-                // one slot behind. This does not handle empty/skipped slots where
-                // the parent may be multiple slots back. Ideally we would look up
-                // the parent's actual slot from a block_slots map (like HybridConsensus
-                // does). For now, fall back to slot-1 which is correct when there are
-                // no empty slots.
-                if let Some(parent_slot) = vote.slot.checked_sub(1) {
+                // Look up the parent block's actual slot from block_slots map.
+                // This correctly handles empty/skipped slots where the parent
+                // may be multiple slots back (not just slot-1).
+                let parent_slot = self
+                    .block_slots
+                    .get(&parent_hash)
+                    .copied()
+                    .or_else(|| vote.slot.checked_sub(1)); // fallback for unknown blocks
+
+                if let Some(parent_slot) = parent_slot {
                     // Look for parent block's prevote QC using the PARENT's hash
                     if self
                         .qcs
@@ -355,7 +364,7 @@ impl HotStuffConsensus {
         round_votes.push(tv.clone());
 
         let stake: u128 = round_votes.iter().map(|v| v.stake).sum();
-        if stake * 3 < self.total_stake * 2 {
+        if !crate::has_quorum(stake, self.total_stake) {
             return Ok(None);
         }
 
@@ -494,7 +503,7 @@ impl HotStuffConsensus {
 
     #[allow(dead_code)]
     pub fn has_quorum(&self, stake: u128) -> bool {
-        stake * 3 >= self.total_stake * 2
+        crate::has_quorum(stake, self.total_stake)
     }
 
     pub fn current_slot(&self) -> Slot {

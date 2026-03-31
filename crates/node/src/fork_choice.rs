@@ -24,17 +24,17 @@ impl ForkChoice {
     /// Record a new block candidate for a slot. Returns true if this is a new fork
     /// (competing block for an already-occupied slot).
     pub fn add_block(&mut self, slot: Slot, block_hash: H256) -> bool {
+        // Reject new blocks for finalized slots — finalization is irreversible
+        if self.finalized.contains_key(&slot) {
+            return false;
+        }
+
         let candidates = self.candidates.entry(slot).or_default();
         if candidates.contains(&block_hash) {
             return false; // Already known
         }
         let is_fork = !candidates.is_empty();
         candidates.push(block_hash);
-
-        // If finalized, canonical doesn't change
-        if self.finalized.contains_key(&slot) {
-            return is_fork;
-        }
 
         // Deterministic tiebreak: prefer lower hash (compare raw bytes)
         match self.canonical.entry(slot) {

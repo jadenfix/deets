@@ -49,6 +49,8 @@ pub struct Node {
     broadcast_tx: Option<mpsc::UnboundedSender<OutboundMessage>>,
     /// Collected outbound messages when no broadcast channel is set (for testing).
     outbound_buffer: Vec<OutboundMessage>,
+    /// Consecutive timeout counter for circuit breaker.
+    consecutive_timeouts: u32,
 }
 
 impl Node {
@@ -111,6 +113,7 @@ impl Node {
             receipts: HashMap::new(),
             broadcast_tx: None,
             outbound_buffer: Vec::new(),
+            consecutive_timeouts: 0,
         })
     }
 
@@ -191,13 +194,17 @@ impl Node {
         if let Some(ref tx) = self.broadcast_tx {
             if let Err(e) = tx.send(msg) {
                 // Channel closed — fall back to buffer so message isn't lost
-                println!("WARNING: broadcast channel closed: {e}");
+                eprintln!("WARNING: broadcast channel closed: {e}");
                 if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
                     self.outbound_buffer.push(e.0);
+                } else {
+                    eprintln!("CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
                 }
             }
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
             self.outbound_buffer.push(msg);
+        } else {
+            eprintln!("CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
         }
     }
 
@@ -246,8 +253,17 @@ impl Node {
 
         // Check pacemaker timeout — if no quorum reached, advance to prevent deadlock
         if self.consensus.is_timed_out() {
-            println!("Slot {}: TIMEOUT — advancing via pacemaker", slot);
+            self.consecutive_timeouts += 1;
+            if self.consecutive_timeouts >= 100 {
+                eprintln!(
+                    "CIRCUIT BREAKER: {} consecutive timeouts at slot {} — possible network partition or all peers down",
+                    self.consecutive_timeouts, slot
+                );
+            }
+            println!("Slot {}: TIMEOUT ({} consecutive) — advancing via pacemaker", slot, self.consecutive_timeouts);
             self.consensus.on_timeout();
+        } else {
+            self.consecutive_timeouts = 0;
         }
 
         let metrics = self.poh.tick(Instant::now());
@@ -280,7 +296,7 @@ impl Node {
     /// Process epoch transition: distribute staking rewards.
     fn process_epoch_transition(&mut self, new_epoch: u64) -> Result<()> {
         let slot = self.consensus.current_slot();
-        let total_supply = 1_000_000_000_000_000u128; // TODO: track dynamically
+        let total_supply = self.chain_config.tokens.swr_initial_supply;
         let emission = self.emission_schedule.epoch_emission(slot, total_supply);
 
         if emission == 0 {
@@ -577,12 +593,32 @@ impl Node {
         self.ledger.commit_overlay(overlay)?;
 
         // Fork choice: track this block and check for competing forks
+        let old_canonical = self.fork_choice.canonical_block(block.header.slot);
         let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
+        let new_canonical = self.fork_choice.canonical_block(block.header.slot);
+
         if is_fork {
             println!(
                 "  FORK detected at slot {}: multiple blocks",
                 block.header.slot
             );
+
+            // If canonical choice changed, reorg mempool nonces for affected senders
+            if old_canonical != new_canonical {
+                if let Some(old_hash) = old_canonical {
+                    if let Some(old_block) = self.blocks_by_hash.get(&old_hash) {
+                        let reverted_txs = old_block.transactions.clone();
+                        let mut new_nonces = std::collections::HashMap::new();
+                        for tx in &block.transactions {
+                            new_nonces
+                                .entry(tx.sender)
+                                .and_modify(|n: &mut u64| *n = (*n).max(tx.nonce + 1))
+                                .or_insert(tx.nonce + 1);
+                        }
+                        self.mempool.reorg(reverted_txs, new_nonces);
+                    }
+                }
+            }
         }
 
         // Store block
@@ -590,7 +626,7 @@ impl Node {
         self.blocks_by_hash.insert(block_hash, block.clone());
 
         // Only update tip if this is the canonical choice
-        if self.fork_choice.canonical_block(block.header.slot) == Some(block_hash) {
+        if new_canonical == Some(block_hash) {
             self.latest_block_hash = block_hash;
             self.latest_block_slot = Some(block.header.slot);
         }
@@ -785,17 +821,29 @@ pub fn compute_transactions_root(txs: &[Transaction]) -> H256 {
 }
 
 /// Compute the Merkle root of a list of receipts.
-/// NOTE: Must be called BEFORE receipts are mutated with block_hash/slot
-/// to ensure deterministic roots across nodes.
+///
+/// Uses only the deterministic fields (tx_hash, status, gas_used, logs, state_root)
+/// and excludes block_hash/slot which are set AFTER root computation. This ensures
+/// the root is consistent regardless of when it's computed.
 pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
     if receipts.is_empty() {
         return H256::zero();
     }
     let mut hasher = Sha256::new();
     for receipt in receipts {
-        let receipt_bytes = bincode::serialize(receipt).unwrap_or_default();
-        let receipt_hash = Sha256::digest(&receipt_bytes);
-        hasher.update(&receipt_hash);
+        // Hash only deterministic fields to avoid non-determinism from
+        // block_hash/slot being set after root computation.
+        let mut receipt_hasher = Sha256::new();
+        receipt_hasher.update(receipt.tx_hash.as_bytes());
+        receipt_hasher.update(
+            &bincode::serialize(&receipt.status).unwrap_or_default(),
+        );
+        receipt_hasher.update(&receipt.gas_used.to_le_bytes());
+        receipt_hasher.update(
+            &bincode::serialize(&receipt.logs).unwrap_or_default(),
+        );
+        receipt_hasher.update(receipt.state_root.as_bytes());
+        hasher.update(&receipt_hasher.finalize());
     }
     H256::from_slice(&hasher.finalize()).unwrap()
 }

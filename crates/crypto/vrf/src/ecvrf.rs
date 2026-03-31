@@ -329,13 +329,63 @@ pub fn check_leader_eligibility(
     output_value < threshold
 }
 
+/// Multiply two u128 values and return the result as (high, low) u128 pair (256-bit).
+fn mul_u128_wide(a: u128, b: u128) -> (u128, u128) {
+    let a_lo = a as u64 as u128;
+    let a_hi = a >> 64;
+    let b_lo = b as u64 as u128;
+    let b_hi = b >> 64;
+
+    let lo_lo = a_lo * b_lo;
+    let hi_lo = a_hi * b_lo;
+    let lo_hi = a_lo * b_hi;
+    let hi_hi = a_hi * b_hi;
+
+    let mid = (lo_lo >> 64) + (hi_lo as u64 as u128) + (lo_hi as u64 as u128);
+    let carry = (mid >> 64) + (hi_lo >> 64) + (lo_hi >> 64);
+
+    let low = (lo_lo as u64 as u128) | (mid << 64);
+    let high = hi_hi + carry;
+    (high, low)
+}
+
+/// Compare two 256-bit values: (a_hi, a_lo) < (b_hi, b_lo)
+fn lt_u256(a: (u128, u128), b: (u128, u128)) -> bool {
+    if a.0 != b.0 {
+        a.0 < b.0
+    } else {
+        a.1 < b.1
+    }
+}
+
+/// Multiply a 256-bit value (hi, lo) by a u128 scalar, returning a 256-bit result.
+/// Overflow beyond 256 bits saturates to (u128::MAX, u128::MAX).
+fn mul_u256_by_u128(val: (u128, u128), scalar: u128) -> (u128, u128) {
+    // low * scalar
+    let (lo_hi, lo_lo) = mul_u128_wide(val.1, scalar);
+    // high * scalar
+    let (hi_hi, hi_lo) = mul_u128_wide(val.0, scalar);
+
+    if hi_hi > 0 {
+        return (u128::MAX, u128::MAX); // overflow, saturate
+    }
+
+    let new_hi = hi_lo.checked_add(lo_hi);
+    match new_hi {
+        Some(h) => (h, lo_lo),
+        None => (u128::MAX, u128::MAX), // overflow, saturate
+    }
+}
+
 /// Check leader eligibility using integer-only arithmetic (deterministic across platforms).
 ///
 /// tau is represented as a fraction: tau_numerator / tau_denominator
 /// (e.g., tau=0.8 → numerator=4, denominator=5)
 ///
-/// Eligible if: vrf_value * total_stake * tau_denominator < tau_numerator * stake * 2^64
-/// Rearranged to avoid overflow where possible.
+/// Eligible if: vrf_value / 2^64 < (tau_numerator / tau_denominator) * (stake / total_stake)
+/// Rearranged: vrf_value * total_stake * tau_denominator < tau_numerator * stake * 2^64
+///
+/// Uses 256-bit arithmetic to avoid overflow at high stake values.
 pub fn check_leader_eligibility_integer(
     vrf_output: &[u8; 32],
     stake: u128,
@@ -351,17 +401,21 @@ pub fn check_leader_eligibility_integer(
     bytes.copy_from_slice(&vrf_output[..8]);
     let vrf_value = u64::from_le_bytes(bytes) as u128;
 
-    // eligible if: vrf_value / u64::MAX < tau * stake / total_stake
-    // Rearranged: vrf_value * total_stake * tau_denominator < tau_numerator * stake * (u64::MAX as u128 + 1)
-    // Use saturating arithmetic to avoid overflow
-    let lhs = vrf_value
-        .saturating_mul(total_stake)
-        .saturating_mul(tau_denominator);
-    let rhs = tau_numerator
-        .saturating_mul(stake)
-        .saturating_mul(u64::MAX as u128 + 1);
+    // LHS = vrf_value * total_stake * tau_denominator (256-bit)
+    let lhs_step1 = mul_u128_wide(vrf_value, total_stake);
+    let lhs = mul_u256_by_u128(lhs_step1, tau_denominator);
 
-    lhs < rhs
+    // RHS = tau_numerator * stake * 2^64 (256-bit)
+    // Multiplying by 2^64 is just shifting left by 64 bits
+    let rhs_step1 = mul_u128_wide(tau_numerator, stake);
+    // Shift (hi, lo) left by 64: new_hi = (old_hi << 64) | (old_lo >> 64), new_lo = old_lo << 64
+    let rhs = if rhs_step1.0 >> 64 != 0 {
+        (u128::MAX, u128::MAX) // overflow on shift
+    } else {
+        ((rhs_step1.0 << 64) | (rhs_step1.1 >> 64), rhs_step1.1 << 64)
+    };
+
+    lt_u256(lhs, rhs)
 }
 
 #[cfg(test)]

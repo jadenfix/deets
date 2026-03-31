@@ -60,6 +60,9 @@ pub struct Proposal {
     pub end_slot: u64,
     pub execution_slot: Option<u64>,
     pub voters: HashMap<Address, bool>, // address -> voted_for
+    /// Snapshot of effective voting power at proposal creation time.
+    /// Prevents flash-delegation attacks where power is moved after proposal starts.
+    pub power_snapshot: HashMap<Address, u128>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,6 +130,9 @@ impl GovernanceState {
             end_slot: current_slot + self.voting_period_slots,
             execution_slot: None,
             voters: HashMap::new(),
+            // Snapshot effective voting power at proposal creation to prevent
+            // flash-delegation attacks (delegate→vote→undelegate→vote-again).
+            power_snapshot: self.effective_power.clone(),
         };
 
         self.proposals.insert(proposal_id, proposal);
@@ -162,10 +168,11 @@ impl GovernanceState {
             return Err("already voted".to_string());
         }
 
-        // Get effective voting power (includes delegated power)
-        let power = self.effective_power.get(&voter).copied().unwrap_or(0);
+        // Use the power snapshot from proposal creation time to prevent
+        // flash-delegation attacks (delegate→vote→undelegate→vote-again).
+        let power = proposal.power_snapshot.get(&voter).copied().unwrap_or(0);
         if power == 0 {
-            return Err("no voting power".to_string());
+            return Err("no voting power (at proposal creation time)".to_string());
         }
 
         // Record vote (1x conviction by default)
@@ -678,6 +685,7 @@ mod tests {
             end_slot: 1000 + state.voting_period_slots,
             execution_slot: None,
             voters: HashMap::new(),
+            power_snapshot: state.effective_power.clone(),
         };
         state.proposals.insert(proposal_id, proposal);
 

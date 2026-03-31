@@ -67,6 +67,29 @@ pub trait ConsensusEngine: Send + Sync {
     fn on_timeout(&mut self) {}
 }
 
+/// Check if `voted_stake` represents a 2/3 quorum of `total_stake`.
+/// Uses checked arithmetic to avoid overflow when stake values are very large.
+pub fn has_quorum(voted_stake: u128, total_stake: u128) -> bool {
+    if total_stake == 0 {
+        return false;
+    }
+    // voted_stake * 3 >= total_stake * 2
+    // Use checked_mul to prevent overflow
+    match (voted_stake.checked_mul(3), total_stake.checked_mul(2)) {
+        (Some(lhs), Some(rhs)) => lhs >= rhs,
+        // If voted_stake*3 overflows, it's definitely >= total_stake*2
+        // (since voted_stake <= total_stake, total_stake*2 can't overflow if voted_stake*3 does...
+        //  but to be safe, use division fallback)
+        _ => {
+            // Fallback: use division to avoid overflow
+            // voted_stake >= total_stake * 2 / 3
+            // This rounds down, so check with +1 for ceiling
+            let threshold = total_stake / 3 * 2 + if total_stake % 3 > 0 { 1 } else { 0 };
+            voted_stake >= threshold
+        }
+    }
+}
+
 pub mod hotstuff;
 pub mod hybrid;
 pub mod pacemaker;

@@ -16,8 +16,11 @@ export class Transaction {
   readonly writes: string[];
 
   constructor(fields: TransactionFields) {
-    if (!fields.signature || fields.signature.length < 128) {
-      throw new Error("signature must be at least 64 characters");
+    if (!fields.signature || fields.signature.length !== 128) {
+      throw new Error("signature must be exactly 64 bytes (128 hex characters)");
+    }
+    if (!/^[0-9a-fA-F]+$/.test(fields.signature)) {
+      throw new Error("signature must be valid hex");
     }
 
     this.nonce = fields.nonce;
@@ -49,8 +52,14 @@ export class Transaction {
       reads: this.reads,
       writes: this.writes,
     };
+    // Sort keys for deterministic serialization (matches Python SDK's sort_keys=True)
+    const sortedKeys = Object.keys(forHash).sort();
+    const sorted: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      sorted[key] = (forHash as Record<string, unknown>)[key];
+    }
     const hash = createHash("sha256")
-      .update(JSON.stringify(forHash))
+      .update(JSON.stringify(sorted))
       .digest("hex");
     return `0x${hash}`;
   }

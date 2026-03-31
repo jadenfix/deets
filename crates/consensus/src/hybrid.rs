@@ -361,8 +361,21 @@ impl HybridConsensus {
             }
         }
 
-        // Deduplicate: one vote per validator per (slot, phase, block)
+        // Bound vote storage: limit unique block hashes per (slot, phase) to prevent
+        // memory exhaustion from adversarial blocks. Validators can propose at most
+        // validator_count blocks, so 2x that is generous.
+        let max_block_hashes_per_phase = self.validators.len() * 2;
+        let existing_hashes: usize = self
+            .votes
+            .keys()
+            .filter(|(s, p, _)| *s == vote.slot && *p == self.current_phase)
+            .count();
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
+        if !self.votes.contains_key(&key) && existing_hashes >= max_block_hashes_per_phase {
+            bail!("too many block candidates for slot {} (limit: {})", vote.slot, max_block_hashes_per_phase);
+        }
+
+        // Deduplicate: one vote per validator per (slot, phase, block)
         let votes_map = self.votes.entry(key.clone()).or_default();
         if votes_map.contains_key(&voter_addr) {
             return Ok(None);
@@ -371,7 +384,7 @@ impl HybridConsensus {
 
         // Check for quorum (2/3+ stake)
         let voted_stake: u128 = votes_map.values().map(|v| v.stake).sum();
-        let has_quorum = voted_stake * 3 >= self.total_stake * 2;
+        let has_quorum = crate::has_quorum(voted_stake, self.total_stake);
 
         if has_quorum {
             // Single-validator fast path
@@ -622,8 +635,11 @@ impl ConsensusEngine for HybridConsensus {
 
     fn on_timeout(&mut self) {
         self.pacemaker.on_timeout();
-        // Advance phase to prevent deadlock
-        self.advance_phase();
+        // On timeout, reset to Propose phase for the next slot.
+        // Simply advancing one phase would leave the node in a stale phase
+        // (e.g., Precommit→Commit with no precommit QC), breaking liveness.
+        self.current_phase = Phase::Propose;
+        self.votes.clear();
     }
 }
 

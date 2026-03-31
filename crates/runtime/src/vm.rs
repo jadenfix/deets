@@ -185,11 +185,15 @@ impl WasmVm {
              key_len: i32,
              val_ptr: i32|
              -> i32 {
-                // Charge fuel for host function call
-                // Charge fuel for storage_read
-                if let Ok(fuel) = caller.get_fuel() {
-                    if fuel < 200 { return -1; }
-                    let _ = caller.set_fuel(fuel - 200);
+                // Charge fuel for storage_read (200 fuel units)
+                match caller.get_fuel() {
+                    Ok(fuel) if fuel >= 200 => {
+                        if caller.set_fuel(fuel - 200).is_err() {
+                            return -1; // Fuel deduction failed
+                        }
+                    }
+                    Ok(_) => return -1, // Insufficient fuel
+                    Err(_) => return -1, // Fuel system unavailable
                 }
 
                 let memory = match caller.get_export("memory") {
@@ -244,9 +248,14 @@ impl WasmVm {
                 // Charge fuel for host function call (base + per-byte)
                 let val_cost = (val_len as u64).checked_mul(20).unwrap_or(u64::MAX);
                 let fuel_cost = 5000u64.saturating_add(val_cost);
-                if let Ok(fuel) = caller.get_fuel() {
-                    if fuel < fuel_cost { return -1; }
-                    let _ = caller.set_fuel(fuel - fuel_cost);
+                match caller.get_fuel() {
+                    Ok(fuel) if fuel >= fuel_cost => {
+                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                            return -1;
+                        }
+                    }
+                    Ok(_) => return -1,
+                    Err(_) => return -1,
                 }
 
                 let memory = match caller.get_export("memory") {
@@ -290,9 +299,14 @@ impl WasmVm {
                 // Charge fuel for host function call
                 let log_byte_cost = (data_len as u64).checked_mul(8).unwrap_or(u64::MAX);
                 let fuel_cost = 375u64.saturating_add(log_byte_cost);
-                if let Ok(fuel) = caller.get_fuel() {
-                    if fuel < fuel_cost { return -1; }
-                    let _ = caller.set_fuel(fuel - fuel_cost);
+                match caller.get_fuel() {
+                    Ok(fuel) if fuel >= fuel_cost => {
+                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                            return -1;
+                        }
+                    }
+                    Ok(_) => return -1,
+                    Err(_) => return -1,
                 }
 
                 let memory = match caller.get_export("memory") {
