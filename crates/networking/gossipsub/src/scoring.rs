@@ -60,6 +60,21 @@ impl PeerScores {
     pub fn score(&self, peer: &PeerId) -> f64 {
         self.scores.get(peer).map(|s| s.score).unwrap_or(0.0)
     }
+
+    /// Remove a peer's score entry (e.g., on disconnect).
+    pub fn remove_peer(&mut self, peer: &PeerId) {
+        self.scores.remove(peer);
+    }
+
+    /// Number of tracked peers.
+    pub fn len(&self) -> usize {
+        self.scores.len()
+    }
+
+    /// Returns true if no peers are tracked.
+    pub fn is_empty(&self) -> bool {
+        self.scores.is_empty()
+    }
 }
 
 #[cfg(test)]
