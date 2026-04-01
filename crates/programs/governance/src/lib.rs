@@ -209,6 +209,12 @@ impl GovernanceState {
 
         // Check quorum
         let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
+        if self.quorum_percentage > 100 {
+            return Err(format!(
+                "quorum_percentage {} exceeds 100 — governance is permanently frozen",
+                self.quorum_percentage
+            ));
+        }
         let quorum_threshold =
             self.total_voting_power.saturating_mul(self.quorum_percentage as u128) / 100;
         if quorum_threshold == 0 {
@@ -894,6 +900,44 @@ mod tests {
             state.total_voting_power >= 500,
             "total_voting_power should not underflow; got {}",
             state.total_voting_power
+        );
+    }
+
+    /// quorum_percentage > 100 must cause finalize_proposal to return an
+    /// error instead of computing a threshold that can never be reached.
+    #[test]
+    fn test_quorum_percentage_above_100_is_rejected() {
+        let mut state = GovernanceState::new();
+        state.total_voting_power = 1_000_000;
+        state.quorum_percentage = 101; // poison the governance config
+
+        // Register a voter so a proposal can be submitted
+        let voter = addr(1);
+        state.voting_power.insert(voter, 1_000_000);
+        state.effective_power.insert(voter, 1_000_000);
+
+        state.min_proposal_stake = 0;
+        let id = H256::from_slice(&[0xABu8; 32]).unwrap();
+        state
+            .propose(
+                id,
+                voter,
+                ProposalType::EmergencyAction {
+                    action: "freeze test".to_string(),
+                },
+                "quorum freeze test".to_string(),
+                0,
+            )
+            .unwrap();
+
+        state.vote(id, voter, true, 1).unwrap();
+
+        // Advance past voting period
+        let result = state.finalize(id, 100_900);
+        assert!(result.is_err(), "quorum_percentage=101 must return Err");
+        assert!(
+            result.unwrap_err().contains("quorum_percentage"),
+            "error should mention quorum_percentage"
         );
     }
 }

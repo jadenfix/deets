@@ -33,8 +33,11 @@ pub struct LiquidityPool {
 }
 
 impl LiquidityPool {
-    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Self {
-        LiquidityPool {
+    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Result<Self, String> {
+        if fee_bps > 10_000 {
+            return Err(format!("fee_bps {} exceeds maximum 10000", fee_bps));
+        }
+        Ok(LiquidityPool {
             pool_id,
             token_a,
             token_b,
@@ -42,7 +45,7 @@ impl LiquidityPool {
             reserve_b: 0,
             lp_token_supply: 0,
             fee_bps,
-        }
+        })
     }
 
     /// Add liquidity to the pool
@@ -337,6 +340,7 @@ mod tests {
             Address::from_slice(&[2u8; 20]).unwrap(),
             30, // 0.3% fee
         )
+        .unwrap()
     }
 
     #[test]
@@ -565,5 +569,23 @@ mod tests {
 
         let price = pool.get_price().unwrap();
         assert!(price > 0);
+    }
+
+    #[test]
+    fn test_new_rejects_fee_bps_above_10000() {
+        let a = Address::from_slice(&[1u8; 20]).unwrap();
+        let b = Address::from_slice(&[2u8; 20]).unwrap();
+
+        // Exactly 10000 (100%) is allowed
+        assert!(LiquidityPool::new(H256::zero(), a, b, 10_000).is_ok());
+
+        // 10001 would cause u32 underflow in get_amount_out → must be rejected
+        let result = LiquidityPool::new(H256::zero(), a, b, 10_001);
+        assert!(result.is_err(), "fee_bps > 10000 must be rejected");
+        assert!(result.unwrap_err().contains("10001"));
+
+        // u32::MAX should also be rejected
+        let result = LiquidityPool::new(H256::zero(), a, b, u32::MAX);
+        assert!(result.is_err(), "fee_bps=u32::MAX must be rejected");
     }
 }

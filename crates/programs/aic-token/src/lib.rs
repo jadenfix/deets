@@ -151,22 +151,27 @@ impl AicTokenState {
         to: Address,
         amount: u128,
     ) -> Result<(), String> {
-        // Check allowance
-        let allowance = self
+        // Verify allowance without holding a mutable borrow across the transfer call.
+        let current = self
             .allowances
-            .get_mut(&from)
-            .and_then(|m| m.get_mut(&caller))
+            .get(&from)
+            .and_then(|m| m.get(&caller))
+            .copied()
             .ok_or("insufficient allowance")?;
 
-        if *allowance < amount {
+        if current < amount {
             return Err("insufficient allowance".to_string());
         }
+        let new_allowance = current.checked_sub(amount).ok_or("allowance underflow")?;
 
-        *allowance = allowance.checked_sub(amount).ok_or("allowance underflow")?;
-
-        // Transfer
+        // Attempt transfer BEFORE committing the allowance deduction so that a
+        // failed transfer does not silently consume the caller's allowance.
         self.transfer(from, to, amount)?;
 
+        // Transfer succeeded — now commit the allowance deduction.
+        if let Some(entry) = self.allowances.get_mut(&from).and_then(|m| m.get_mut(&caller)) {
+            *entry = new_allowance;
+        }
         Ok(())
     }
 
@@ -270,5 +275,26 @@ mod tests {
         assert_eq!(state.balance_of(&addr(2)), 1000);
         assert_eq!(state.balance_of(&addr(4)), 0);
         assert_eq!(state.allowance_of(&addr(2), &addr(3)), 50);
+    }
+
+    /// transfer_from must NOT consume the allowance when the underlying
+    /// transfer fails (e.g. sender has insufficient balance).
+    #[test]
+    fn test_transfer_from_does_not_consume_allowance_on_failed_transfer() {
+        let mut state = AicTokenState::new(addr(1));
+
+        // addr(2) has 0 balance but addr(3) has an allowance of 500
+        state.approve(addr(2), addr(3), 500).unwrap();
+
+        let result = state.transfer_from(addr(3), addr(2), addr(4), 300);
+        assert!(result.is_err(), "transfer should fail: sender has no balance");
+
+        // Allowance must be fully preserved — it was not consumed
+        assert_eq!(
+            state.allowance_of(&addr(2), &addr(3)),
+            500,
+            "allowance must not be consumed when transfer fails"
+        );
+        assert_eq!(state.balance_of(&addr(4)), 0);
     }
 }

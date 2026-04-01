@@ -49,8 +49,11 @@ impl UserOperation {
     }
 
     /// Total gas this operation requires.
-    pub fn total_gas(&self) -> u64 {
-        self.call_gas_limit + self.verification_gas_limit + self.pre_verification_gas
+    /// Returns `None` if the sum of gas fields overflows u64.
+    pub fn total_gas(&self) -> Option<u64> {
+        self.call_gas_limit
+            .checked_add(self.verification_gas_limit)?
+            .checked_add(self.pre_verification_gas)
     }
 
     /// Validate basic structural constraints.
@@ -116,7 +119,12 @@ impl EntryPoint {
                 .get(paymaster)
                 .ok_or_else(|| anyhow::anyhow!("paymaster not registered"))?;
 
-            let required_gas_cost = op.total_gas() as u128 * op.max_fee_per_gas;
+            let total_gas = op
+                .total_gas()
+                .ok_or_else(|| anyhow::anyhow!("gas field overflow in UserOperation"))?;
+            let required_gas_cost = (total_gas as u128)
+                .checked_mul(op.max_fee_per_gas)
+                .ok_or_else(|| anyhow::anyhow!("gas cost overflow: total_gas * max_fee_per_gas"))?;
             if *deposit < required_gas_cost {
                 bail!(
                     "paymaster deposit {} insufficient for gas cost {}",
@@ -154,7 +162,30 @@ impl EntryPoint {
 
                     // Deduct paymaster deposit if applicable
                     if let Some(paymaster) = &op.paymaster {
-                        let cost = op.total_gas() as u128 * op.max_fee_per_gas;
+                        let total_gas = match op.total_gas() {
+                            Some(g) => g,
+                            None => {
+                                results.push(UserOpResult {
+                                    op_hash: op.hash(),
+                                    success: false,
+                                    gas_used: 0,
+                                    error: Some("gas field overflow in UserOperation".to_string()),
+                                });
+                                continue;
+                            }
+                        };
+                        let cost = match (total_gas as u128).checked_mul(op.max_fee_per_gas) {
+                            Some(c) => c,
+                            None => {
+                                results.push(UserOpResult {
+                                    op_hash: op.hash(),
+                                    success: false,
+                                    gas_used: 0,
+                                    error: Some("gas cost overflow".to_string()),
+                                });
+                                continue;
+                            }
+                        };
                         if let Some(deposit) = self.paymasters.get_mut(paymaster) {
                             if *deposit < cost {
                                 return Err(anyhow::anyhow!(
@@ -310,6 +341,13 @@ mod tests {
     #[test]
     fn test_total_gas() {
         let op = make_user_op(1);
-        assert_eq!(op.total_gas(), 100_000 + 50_000 + 10_000);
+        assert_eq!(op.total_gas(), Some(100_000 + 50_000 + 10_000));
+
+        // Overflow case: all fields at u64::MAX / 3 + 1 overflows
+        let mut overflow_op = make_user_op(99);
+        overflow_op.call_gas_limit = u64::MAX / 2;
+        overflow_op.verification_gas_limit = u64::MAX / 2;
+        overflow_op.pre_verification_gas = 2;
+        assert!(overflow_op.total_gas().is_none(), "overflow must return None");
     }
 }
