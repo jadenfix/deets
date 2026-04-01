@@ -765,13 +765,25 @@ impl Node {
             );
         }
 
-        // State root matches — commit overlay to permanent storage
-        self.ledger.commit_overlay(overlay)?;
-
-        // Fork choice: track this block and check for competing forks
+        // Fork choice BEFORE commit: only persist state for canonical blocks.
+        // This prevents orphaned state from non-canonical forks being committed.
         let old_canonical = self.fork_choice.canonical_block(block.header.slot);
         let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
         let new_canonical = self.fork_choice.canonical_block(block.header.slot);
+
+        let is_canonical = new_canonical == Some(block_hash);
+
+        if is_canonical {
+            // Only commit overlay for the canonical block
+            self.ledger.commit_overlay(overlay)?;
+        } else {
+            println!(
+                "  FORK: block {} at slot {} is non-canonical (canonical={}), state NOT committed",
+                block_hash,
+                block.header.slot,
+                new_canonical.map_or("none".to_string(), |h| format!("{h}")),
+            );
+        }
 
         if is_fork {
             println!(
@@ -797,12 +809,12 @@ impl Node {
             }
         }
 
-        // Store block
-        self.blocks_by_slot.insert(block.header.slot, block_hash);
+        // Store block in hash map (all blocks, including non-canonical)
         self.blocks_by_hash.insert(block_hash, block.clone());
 
-        // Only update tip if this is the canonical choice
-        if new_canonical == Some(block_hash) {
+        // Only update slot->hash map and tip for canonical blocks
+        if is_canonical {
+            self.blocks_by_slot.insert(block.header.slot, block_hash);
             self.latest_block_hash = block_hash;
             self.latest_block_slot = Some(block.header.slot);
         }
