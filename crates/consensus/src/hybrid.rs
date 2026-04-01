@@ -41,14 +41,22 @@ pub struct QuorumCertificate {
 /// - BLS for vote aggregation
 pub struct HybridConsensus {
     // === Validator Set ===
+    /// Live validator set (updated by slashing/staking mid-epoch).
     validators: HashMap<Address, ValidatorInfo>,
     total_stake: u128,
+
+    /// Epoch-frozen validator snapshot used for leader election.
+    /// Prevents mid-epoch stake changes from altering leader schedules.
+    epoch_validators: HashMap<Address, ValidatorInfo>,
+    epoch_total_stake: u128,
 
     // === Slot/Epoch Management ===
     current_slot: Slot,
     current_epoch: u64,
     epoch_randomness: H256,
     epoch_length: u64,
+    /// Whether epoch randomness has been updated from a real VRF output this epoch.
+    epoch_randomness_updated: bool,
 
     // === VRF-PoS Parameters ===
     #[allow(dead_code)]
@@ -109,12 +117,15 @@ impl HybridConsensus {
         let tau_denominator = 10000u128;
 
         HybridConsensus {
+            epoch_validators: validators_map.clone(),
+            epoch_total_stake: total_stake,
             validators: validators_map,
             total_stake,
             current_slot: 0,
             current_epoch: 0,
             epoch_randomness: H256::zero(),
             epoch_length,
+            epoch_randomness_updated: false,
             tau,
             tau_numerator,
             tau_denominator,
@@ -142,7 +153,8 @@ impl HybridConsensus {
     pub fn check_my_eligibility(&self, slot: Slot) -> Option<VrfProof> {
         let vrf_keypair = self.my_vrf_keypair.as_ref()?;
         let my_addr = self.my_address.as_ref()?;
-        let validator = self.validators.get(my_addr)?;
+        // Use epoch-frozen validator set for deterministic leader election.
+        let validator = self.epoch_validators.get(my_addr)?;
 
         // Compute VRF input: epoch_randomness || slot
         let mut input = Vec::new();
@@ -152,11 +164,11 @@ impl HybridConsensus {
         // Generate VRF proof
         let proof = vrf_keypair.prove(&input);
 
-        // Check eligibility threshold
+        // Check eligibility threshold against epoch-frozen stake
         if check_leader_eligibility_integer(
             &proof.output,
             validator.stake,
-            self.total_stake,
+            self.epoch_total_stake,
             self.tau_numerator,
             self.tau_denominator,
         ) {
@@ -174,8 +186,9 @@ impl HybridConsensus {
     /// Verify that a block's proposer was eligible
     pub fn verify_leader_eligibility(&self, block: &Block) -> Result<bool> {
         let proposer_addr = block.header.proposer;
+        // Use epoch-frozen validator set for verification consistency.
         let validator = self
-            .validators
+            .epoch_validators
             .get(&proposer_addr)
             .ok_or_else(|| anyhow::anyhow!("unknown validator"))?;
 
@@ -201,11 +214,11 @@ impl HybridConsensus {
             return Ok(false);
         }
 
-        // Check eligibility threshold (using deterministic integer arithmetic)
+        // Check eligibility threshold against epoch-frozen stake
         Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
-            self.total_stake,
+            self.epoch_total_stake,
             self.tau_numerator,
             self.tau_denominator,
         ))
@@ -276,13 +289,24 @@ impl HybridConsensus {
         self.block_slots.insert(block_hash, slot);
     }
 
-    /// Update epoch randomness using a real VRF output from the first block.
-    pub fn update_epoch_randomness(&mut self, block_vrf_output: &[u8; 32]) {
+    /// Update epoch randomness using a real VRF output from the first finalized block.
+    /// Returns true if this was the first update this epoch (idempotent guard).
+    pub fn update_epoch_randomness(&mut self, block_vrf_output: &[u8; 32]) -> bool {
+        if self.epoch_randomness_updated {
+            return false;
+        }
         let mut hasher = Sha256::new();
         hasher.update(self.epoch_randomness.as_bytes());
         hasher.update(block_vrf_output);
         hasher.update(self.current_epoch.to_le_bytes());
         self.epoch_randomness = H256::from_slice(&hasher.finalize()).unwrap();
+        self.epoch_randomness_updated = true;
+        true
+    }
+
+    /// Whether epoch randomness has already been updated from a real VRF output.
+    pub fn epoch_randomness_updated(&self) -> bool {
+        self.epoch_randomness_updated
     }
 
     /// Process a vote and check for quorum.
@@ -564,17 +588,23 @@ impl ConsensusEngine for HybridConsensus {
 
         // Check for epoch transition
         if self.current_slot % self.epoch_length == 0 {
-            // Default epoch randomness update (deterministic fallback).
-            // In production, Node calls update_epoch_randomness() with a real VRF output
-            // from the first finalized block of the new epoch, which overrides this.
-            let mut hasher = Sha256::new();
-            hasher.update(self.epoch_randomness.as_bytes());
-            hasher.update(self.current_slot.to_le_bytes());
-            hasher.update(self.current_epoch.to_le_bytes());
-            let new_randomness = hasher.finalize();
-
-            self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
+            // If no real VRF output arrived this epoch, apply deterministic fallback.
+            if !self.epoch_randomness_updated {
+                let mut hasher = Sha256::new();
+                hasher.update(self.epoch_randomness.as_bytes());
+                hasher.update(self.current_slot.to_le_bytes());
+                hasher.update(self.current_epoch.to_le_bytes());
+                let new_randomness = hasher.finalize();
+                self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
+            }
+            self.epoch_randomness_updated = false;
             self.current_epoch += 1;
+
+            // Snapshot the current validator set for the new epoch.
+            // Leader election uses this frozen snapshot so mid-epoch slashing
+            // doesn't retroactively alter the leader schedule.
+            self.epoch_validators = self.validators.clone();
+            self.epoch_total_stake = self.total_stake;
         }
     }
 
@@ -657,8 +687,8 @@ impl ConsensusEngine for HybridConsensus {
         self.block_slots.insert(block_hash, slot);
     }
 
-    fn update_epoch_randomness(&mut self, vrf_output: &[u8; 32]) {
-        HybridConsensus::update_epoch_randomness(self, vrf_output);
+    fn update_epoch_randomness(&mut self, vrf_output: &[u8; 32]) -> bool {
+        HybridConsensus::update_epoch_randomness(self, vrf_output)
     }
 
     fn validator_stake(&self, address: &Address) -> u128 {
@@ -937,16 +967,24 @@ mod tests {
 
         let initial_randomness = consensus.epoch_randomness;
 
-        // Update with VRF output
+        // First update should succeed
         let vrf_output = [42u8; 32];
-        consensus.update_epoch_randomness(&vrf_output);
+        assert!(consensus.update_epoch_randomness(&vrf_output));
 
         assert_ne!(
             consensus.epoch_randomness, initial_randomness,
             "Randomness should change after VRF update"
         );
 
-        // Different VRF output → different randomness
+        // Second update in same epoch should be rejected (idempotent guard)
+        let randomness_after_first = consensus.epoch_randomness;
+        assert!(!consensus.update_epoch_randomness(&[99u8; 32]));
+        assert_eq!(
+            consensus.epoch_randomness, randomness_after_first,
+            "Second update in same epoch should be rejected"
+        );
+
+        // Different VRF output → different randomness (fresh consensus)
         let mut consensus2 = HybridConsensus::new(
             vec![create_test_validator(1000)],
             0.8,
@@ -955,11 +993,100 @@ mod tests {
             None,
             None,
         );
-        consensus2.update_epoch_randomness(&[99u8; 32]);
+        assert!(consensus2.update_epoch_randomness(&[99u8; 32]));
 
         assert_ne!(
             consensus.epoch_randomness, consensus2.epoch_randomness,
             "Different VRF outputs should produce different randomness"
+        );
+    }
+
+    #[test]
+    fn test_epoch_stake_snapshot() {
+        let v1 = create_test_validator(1000);
+        let v1_addr = v1.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 10, None, None, None);
+
+        // Initial epoch snapshot should match live set
+        assert_eq!(consensus.epoch_total_stake, 1000);
+        assert_eq!(
+            consensus.epoch_validators.get(&v1_addr).unwrap().stake,
+            1000
+        );
+
+        // Slash validator mid-epoch (live set changes)
+        consensus.slash_validator(&v1_addr, 5000); // 50% slash
+        assert_eq!(consensus.total_stake, 500);
+        // Epoch snapshot should NOT change mid-epoch
+        assert_eq!(consensus.epoch_total_stake, 1000);
+        assert_eq!(
+            consensus.epoch_validators.get(&v1_addr).unwrap().stake,
+            1000
+        );
+
+        // Advance to epoch boundary (slot 10)
+        for _ in 0..10 {
+            consensus.advance_slot();
+        }
+
+        // Now epoch snapshot should reflect the slashed stake
+        assert_eq!(consensus.epoch_total_stake, 500);
+        assert_eq!(
+            consensus.epoch_validators.get(&v1_addr).unwrap().stake,
+            500
+        );
+    }
+
+    #[test]
+    fn test_epoch_randomness_resets_across_epochs() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 5, None, None, None);
+
+        // Update randomness in epoch 0
+        assert!(consensus.update_epoch_randomness(&[42u8; 32]));
+        assert!(consensus.epoch_randomness_updated());
+
+        // Advance to epoch boundary
+        for _ in 0..5 {
+            consensus.advance_slot();
+        }
+
+        // Flag should be reset for new epoch
+        assert!(!consensus.epoch_randomness_updated());
+        // Should be able to update again
+        assert!(consensus.update_epoch_randomness(&[77u8; 32]));
+        assert!(consensus.epoch_randomness_updated());
+    }
+
+    #[test]
+    fn test_epoch_fallback_randomness_only_when_no_vrf() {
+        let v1 = create_test_validator(1000);
+
+        // Case 1: No VRF update — deterministic fallback applies at epoch boundary
+        let mut c1 = HybridConsensus::new(vec![v1.clone()], 0.8, 5, None, None, None);
+        let r_before = c1.epoch_randomness;
+        for _ in 0..5 {
+            c1.advance_slot();
+        }
+        assert_ne!(c1.epoch_randomness, r_before, "fallback should change randomness");
+
+        // Case 2: VRF update applied — fallback should NOT override at boundary
+        let mut c2 = HybridConsensus::new(vec![v1], 0.8, 5, None, None, None);
+        c2.update_epoch_randomness(&[42u8; 32]);
+        let r_after_vrf = c2.epoch_randomness;
+        for _ in 0..5 {
+            c2.advance_slot();
+        }
+        // The VRF-derived randomness should have been preserved through the boundary
+        // (fallback skipped because epoch_randomness_updated was true).
+        assert_eq!(
+            c2.epoch_randomness, r_after_vrf,
+            "VRF randomness should be preserved — fallback must not override"
+        );
+        // And it should differ from the fallback-only path
+        assert_ne!(
+            c1.epoch_randomness, c2.epoch_randomness,
+            "VRF-seeded and fallback-seeded epochs should diverge"
         );
     }
 

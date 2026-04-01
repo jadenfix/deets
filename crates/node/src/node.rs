@@ -1139,16 +1139,14 @@ impl Node {
             if self.consensus.check_finality(slot) {
                 tracing::info!(slot, "Slot finalized via VRF+HotStuff+BLS");
 
-                // Update epoch randomness ONCE per epoch from the first finalized block
-                // of that epoch to ensure deterministic randomness across all nodes.
-                let finalized_epoch = slot / self.chain_config.chain.epoch_slots;
-                let epoch_start = finalized_epoch * self.chain_config.chain.epoch_slots;
-                if slot == epoch_start {
-                    if let Some(block) = self.get_block_by_slot(slot) {
-                        if block.header.vrf_proof.output != [0u8; 32] {
-                            self.consensus
-                                .update_epoch_randomness(&block.header.vrf_proof.output);
-                        }
+                // Update epoch randomness from the first finalized block in this
+                // epoch that has a non-zero VRF output. The idempotent guard in
+                // update_epoch_randomness() ensures only the first call per epoch
+                // takes effect, so skipped slots don't stall randomness rotation.
+                if let Some(block) = self.get_block_by_slot(slot) {
+                    if block.header.vrf_proof.output != [0u8; 32] {
+                        self.consensus
+                            .update_epoch_randomness(&block.header.vrf_proof.output);
                     }
                 }
 
