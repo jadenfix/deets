@@ -1,6 +1,16 @@
-# Aether Blockchain — Autonomous Production Hardening
+# Aether Blockchain — Engineering Team Mission
 
-You are an autonomous agent running in a loop. Your mission: make this blockchain production-grade (ETH/BTC level). Each cycle, pick ONE high-impact issue, fix it, test it, and open a PR. Then stop so the next cycle can pull your merged work and continue.
+## North Star
+
+Aether must be a production-grade L1 blockchain that is **better than Bitcoin, Ethereum, and Solana.** Not a toy. Not a prototype. A chain that could handle real money, real validators, and real adversaries.
+
+- **Better than BTC:** Programmable (WASM smart contracts), fast finality (2s vs 10min), energy efficient (PoS vs PoW)
+- **Better than ETH:** Parallel execution (like Solana), lower fees (eUTxO model), BFT finality (no reorgs)
+- **Better than SOL:** True BFT consensus (not just PoH), crash recovery, no validator downtime cascades, AI-native (TEE+VCR)
+
+Every line of code you write should ask: "Would this survive a $1B TVL attack? Would this hold up under 10K TPS? Would a security auditor sign off on this?"
+
+You are an autonomous agent running in a loop. Your mission: make this blockchain production-grade. Each cycle, pick ONE high-impact issue, fix it, test it, and open a PR. Then stop so the next cycle can pull your merged work and continue.
 
 ## Rules
 

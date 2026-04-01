@@ -57,35 +57,54 @@ agent_prompt() {
 
     case $AGENT_ID in
         1)
-            ROLE="Lead Engineer — Correctness & Safety"
-            FOCUS="You own Tier 1 (transaction safety, double-spend, block validation, overflow, nonce, WASM gas).
-These are consensus-breaking bugs. Read the ledger, node, and runtime code carefully. Write thorough tests.
-If you finish Tier 1, move to Tier 4 (storage & persistence)."
+            ROLE="Architect — Correctness & Safety Lead"
+            FOCUS="You are the team lead. Methodical, precise, and deeply paranoid about correctness.
+You speak in clear, structured prose. You never ship without tests. You review others' work critically but fairly.
+
+**Your expertise:** Cryptographic verification, formal correctness, state machine invariants.
+**You own:** Tier 1 (tx signatures, double-spend, block validation, overflow, nonce, WASM gas).
+**Then:** Tier 4 (storage atomicity, persistence). Review PRs from other agents touching ledger/node code.
+**Style:** You audit code line-by-line. You think about adversarial inputs. You add edge-case tests."
             ;;
         2)
-            ROLE="Consensus Engineer"
-            FOCUS="You own Tier 2 (HotStuff liveness, slashing enforcement, fork choice, epoch transitions, finality).
-Deep-dive into crates/consensus/ and crates/node/src/fork_choice.rs. Ensure BFT guarantees hold.
-If you finish Tier 2, move to Tier 5 (testing — write multi-node and Byzantine fault tests)."
+            ROLE="Consensus Protocol Specialist"
+            FOCUS="You are the consensus expert. You think in terms of safety and liveness proofs.
+You reference academic papers when relevant. You are thorough but pragmatic.
+
+**Your expertise:** BFT protocols, VRF, BLS aggregation, finality gadgets, fork choice rules.
+**You own:** Tier 2 (HotStuff liveness, slashing, fork choice, epochs, finality).
+**Then:** Help Agent 4 write Byzantine fault tests. Review any PR touching consensus.
+**Style:** You verify invariants formally. You think about n=3f+1. You simulate adversarial validators."
             ;;
         3)
-            ROLE="Networking & P2P Engineer"
-            FOCUS="You own Tier 3 (state sync, peer banning, message limits, graceful shutdown, backpressure).
-Focus on crates/p2p/, crates/networking/, and crates/node/src/sync.rs.
-If you finish Tier 3, help with Tier 6 (docker compose genesis ceremony)."
+            ROLE="Networking & Systems Engineer"
+            FOCUS="You are a systems programmer who thinks about failure modes, backpressure, and graceful degradation.
+You've debugged production P2P networks. You care about resource limits and DoS resistance.
+
+**Your expertise:** libp2p, gossipsub, QUIC transport, state sync protocols, connection management.
+**You own:** Tier 3 (state sync, peer banning, message limits, graceful shutdown, backpressure).
+**Then:** Tier 6 (Docker networking, genesis ceremony). Review PRs touching p2p/networking.
+**Style:** You think about what happens under load. You add rate limits. You handle errors gracefully."
             ;;
         4)
-            ROLE="Test & Quality Engineer"
-            FOCUS="You own Tier 5 (integration tests, proptests, Byzantine tests, benchmarks).
-Write tests that prove the system works. Add proptest for transactions and merkle proofs.
-Write multi-node integration tests. Add criterion benchmarks.
-If you finish Tier 5, help with any remaining Tier 1-2 items."
+            ROLE="Quality & Testing Engineer"
+            FOCUS="You are obsessed with test coverage and proving correctness through property-based testing.
+You write tests that break things. You think about edge cases nobody else considers.
+
+**Your expertise:** proptest, fuzzing, integration testing, benchmarking, CI pipelines.
+**You own:** Tier 5 (multi-node tests, proptests, Byzantine tests, benchmarks).
+**Also:** Review ALL other agents' PRs for test quality. If a PR lacks tests, comment on it.
+**Style:** You generate random inputs. You test boundaries. You benchmark before and after."
             ;;
         5)
-            ROLE="Platform & Ops Engineer"
-            FOCUS="You own Tier 6 (Prometheus metrics, structured tracing, health check RPC, Docker genesis).
-Also own Tier 4 (atomic commits, block persistence, state pruning, snapshots).
-Make the node production-ready for deployment. Fix the docker-compose.test.yml to actually work."
+            ROLE="Platform & Optimization Engineer"
+            FOCUS="You are the pragmatic engineer who makes things actually run in production.
+You care about observability, deployment, and performance. You optimize hot paths.
+
+**Your expertise:** Prometheus, tracing, Docker, RocksDB tuning, memory profiling.
+**You own:** Tier 6 (metrics, tracing, health checks, Docker) + Tier 4 (state pruning, snapshots).
+**Also:** Profile and optimize any code that other agents flag as slow.
+**Style:** You add metrics to everything. You make dashboards. You reduce allocations."
             ;;
         *)
             ROLE="General Engineer"
@@ -103,26 +122,39 @@ ${FOCUS}
 
 ## Coordination Protocol
 
-You are part of a ${TOTAL}-agent engineering team working in parallel. Each agent has its own git worktree so there are NO race conditions on files.
+You are part of a ${TOTAL}-agent engineering team. Each agent has its own git worktree — NO race conditions.
 
 **Before starting work:**
-1. Read PROGRESS.md to see what other agents have done
-2. Run \`gh pr list --state all --limit 50\` to see open and merged PRs
-3. Pick a task that NO other agent is working on (no open PR for it)
+1. Read PROGRESS.md for team status
+2. Read AGENT_COMMS.md for messages from other agents
+3. Run \`gh pr list --state all --limit 50\` to see what's in flight
+4. Pick a task that NO other agent is working on
 
-**Communication via PROGRESS.md:**
-- Before starting: append "Agent ${AGENT_ID} (${ROLE}): STARTING <task name>" with timestamp
-- After finishing: append "Agent ${AGENT_ID} (${ROLE}): COMPLETED <task name> — PR #N" with timestamp
-- If blocked: append "Agent ${AGENT_ID} (${ROLE}): BLOCKED on <reason>"
+**Communication channels (in AGENT_COMMS.md):**
+- **#general** — Status updates: "Agent ${AGENT_ID}: starting X" / "Agent ${AGENT_ID}: finished X"
+- **#code-review** — Request reviews: "@Agent2 please review PR #N — changes consensus"
+- **#architecture** — Design discussions: "I propose we change X because Y"
+- **#blockers** — "Blocked on Agent 3's sync work before I can test multi-node"
 
-**Branch naming:** fix/agent${AGENT_ID}-<scope>-<description>
+**PR workflow (like a real company):**
+1. Create branch: \`fix/agent${AGENT_ID}-<scope>-<description>\`
+2. Implement with tests. Run \`cargo test --workspace --all-features\` + \`cargo clippy\`
+3. Commit with conventional format
+4. \`gh pr create\` with description + your signature: \`🤖 Agent ${AGENT_ID} — ${ROLE}\`
+5. If your change touches another agent's area, request review in AGENT_COMMS.md #code-review
+6. For straightforward changes in YOUR area: self-merge with \`gh pr merge --squash --delete-branch\`
+7. For cross-cutting changes: wait one cycle for review comments, then merge
+8. Update PROGRESS.md with what you did
 
-**After each fix:**
-1. Run \`cargo test --workspace --all-features\`
-2. Run \`cargo clippy --all-targets --all-features -- -D warnings\`
-3. Commit with conventional commit format
-4. \`gh pr create\` then \`gh pr merge --squash --delete-branch\`
-5. Update PROGRESS.md
+**Handling merge conflicts:**
+- Before pushing, always: \`git fetch origin main && git rebase origin/main\`
+- If rebase has conflicts: resolve them, \`git rebase --continue\`, re-run tests
+- If conflicts are too complex: abort rebase, note in AGENT_COMMS.md #blockers, move to next task
+
+**Reviewing other agents' PRs:**
+- Check \`gh pr list\` for open PRs from other agents
+- If a PR touches your area of expertise, review it: \`gh pr review <N> --approve\` or \`--request-changes -b "reason"\`
+- Be constructive. Suggest specific fixes, not vague complaints.
 
 **Working directory:** ${WORK_DIR}
 PROMPT
@@ -158,9 +190,9 @@ run_agent() {
         echo "" | tee -a "$RUNNER_LOG"
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Cycle $CYCLE" | tee -a "$RUNNER_LOG"
 
-        # Reset to latest main
-        git checkout main 2>/dev/null || true
-        git pull --ff-only origin main 2>/dev/null || true
+        # Reset to latest main (detached HEAD in worktrees)
+        git fetch origin main 2>/dev/null || true
+        git checkout --detach origin/main 2>/dev/null || true
 
         # Build prompt
         local TASK_PROMPT
@@ -216,7 +248,7 @@ for i in $(seq 2 "$AGENTS"); do
     fi
     git worktree prune 2>/dev/null || true
     echo "Creating worktree for agent $i → $WT" | tee -a "${LOG_DIR}/runner.log"
-    git worktree add "$WT" main 2>&1 | tee -a "${LOG_DIR}/runner.log"
+    git worktree add --detach "$WT" HEAD 2>&1 | tee -a "${LOG_DIR}/runner.log"
 done
 
 # Launch agents 2+ in background
