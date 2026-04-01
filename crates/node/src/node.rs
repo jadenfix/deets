@@ -4,7 +4,7 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
-use aether_state_storage::{Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
+use aether_state_storage::{database::pruning, Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
     H256,
@@ -368,6 +368,23 @@ impl Node {
                     }
                 }
             }
+        }
+
+        // Prune old blocks and receipts from disk to prevent unbounded DB growth.
+        let retention = self.chain_config.chain.retention_epochs;
+        if retention > 0 && new_epoch > retention {
+            let prune_before_epoch = new_epoch - retention;
+            let prune_before_slot = prune_before_epoch * self.chain_config.chain.epoch_slots;
+            if let Err(e) = pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
+                eprintln!("WARNING: block pruning failed: {e}");
+            }
+            if let Err(e) = pruning::prune_old_receipts(self.ledger.storage(), prune_before_slot) {
+                eprintln!("WARNING: receipt pruning failed: {e}");
+            }
+            println!(
+                "Epoch {}: pruned blocks/receipts before slot {}",
+                new_epoch, prune_before_slot
+            );
         }
 
         Ok(())

@@ -68,6 +68,14 @@ pub struct ChainParams {
     pub block_bytes_max: u64,
     /// Number of slots per epoch.
     pub epoch_slots: u64,
+    /// Number of epochs to retain old blocks and receipts before pruning.
+    /// Set to 0 to disable pruning. Default: 10.
+    #[serde(default = "default_retention_epochs")]
+    pub retention_epochs: u64,
+}
+
+fn default_retention_epochs() -> u64 {
+    10
 }
 
 impl ChainParams {
@@ -346,6 +354,7 @@ impl ChainConfig {
                 slot_ms: 500,
                 block_bytes_max: 2_000_000,
                 epoch_slots: 43_200,
+                retention_epochs: 10,
             },
             consensus: ConsensusParams {
                 tau: 0.8,

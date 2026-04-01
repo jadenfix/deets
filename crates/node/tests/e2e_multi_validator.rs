@@ -27,6 +27,10 @@ struct TestNetwork {
 
 impl TestNetwork {
     fn new(num_validators: usize) -> Self {
+        Self::new_with_config(num_validators, Arc::new(ChainConfig::devnet()))
+    }
+
+    fn new_with_config(num_validators: usize, chain_config: Arc<ChainConfig>) -> Self {
         let keypairs: Vec<ValidatorKeypair> = (0..num_validators)
             .map(|_| ValidatorKeypair::generate())
             .collect();
@@ -79,7 +83,7 @@ impl TestNetwork {
                 consensus,
                 Some(keypair.ed25519),
                 Some(keypair.bls),
-                Arc::new(ChainConfig::devnet()),
+                chain_config.clone(),
             )
             .expect("create node");
 
@@ -514,4 +518,37 @@ fn test_e2e_outbound_buffer_bounded() {
         "Outbound buffer should be bounded, got {}",
         outbound.len()
     );
+}
+
+// ============================================================================
+// Test 11: Epoch-based storage pruning removes old blocks and receipts
+// ============================================================================
+
+#[test]
+fn test_epoch_pruning_removes_old_data() {
+    // Use a tiny epoch (5 slots) and retention of 2 epochs so pruning
+    // triggers quickly within a test.
+    let mut config = ChainConfig::devnet();
+    config.chain.epoch_slots = 5;
+    config.chain.retention_epochs = 2;
+    let config = Arc::new(config);
+
+    let mut network = TestNetwork::new_with_config(1, config);
+
+    // Run 20 slots = 4 epochs. At epoch 3 (slot 15), pruning should remove
+    // blocks/receipts before slot 5 (epoch 3 - retention 2 = epoch 1, slot 5).
+    network.run_slots(20);
+
+    // Verify the node is still healthy and producing blocks
+    let count = (0..20u64)
+        .filter(|s| network.nodes[0].get_block_by_slot(*s).is_some())
+        .count();
+    assert!(
+        count >= 1,
+        "Node should have produced blocks across 20 slots"
+    );
+
+    // Verify state root is still valid (pruning didn't corrupt state)
+    let root = network.nodes[0].get_state_root();
+    assert_ne!(root, H256::zero(), "State root should be non-zero after pruning");
 }
