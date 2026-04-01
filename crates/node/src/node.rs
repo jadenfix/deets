@@ -743,7 +743,11 @@ impl Node {
         }
 
         // Execute transactions SPECULATIVELY (not committed to disk yet)
-        let (receipts, overlay) = self.ledger.apply_block_speculatively(&block.transactions)?;
+        // Use chain_id validation to reject cross-chain replay attacks
+        let (receipts, overlay) = self.ledger.apply_block_speculatively_with_chain_id(
+            &block.transactions,
+            Some(self.chain_config.chain.chain_id_numeric),
+        )?;
 
         // Validate receipts_root matches recomputed receipts
         let computed_receipts_root = compute_receipts_root(&receipts);
