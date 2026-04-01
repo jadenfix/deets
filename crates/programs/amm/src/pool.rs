@@ -1,4 +1,6 @@
 use aether_types::{Address, H256};
+use num_bigint::BigUint;
+use num_traits::{One, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
 /// Constant Product AMM (x * y = k)
@@ -56,10 +58,10 @@ impl LiquidityPool {
 
         let lp_tokens = if self.lp_token_supply == 0 {
             // Initial liquidity mints sqrt(amount_a * amount_b).
-            let liquidity = amount_a
-                .checked_mul(amount_b)
+            let product = BigUint::from(amount_a) * BigUint::from(amount_b);
+            let liquidity = integer_sqrt_biguint(&product)
+                .to_u128()
                 .ok_or("overflow in initial liquidity")?;
-            let liquidity = liquidity.integer_sqrt();
 
             if liquidity < 1000 {
                 return Err("insufficient initial liquidity".to_string());
@@ -259,26 +261,21 @@ fn mul_div(a: u128, b: u128, c: u128) -> Result<u128, String> {
         .ok_or_else(|| "overflow in proportional calculation".to_string())
 }
 
-trait IntegerSqrt {
-    fn integer_sqrt(self) -> Self;
-}
-
-impl IntegerSqrt for u128 {
-    fn integer_sqrt(self) -> Self {
-        if self < 2 {
-            return self;
-        }
-
-        let mut x = self;
-        let mut y = x.div_ceil(2);
-
-        while y < x {
-            x = y;
-            y = (x + self / x) / 2;
-        }
-
-        x
+fn integer_sqrt_biguint(value: &BigUint) -> BigUint {
+    if value < &BigUint::from(2u8) {
+        return value.clone();
     }
+
+    let two = BigUint::from(2u8);
+    let mut x = value.clone();
+    let mut y = (&x + BigUint::one()) / &two;
+
+    while y < x {
+        x = y.clone();
+        y = (&x + value / &x) / &two;
+    }
+
+    x
 }
 
 #[cfg(test)]
@@ -313,6 +310,16 @@ mod tests {
         let lp_tokens = pool.add_liquidity(2_000, 8_000, 0).unwrap();
 
         assert_eq!(lp_tokens, 4_000);
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_handles_large_balanced_values() {
+        let mut pool = test_pool();
+        let amount = 1u128 << 80;
+
+        let lp_tokens = pool.add_liquidity(amount, amount, 0).unwrap();
+
+        assert_eq!(lp_tokens, amount);
     }
 
     #[test]
