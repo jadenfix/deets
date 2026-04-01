@@ -42,8 +42,10 @@ pub struct EmissionSchedule {
 impl EmissionSchedule {
     /// Create from chain config parameters.
     pub fn new(initial_supply: u128, slot_ms: u64, epoch_slots: u64) -> Self {
+        let slot_ms = slot_ms.max(1); // prevent division by zero
+        let epoch_slots = epoch_slots.max(1); // prevent division by zero
         let slots_per_year = (365 * 24 * 3600 * 1000) / slot_ms;
-        let epochs_per_year = slots_per_year / epoch_slots;
+        let epochs_per_year = (slots_per_year / epoch_slots).max(1); // prevent division by zero
         EmissionSchedule {
             initial_supply,
             genesis_slot: 0,
@@ -89,7 +91,10 @@ impl EmissionSchedule {
 
         // annual_emission = total_supply * rate_bps / 10_000
         // epoch_emission = annual_emission / epochs_per_year
-        total_supply.saturating_mul(rate_bps) / (10_000 * self.epochs_per_year as u128)
+        let denominator = 10_000u128
+            .saturating_mul(self.epochs_per_year as u128)
+            .max(1);
+        total_supply.saturating_mul(rate_bps) / denominator
     }
 
     /// Fee distribution: split priority fees between proposer and treasury.

@@ -811,7 +811,11 @@ impl Node {
 
                 // Finalize in fork choice
                 if let Some(&hash) = self.blocks_by_slot.get(&slot) {
-                    self.fork_choice.finalize(slot, hash);
+                    if !self.fork_choice.finalize(slot, hash) {
+                        eprintln!(
+                            "WARN: fork_choice: could not finalize unknown block {hash:?} at slot {slot}"
+                        );
+                    }
                 }
             }
         }

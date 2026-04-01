@@ -249,8 +249,14 @@ impl WasmVm {
              val_len: i32|
              -> i32 {
                 // Charge fuel for host function call (base + per-byte)
-                let val_cost = (val_len as u64).checked_mul(20).unwrap_or(u64::MAX);
-                let fuel_cost = 5000u64.saturating_add(val_cost);
+                let val_cost = match (val_len as u64).checked_mul(20) {
+                    Some(c) => c,
+                    None => return -1, // Value too large, reject
+                };
+                let fuel_cost = match 5000u64.checked_add(val_cost) {
+                    Some(c) => c,
+                    None => return -1, // Cost overflow, reject
+                };
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
                         if caller.set_fuel(fuel - fuel_cost).is_err() {
@@ -285,6 +291,10 @@ impl WasmVm {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
+                const MAX_STORAGE_ENTRIES: usize = 10_000;
+                if state.storage.len() >= MAX_STORAGE_ENTRIES && !state.storage.contains_key(&key) {
+                    return -1; // Storage limit exceeded
+                }
                 state.storage.insert(key, value);
                 0
             },

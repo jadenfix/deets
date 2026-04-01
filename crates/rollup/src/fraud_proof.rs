@@ -28,8 +28,10 @@ pub struct FraudProof {
 
 impl FraudProof {
     pub fn hash(&self) -> H256 {
-        let bytes = bincode::serialize(self).unwrap_or_default();
-        H256::from_slice(&Sha256::digest(&bytes)).unwrap()
+        // bincode::serialize on a valid struct cannot fail;
+        // SHA256 always produces 32 bytes matching H256.
+        let bytes = bincode::serialize(self).expect("FraudProof serialization infallible");
+        H256::from_slice(&Sha256::digest(&bytes)).expect("SHA256 produces 32 bytes")
     }
 }
 

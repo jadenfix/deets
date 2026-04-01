@@ -95,6 +95,9 @@ pub fn compress_message(data: &[u8]) -> Vec<u8> {
     }
 }
 
+/// Maximum decompressed message size (16 MB) to prevent decompression bombs.
+const MAX_DECOMPRESSED_SIZE: usize = 16 * 1024 * 1024;
+
 /// Decompress a P2P message.
 pub fn decompress_message(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     if data.is_empty() {
@@ -102,9 +105,25 @@ pub fn decompress_message(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     }
 
     match data[0] {
-        0x00 => Ok(data[1..].to_vec()),
+        0x00 => {
+            if data.len() - 1 > MAX_DECOMPRESSED_SIZE {
+                anyhow::bail!(
+                    "uncompressed message too large: {} bytes (max {})",
+                    data.len() - 1,
+                    MAX_DECOMPRESSED_SIZE
+                );
+            }
+            Ok(data[1..].to_vec())
+        }
         0x01 => {
             let decompressed = zstd::decode_all(&data[1..])?;
+            if decompressed.len() > MAX_DECOMPRESSED_SIZE {
+                anyhow::bail!(
+                    "decompressed message too large: {} bytes (max {})",
+                    decompressed.len(),
+                    MAX_DECOMPRESSED_SIZE
+                );
+            }
             Ok(decompressed)
         }
         tag => anyhow::bail!("unknown compression tag: {}", tag),

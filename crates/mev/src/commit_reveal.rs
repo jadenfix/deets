@@ -55,12 +55,13 @@ impl CommitRevealPool {
     /// Create a commitment hash for a transaction.
     ///
     /// commitment_hash = SHA-256(serialize(tx) || salt)
-    pub fn create_commitment(tx: &Transaction, salt: &[u8; 32]) -> H256 {
-        let tx_bytes = bincode::serialize(tx).unwrap_or_default();
+    pub fn create_commitment(tx: &Transaction, salt: &[u8; 32]) -> Result<H256> {
+        let tx_bytes = bincode::serialize(tx)
+            .map_err(|e| anyhow::anyhow!("transaction serialization failed: {}", e))?;
         let mut hasher = Sha256::new();
         hasher.update(&tx_bytes);
         hasher.update(salt);
-        H256::from_slice(&hasher.finalize()).unwrap()
+        Ok(H256::from_slice(&hasher.finalize()).expect("SHA256 always produces 32 bytes"))
     }
 
     /// Submit a commitment (commit phase).
@@ -76,7 +77,7 @@ impl CommitRevealPool {
     /// Reveal a transaction that matches a prior commitment (reveal phase).
     pub fn reveal(&mut self, tx: Transaction, salt: [u8; 32], current_slot: u64) -> Result<()> {
         // Compute what the commitment hash should be
-        let expected_hash = Self::create_commitment(&tx, &salt);
+        let expected_hash = Self::create_commitment(&tx, &salt)?;
 
         // Find the matching commitment
         let commitment = self
@@ -173,7 +174,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         // Commit at slot 10
         pool.submit_commitment(TransactionCommitment {
@@ -201,7 +202,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         pool.submit_commitment(TransactionCommitment {
             commitment_hash: hash,
@@ -223,7 +224,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         pool.submit_commitment(TransactionCommitment {
             commitment_hash: hash,
@@ -245,7 +246,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         pool.submit_commitment(TransactionCommitment {
             commitment_hash: hash,
@@ -268,7 +269,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         pool.submit_commitment(TransactionCommitment {
             commitment_hash: hash,
@@ -293,7 +294,7 @@ mod tests {
 
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
-        let hash = CommitRevealPool::create_commitment(&tx, &salt);
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
 
         pool.submit_commitment(TransactionCommitment {
             commitment_hash: hash,
@@ -315,8 +316,8 @@ mod tests {
         let tx = make_tx(1, 0);
         let salt = [42u8; 32];
 
-        let h1 = CommitRevealPool::create_commitment(&tx, &salt);
-        let h2 = CommitRevealPool::create_commitment(&tx, &salt);
+        let h1 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+        let h2 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
         assert_eq!(h1, h2);
     }
 }
