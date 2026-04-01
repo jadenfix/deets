@@ -20,6 +20,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,5 +28,8 @@ WORKDIR /app
 
 COPY --from=builder /build/target/release/aether-node /usr/local/bin/
 RUN mkdir -p /data
+
+ENV AETHER_NODE_DB_PATH=/data
+ENV AETHER_RPC_BIND=0.0.0.0
 
 ENTRYPOINT ["aether-node"]

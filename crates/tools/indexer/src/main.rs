@@ -1,58 +1,81 @@
-use aether_rpc_grpc::FirehoseServer;
-use aether_types::{Block, H256};
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use aether_indexer::PersistentStore;
+use aether_types::Block;
+use anyhow::{bail, Context, Result};
+use reqwest::Client;
+use serde::Deserialize;
+use serde_json::json;
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
-/// In-memory indexed block store.
-/// Production would use Postgres; this provides the structural wiring.
-#[derive(Debug, Default)]
-struct IndexerStore {
-    blocks: HashMap<u64, IndexedBlock>,
-    tx_to_block: HashMap<H256, u64>,
-    latest_slot: u64,
+#[derive(Debug, Deserialize)]
+struct JsonRpcError {
+    message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct IndexedBlock {
-    slot: u64,
-    hash: H256,
-    tx_count: usize,
-    proposer: String,
+#[derive(Debug, Deserialize)]
+struct JsonRpcResponse<T> {
+    result: Option<T>,
+    error: Option<JsonRpcError>,
 }
 
-impl IndexerStore {
-    fn ingest(&mut self, block: &Block) {
-        let indexed = IndexedBlock {
-            slot: block.header.slot,
-            hash: block.hash(),
-            tx_count: block.transactions.len(),
-            proposer: format!("{:?}", block.header.proposer),
+#[derive(Debug, Clone)]
+struct IndexerConfig {
+    rpc_url: String,
+    bind_addr: IpAddr,
+    port: u16,
+    db_path: PathBuf,
+    poll_interval: Duration,
+}
+
+impl IndexerConfig {
+    fn from_env() -> Result<Self> {
+        let rpc_url = std::env::var("INDEXER_RPC_URL")
+            .or_else(|_| std::env::var("RPC_URL"))
+            .unwrap_or_else(|_| "http://127.0.0.1:8545".to_string());
+
+        let bind_addr = std::env::var("INDEXER_BIND")
+            .ok()
+            .map(|value| {
+                value
+                    .parse::<IpAddr>()
+                    .with_context(|| format!("invalid INDEXER_BIND '{}'", value))
+            })
+            .transpose()?
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+        let port = match std::env::var("INDEXER_PORT") {
+            Ok(value) => value
+                .parse::<u16>()
+                .with_context(|| format!("invalid INDEXER_PORT '{}'", value))?,
+            Err(_) => 8081,
         };
 
-        for tx in &block.transactions {
-            self.tx_to_block.insert(tx.hash(), block.header.slot);
-        }
+        let db_path = std::env::var("INDEXER_DB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("./data/indexer"));
 
-        if block.header.slot > self.latest_slot {
-            self.latest_slot = block.header.slot;
-        }
+        let poll_interval = match std::env::var("INDEXER_POLL_INTERVAL_MS") {
+            Ok(value) => Duration::from_millis(
+                value
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid INDEXER_POLL_INTERVAL_MS '{}'", value))?,
+            ),
+            Err(_) => Duration::from_millis(1_000),
+        };
 
-        self.blocks.insert(block.header.slot, indexed);
-    }
-
-    fn get_block(&self, slot: u64) -> Option<&IndexedBlock> {
-        self.blocks.get(&slot)
-    }
-
-    fn block_count(&self) -> usize {
-        self.blocks.len()
+        Ok(Self {
+            rpc_url,
+            bind_addr,
+            port,
+            db_path,
+            poll_interval,
+        })
     }
 }
 
-/// Minimal HTTP query API for the indexer.
-async fn run_query_api(store: Arc<RwLock<IndexerStore>>, port: u16) -> Result<()> {
+async fn run_query_api(store: Arc<PersistentStore>, bind_addr: IpAddr, port: u16) -> Result<()> {
     use warp::Filter;
 
     let store_filter = {
@@ -63,55 +86,111 @@ async fn run_query_api(store: Arc<RwLock<IndexerStore>>, port: u16) -> Result<()
     let status = warp::get()
         .and(warp::path("status"))
         .and(store_filter.clone())
-        .map(|store: Arc<RwLock<IndexerStore>>| {
-            let s = store.read().unwrap();
-            warp::reply::json(&serde_json::json!({
-                "blocks_indexed": s.block_count(),
-                "latest_slot": s.latest_slot,
-            }))
+        .and_then(|store: Arc<PersistentStore>| async move {
+            let blocks_indexed = store.block_count().unwrap_or(0);
+            let latest_slot = store.latest_slot().unwrap_or(0);
+            Ok::<_, std::convert::Infallible>(warp::reply::json(&json!({
+                "blocks_indexed": blocks_indexed,
+                "latest_slot": latest_slot,
+            })))
         });
 
     let block = warp::get()
         .and(warp::path("block"))
         .and(warp::path::param::<u64>())
-        .and(store_filter.clone())
-        .map(|slot: u64, store: Arc<RwLock<IndexerStore>>| {
-            let s = store.read().unwrap();
-            match s.get_block(slot) {
-                Some(b) => warp::reply::json(&serde_json::to_value(b).unwrap()),
-                None => warp::reply::json(&serde_json::json!(null)),
-            }
+        .and(store_filter)
+        .and_then(|slot: u64, store: Arc<PersistentStore>| async move {
+            let reply = match store.get_block(slot) {
+                Ok(Some(block)) => warp::reply::json(&json!(block)),
+                Ok(None) => warp::reply::json(&json!(null)),
+                Err(err) => warp::reply::json(&json!({ "error": err.to_string() })),
+            };
+            Ok::<_, std::convert::Infallible>(reply)
         });
 
     let routes = status.or(block);
-    println!("Indexer query API on http://127.0.0.1:{port}");
-    warp::serve(routes).run(([127, 0, 0, 1], port)).await;
+    println!("Indexer query API on http://{}:{port}", bind_addr);
+    warp::serve(routes).run((bind_addr, port)).await;
     Ok(())
 }
 
-/// Firehose ingestion loop.
-async fn run_ingestion(firehose: &FirehoseServer, store: Arc<RwLock<IndexerStore>>) -> Result<()> {
-    let mut stream = firehose.subscribe();
-    println!("Indexer ingestion started, waiting for blocks...");
+async fn fetch_block(client: &Client, rpc_url: &str, block_ref: &str) -> Result<Option<Block>> {
+    let response = client
+        .post(rpc_url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "aeth_getBlockByNumber",
+            "params": [block_ref, false],
+            "id": 1,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("failed to reach RPC at {}", rpc_url))?
+        .error_for_status()
+        .with_context(|| format!("RPC returned HTTP error for {}", rpc_url))?;
+
+    let payload: JsonRpcResponse<Option<Block>> = response
+        .json()
+        .await
+        .context("failed to decode RPC block response")?;
+
+    if let Some(error) = payload.error {
+        bail!(
+            "RPC error while fetching block '{}': {}",
+            block_ref,
+            error.message
+        );
+    }
+
+    Ok(payload.result.flatten())
+}
+
+async fn run_ingestion(config: &IndexerConfig, store: Arc<PersistentStore>) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .context("failed to build HTTP client")?;
+
+    let mut next_slot = store.latest_slot().unwrap_or(0);
+    if next_slot > 0 {
+        next_slot += 1;
+    }
+
+    println!("Indexer ingestion polling {}", config.rpc_url);
 
     loop {
-        match stream.next().await {
-            Some(event) => {
-                let slot = event.block.header.slot;
-                let tx_count = event.block.transactions.len();
-                {
-                    let mut s = store.write().unwrap();
-                    s.ingest(&event.block);
+        match fetch_block(&client, &config.rpc_url, "latest").await {
+            Ok(Some(latest_block)) => {
+                let latest_slot = latest_block.header.slot;
+                while next_slot <= latest_slot {
+                    match fetch_block(&client, &config.rpc_url, &next_slot.to_string()).await {
+                        Ok(Some(block)) => {
+                            store.ingest(&block)?;
+                            println!(
+                                "Indexed block slot={} txs={}",
+                                block.header.slot,
+                                block.transactions.len()
+                            );
+                        }
+                        Ok(None) => {
+                            println!("No block at slot {}, skipping", next_slot);
+                        }
+                        Err(err) => {
+                            eprintln!("WARNING: failed to fetch block {}: {}", next_slot, err);
+                            break;
+                        }
+                    }
+                    next_slot += 1;
                 }
-                println!("Indexed block slot={slot} txs={tx_count}");
             }
-            None => {
-                println!("Firehose stream ended");
-                break;
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("WARNING: failed to fetch latest block: {}", err);
             }
         }
+
+        tokio::time::sleep(config.poll_interval).await;
     }
-    Ok(())
 }
 
 #[tokio::main]
@@ -119,21 +198,17 @@ async fn main() -> Result<()> {
     println!("Aether Indexer v0.1.0");
     println!("====================\n");
 
-    let query_port: u16 = std::env::var("INDEXER_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8081);
+    let config = IndexerConfig::from_env()?;
+    let store = Arc::new(PersistentStore::open(&config.db_path)?);
 
-    let store = Arc::new(RwLock::new(IndexerStore::default()));
+    let store_for_ingestion = store.clone();
+    let config_for_ingestion = config.clone();
+    let ingestion =
+        tokio::spawn(
+            async move { run_ingestion(&config_for_ingestion, store_for_ingestion).await },
+        );
 
-    // In production, the firehose would connect to a running node via gRPC.
-    // For now, we create a local server for structural wiring.
-    let firehose = FirehoseServer::new(256);
-
-    let store_clone = store.clone();
-    let ingestion = tokio::spawn(async move { run_ingestion(&firehose, store_clone).await });
-
-    let api = tokio::spawn(run_query_api(store, query_port));
+    let api = tokio::spawn(run_query_api(store, config.bind_addr, config.port));
 
     tokio::select! {
         res = ingestion => { res??; }

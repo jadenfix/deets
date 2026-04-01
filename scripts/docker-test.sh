@@ -9,13 +9,10 @@ docker compose -f docker-compose.test.yml build
 echo "Starting 4-node test network..."
 docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
 
-echo "Waiting for network to initialize..."
-sleep 15
-
 echo "Running integration tests..."
-docker compose -f docker-compose.test.yml run test-runner
+docker compose -f docker-compose.test.yml run --rm test-runner
 
 echo "Stopping test network..."
-docker compose -f docker-compose.test.yml down
+docker compose -f docker-compose.test.yml down -v
 
 echo "Docker tests completed!"

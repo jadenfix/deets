@@ -7,6 +7,7 @@ use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -143,14 +144,20 @@ impl Default for SubscriptionManager {
 pub struct JsonRpcServer<B: RpcBackend> {
     backend: Arc<RwLock<B>>,
     subscriptions: Arc<SubscriptionManager>,
+    bind_addr: IpAddr,
     port: u16,
 }
 
 impl<B: RpcBackend + 'static> JsonRpcServer<B> {
     pub fn new(backend: B, port: u16) -> Self {
+        Self::new_with_bind_addr(backend, "127.0.0.1".parse().expect("valid loopback"), port)
+    }
+
+    pub fn new_with_bind_addr(backend: B, bind_addr: IpAddr, port: u16) -> Self {
         Self {
             backend: Arc::new(RwLock::new(backend)),
             subscriptions: Arc::new(SubscriptionManager::new()),
+            bind_addr,
             port,
         }
     }
@@ -191,9 +198,15 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
 
         let routes = rpc.or(health).or(ws).with(cors);
 
-        println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
-        println!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
-        warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
+        println!(
+            "JSON-RPC server listening on {}:{}",
+            self.bind_addr, self.port
+        );
+        println!(
+            "WebSocket subscriptions on ws://{}:{}/ws",
+            self.bind_addr, self.port
+        );
+        warp::serve(routes).run((self.bind_addr, self.port)).await;
 
         Ok(())
     }

@@ -29,6 +29,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.86.0
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -48,11 +49,11 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked || true
+        run: cargo install cargo-audit --locked
 
       - name: Security audit dependencies
-        run: cargo audit
         continue-on-error: true
+        run: cargo audit
 
   # ──────────────────────────────────────────────
   # Test: unit tests, doc tests, integration tests
@@ -66,6 +67,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.86.0
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -102,6 +105,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.86.0
           targets: ${{ matrix.target }}
 
       - name: Install ARM64 cross-compiler
@@ -166,6 +170,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.86.0
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -178,24 +184,13 @@ jobs:
           restore-keys: ${{ runner.os }}-integration-
 
       - name: Start test network
-        run: docker compose -f docker-compose.test.yml up -d
+        run: docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
 
-      - name: Wait for network readiness
-        run: |
-          echo "Waiting for test network to be ready..."
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.test.yml ps | grep -q "healthy"; then
-              echo "Network ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Warning: network may not be fully ready, proceeding anyway"
-            fi
-            sleep 1
-          done
+      - name: Show test network status
+        run: docker compose -f docker-compose.test.yml ps
 
-      - name: Run integration tests
-        run: cargo test --all-features --workspace
+      - name: Run containerized integration checks
+        run: docker compose -f docker-compose.test.yml run --rm test-runner
 
       - name: Collect logs on failure
         if: failure()
@@ -222,6 +217,8 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.86.0
 
       - name: Cache cargo
         uses: actions/cache@v4

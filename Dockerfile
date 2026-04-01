@@ -25,6 +25,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,7 +40,10 @@ COPY config/genesis.toml /app/config/
 # Create data directory
 RUN mkdir -p /app/data
 
+ENV AETHER_CONFIG_PATH=/app/config/genesis.toml
+ENV AETHER_NODE_DB_PATH=/app/data
+ENV AETHER_RPC_BIND=0.0.0.0
+
 EXPOSE 8545 9000
 
 ENTRYPOINT ["aether-node"]
-CMD ["--config", "/app/config/genesis.toml", "--data-dir", "/app/data"]

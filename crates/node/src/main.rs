@@ -1,4 +1,5 @@
 use std::env;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -13,6 +14,41 @@ use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt,
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc;
+
+fn env_first(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| env::var(key).ok().filter(|value| !value.is_empty()))
+}
+
+fn parse_port(keys: &[&str], default: u16) -> Result<u16> {
+    match env_first(keys) {
+        Some(value) => value
+            .parse::<u16>()
+            .with_context(|| format!("failed to parse {}='{}' as a port", keys[0], value)),
+        None => Ok(default),
+    }
+}
+
+fn normalize_bootstrap_peer(peer: &str) -> Result<String> {
+    if peer.starts_with('/') {
+        return Ok(peer.to_string());
+    }
+
+    let (host, port) = peer
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid peer address '{}': expected host:port", peer))?;
+    let port: u16 = port
+        .parse()
+        .with_context(|| format!("invalid peer port in '{peer}'"))?;
+
+    if host.parse::<Ipv4Addr>().is_ok() {
+        Ok(format!("/ip4/{host}/tcp/{port}"))
+    } else if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        Ok(format!("/ip6/{host}/tcp/{port}"))
+    } else {
+        Ok(format!("/dns4/{host}/tcp/{port}"))
+    }
+}
 
 struct NodeRpcBackend {
     node: Arc<RwLock<Node>>,
@@ -160,7 +196,8 @@ async fn main() -> Result<()> {
     println!("=================\n");
 
     // Load chain configuration
-    let chain_config = if let Ok(config_path) = env::var("AETHER_CONFIG_PATH") {
+    let chain_config = if let Some(config_path) = env_first(&["AETHER_CONFIG_PATH", "CONFIG_PATH"])
+    {
         println!("Loading config from: {config_path}");
         ChainConfig::from_toml_file(Path::new(&config_path))?
     } else {
@@ -179,11 +216,12 @@ async fn main() -> Result<()> {
         chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
     );
 
-    let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
+    let db_path = env_first(&["AETHER_NODE_DB_PATH", "DATA_DIR"])
+        .unwrap_or_else(|| "./data/node1".to_string());
 
     // Load or generate validator keypair
-    let key_path =
-        env::var("AETHER_VALIDATOR_KEY").unwrap_or_else(|_| format!("{}/validator.key", db_path));
+    let key_path = env_first(&["AETHER_VALIDATOR_KEY", "VALIDATOR_KEY"])
+        .unwrap_or_else(|| format!("{}/validator.key", db_path));
     let key_path = std::path::Path::new(&key_path);
 
     let validator_keypair = if key_path.exists() {
@@ -204,7 +242,7 @@ async fn main() -> Result<()> {
 
     // Build consensus from genesis file (multi-validator) or single-validator mode
     let consensus: Box<dyn aether_consensus::ConsensusEngine> =
-        if let Ok(genesis_path) = env::var("AETHER_GENESIS_PATH") {
+        if let Some(genesis_path) = env_first(&["AETHER_GENESIS_PATH", "GENESIS_FILE"]) {
             println!("Loading genesis from: {genesis_path}");
             let genesis_bytes = std::fs::read(&genesis_path)
                 .with_context(|| format!("failed to read genesis file: {genesis_path}"))?;
@@ -241,14 +279,16 @@ async fn main() -> Result<()> {
             )?)
         };
 
-    let rpc_port: u16 = env::var("AETHER_RPC_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8545);
-    let p2p_port: u16 = env::var("AETHER_P2P_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(9000);
+    let rpc_port = parse_port(&["AETHER_RPC_PORT", "RPC_PORT"], 8545)?;
+    let p2p_port = parse_port(&["AETHER_P2P_PORT", "P2P_PORT"], 9000)?;
+    let rpc_bind = env_first(&["AETHER_RPC_BIND", "RPC_BIND"])
+        .map(|value| {
+            value
+                .parse::<IpAddr>()
+                .with_context(|| format!("failed to parse RPC bind address '{}'", value))
+        })
+        .transpose()?
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
 
     let mut node = Node::new(
         db_path,
@@ -279,7 +319,7 @@ async fn main() -> Result<()> {
     let backend = NodeRpcBackend {
         node: shared_node.clone(),
     };
-    let rpc_server = JsonRpcServer::new(backend, rpc_port);
+    let rpc_server = JsonRpcServer::new_with_bind_addr(backend, rpc_bind, rpc_port);
 
     // Initialize P2P network
     let mut p2p = P2PNetwork::new_random()?;
@@ -291,7 +331,7 @@ async fn main() -> Result<()> {
     println!("Peer ID: {}", peer_id);
     println!("Consensus: VRF + HotStuff + BLS");
     println!("P2P listening on 0.0.0.0:{p2p_port}");
-    println!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
+    println!("JSON-RPC listening on {rpc_bind}:{rpc_port}");
     println!(
         "Slot duration: {}ms, Epoch: {} slots",
         chain_config.chain.slot_ms, chain_config.chain.epoch_slots
@@ -299,12 +339,15 @@ async fn main() -> Result<()> {
     println!("Press Ctrl-C to stop.\n");
 
     // Connect to bootstrap peers if specified
-    if let Ok(peers) = env::var("AETHER_BOOTSTRAP_PEERS") {
+    if let Some(peers) = env_first(&["AETHER_BOOTSTRAP_PEERS", "BOOTSTRAP_PEERS", "PEERS"]) {
         for peer_addr in peers.split(',') {
             let addr = peer_addr.trim();
             if !addr.is_empty() {
-                match p2p.connect_peer(addr) {
-                    Ok(()) => println!("Connecting to peer: {addr}"),
+                match normalize_bootstrap_peer(addr).and_then(|multiaddr| {
+                    p2p.connect_peer(&multiaddr)?;
+                    Ok(multiaddr)
+                }) {
+                    Ok(multiaddr) => println!("Connecting to peer: {multiaddr}"),
                     Err(e) => println!("Failed to connect to {addr}: {e}"),
                 }
             }

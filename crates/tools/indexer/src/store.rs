@@ -2,6 +2,7 @@ use aether_types::{Block, H256};
 use anyhow::{Context, Result};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::Path;
 
 const CF_BLOCKS: &str = "indexed_blocks";
@@ -26,6 +27,10 @@ pub struct PersistentStore {
 
 impl PersistentStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        fs::create_dir_all(path)
+            .with_context(|| format!("failed to create indexer database dir {}", path.display()))?;
+
         let mut opts = Options::default();
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
@@ -36,8 +41,8 @@ impl PersistentStore {
             ColumnFamilyDescriptor::new(CF_META, Options::default()),
         ];
 
-        let db =
-            DB::open_cf_descriptors(&opts, path, cfs).context("failed to open indexer database")?;
+        let db = DB::open_cf_descriptors(&opts, path, cfs)
+            .with_context(|| format!("failed to open indexer database {}", path.display()))?;
 
         Ok(PersistentStore { db })
     }
