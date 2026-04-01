@@ -848,6 +848,79 @@ mod tests {
     }
 
     #[test]
+    fn test_nonce_replay_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 10_000).unwrap();
+
+        let make_tx = |nonce: u64| {
+            let mut tx = Transaction {
+                nonce,
+                chain_id: 1,
+                sender: address,
+                sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+                inputs: vec![],
+                outputs: vec![],
+                reads: HashSet::new(),
+                writes: HashSet::new(),
+                program_id: None,
+                data: vec![],
+                gas_limit: 21_000,
+                fee: 100,
+                signature: Signature::from_bytes(vec![]),
+            };
+            let hash = tx.hash();
+            tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+            tx
+        };
+
+        // First tx with nonce 0 succeeds
+        assert!(ledger.apply_transaction(&make_tx(0)).is_ok());
+        // Replaying nonce 0 fails
+        assert!(ledger.apply_transaction(&make_tx(0)).is_err());
+        // Nonce 1 succeeds
+        assert!(ledger.apply_transaction(&make_tx(1)).is_ok());
+        // Skipping to nonce 5 fails
+        assert!(ledger.apply_transaction(&make_tx(5)).is_err());
+    }
+
+    #[test]
+    fn test_insufficient_balance_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 50).unwrap(); // only 50
+
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100, // needs 100 but only has 50
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let err = ledger.apply_transaction(&tx).unwrap_err();
+        assert!(err.to_string().contains("insufficient balance"));
+    }
+
+    #[test]
     fn test_transfer_program_moves_balance() {
         let temp_dir = TempDir::new().unwrap();
         let storage = Storage::open(temp_dir.path()).unwrap();
@@ -896,5 +969,299 @@ mod tests {
         assert_eq!(sender_after.nonce, 1);
         assert_eq!(sender_after.balance, 98_100);
         assert_eq!(recipient_after.balance, 1_500);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_crypto_primitives::Keypair;
+    use aether_types::{PublicKey, Signature, TransferPayload, TRANSFER_PROGRAM_ID};
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+    use tempfile::TempDir;
+
+    /// Helper: create a ledger with a funded account from a keypair.
+    fn setup_ledger_with_balance(keypair: &Keypair, balance: u128) -> (TempDir, Ledger) {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, balance).unwrap();
+        (temp_dir, ledger)
+    }
+
+    /// Helper: build and sign a simple fee-only transaction.
+    fn make_signed_tx(keypair: &Keypair, nonce: u64, fee: u128) -> Transaction {
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let mut tx = Transaction {
+            nonce,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+        tx
+    }
+
+    /// Helper: build and sign a transfer transaction.
+    fn make_transfer_tx(
+        keypair: &Keypair,
+        nonce: u64,
+        fee: u128,
+        recipient: Address,
+        amount: u128,
+    ) -> Transaction {
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let payload = TransferPayload {
+            recipient,
+            amount,
+            memo: None,
+        };
+        let mut tx = Transaction {
+            nonce,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: Some(TRANSFER_PROGRAM_ID),
+            data: bincode::serialize(&payload).unwrap(),
+            gas_limit: 21_000,
+            fee,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+        tx
+    }
+
+    proptest! {
+        /// Property: any fee-only tx with fee <= balance succeeds,
+        /// and the resulting balance equals initial - fee.
+        #[test]
+        fn prop_fee_deduction_conserves_balance(fee in 1u128..=10_000u128) {
+            let keypair = Keypair::generate();
+            let address = Address::from_slice(&keypair.to_address()).unwrap();
+            let initial_balance = 10_000u128;
+            let (_dir, mut ledger) = setup_ledger_with_balance(&keypair, initial_balance);
+
+            let tx = make_signed_tx(&keypair, 0, fee);
+            let receipt = ledger.apply_transaction(&tx).unwrap();
+            prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+
+            let account = ledger.get_account(&address).unwrap().unwrap();
+            prop_assert_eq!(account.balance, initial_balance - fee);
+            prop_assert_eq!(account.nonce, 1);
+        }
+
+        /// Property: fee > balance always fails.
+        #[test]
+        fn prop_overspend_rejected(
+            balance in 0u128..10_000u128,
+            extra in 1u128..10_000u128,
+        ) {
+            let keypair = Keypair::generate();
+            let fee = balance.saturating_add(extra);
+            if fee <= balance {
+                // saturating_add overflowed — skip
+                return Ok(());
+            }
+            let (_dir, mut ledger) = setup_ledger_with_balance(&keypair, balance);
+
+            let tx = make_signed_tx(&keypair, 0, fee);
+            let result = ledger.apply_transaction(&tx);
+            prop_assert!(result.is_err());
+        }
+
+        /// Property: sequential nonces 0..n all succeed; total deducted = n * fee.
+        #[test]
+        fn prop_sequential_nonces(count in 1usize..=20) {
+            let fee = 10u128;
+            let keypair = Keypair::generate();
+            let address = Address::from_slice(&keypair.to_address()).unwrap();
+            let initial = fee * (count as u128) + 1; // +1 so we don't hit exactly 0
+            let (_dir, mut ledger) = setup_ledger_with_balance(&keypair, initial);
+
+            for i in 0..count {
+                let tx = make_signed_tx(&keypair, i as u64, fee);
+                let receipt = ledger.apply_transaction(&tx).unwrap();
+                prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+            }
+
+            let account = ledger.get_account(&address).unwrap().unwrap();
+            prop_assert_eq!(account.nonce, count as u64);
+            prop_assert_eq!(account.balance, initial - fee * count as u128);
+        }
+
+        /// Property: a wrong-nonce transaction is always rejected.
+        #[test]
+        fn prop_wrong_nonce_rejected(wrong_nonce in 1u64..1000) {
+            let keypair = Keypair::generate();
+            let (_dir, mut ledger) = setup_ledger_with_balance(&keypair, 100_000);
+
+            // Account nonce is 0, so any nonce != 0 should fail
+            let tx = make_signed_tx(&keypair, wrong_nonce, 100);
+            let result = ledger.apply_transaction(&tx);
+            prop_assert!(result.is_err());
+            prop_assert!(result.unwrap_err().to_string().contains("nonce"));
+        }
+
+        /// Property: transfer conserves total value (sender_loss == recipient_gain + fee).
+        #[test]
+        fn prop_transfer_conserves_value(
+            transfer_amount in 1u128..=5_000u128,
+            fee in 1u128..=1_000u128,
+        ) {
+            let sender_key = Keypair::generate();
+            let sender_addr = Address::from_slice(&sender_key.to_address()).unwrap();
+            let recipient_addr = Address::from_slice(&[42u8; 20]).unwrap();
+
+            let initial = transfer_amount + fee + 1;
+            let (_dir, mut ledger) = setup_ledger_with_balance(&sender_key, initial);
+
+            let tx = make_transfer_tx(&sender_key, 0, fee, recipient_addr, transfer_amount);
+            let receipt = ledger.apply_transaction(&tx).unwrap();
+            prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+
+            let sender_after = ledger.get_account(&sender_addr).unwrap().unwrap();
+            let recipient_after = ledger.get_account(&recipient_addr).unwrap().unwrap();
+
+            // Value conservation: initial = sender_after + recipient_after + fee
+            prop_assert_eq!(
+                initial,
+                sender_after.balance + recipient_after.balance + fee
+            );
+            prop_assert_eq!(recipient_after.balance, transfer_amount);
+        }
+
+        /// Property: zero-amount transfer is rejected by the transfer program.
+        #[test]
+        fn prop_zero_transfer_rejected(fee in 1u128..=1_000u128) {
+            let sender_key = Keypair::generate();
+            let recipient_addr = Address::from_slice(&[99u8; 20]).unwrap();
+            let (_dir, mut ledger) = setup_ledger_with_balance(&sender_key, 100_000);
+
+            let tx = make_transfer_tx(&sender_key, 0, fee, recipient_addr, 0);
+            let result = ledger.apply_transaction(&tx);
+            prop_assert!(result.is_err());
+            prop_assert!(result.unwrap_err().to_string().contains("greater than zero"));
+        }
+
+        /// Property: self-transfer preserves balance (minus fee).
+        #[test]
+        fn prop_self_transfer(
+            amount in 1u128..=5_000u128,
+            fee in 1u128..=1_000u128,
+        ) {
+            let sender_key = Keypair::generate();
+            let sender_addr = Address::from_slice(&sender_key.to_address()).unwrap();
+            let initial = amount + fee + 1;
+            let (_dir, mut ledger) = setup_ledger_with_balance(&sender_key, initial);
+
+            let tx = make_transfer_tx(&sender_key, 0, fee, sender_addr, amount);
+            let receipt = ledger.apply_transaction(&tx).unwrap();
+            prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+
+            let after = ledger.get_account(&sender_addr).unwrap().unwrap();
+            // Self-transfer: only fee is lost
+            prop_assert_eq!(after.balance, initial - fee);
+        }
+
+        /// Property: state root changes after every successful transaction.
+        #[test]
+        fn prop_state_root_changes_on_success(fee in 1u128..=1_000u128) {
+            let keypair = Keypair::generate();
+            let (_dir, mut ledger) = setup_ledger_with_balance(&keypair, 100_000);
+
+            let root_before = ledger.state_root();
+            let tx = make_signed_tx(&keypair, 0, fee);
+            let receipt = ledger.apply_transaction(&tx).unwrap();
+            prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+
+            let root_after = ledger.state_root();
+            prop_assert_ne!(root_before, root_after);
+        }
+
+        /// Property: batch block processing matches individual processing.
+        #[test]
+        fn prop_batch_matches_individual(count in 1usize..=5) {
+            let fee = 100u128;
+            let keypair = Keypair::generate();
+            let address = Address::from_slice(&keypair.to_address()).unwrap();
+            let initial = fee * (count as u128) + 1000;
+
+            // Process individually
+            let dir1 = TempDir::new().unwrap();
+            let storage1 = Storage::open(dir1.path()).unwrap();
+            let mut ledger1 = Ledger::new(storage1).unwrap();
+            ledger1.seed_account(&address, initial).unwrap();
+
+            let mut txs = Vec::new();
+            for i in 0..count {
+                txs.push(make_signed_tx(&keypair, i as u64, fee));
+            }
+
+            for tx in &txs {
+                ledger1.apply_transaction(tx).unwrap();
+            }
+            let individual_balance = ledger1.get_account(&address).unwrap().unwrap().balance;
+
+            // Process as block batch
+            let dir2 = TempDir::new().unwrap();
+            let storage2 = Storage::open(dir2.path()).unwrap();
+            let mut ledger2 = Ledger::new(storage2).unwrap();
+            ledger2.seed_account(&address, initial).unwrap();
+
+            let receipts = ledger2.apply_block_transactions(&txs).unwrap();
+            let successes = receipts.iter().filter(|r| matches!(r.status, TransactionStatus::Success)).count();
+            prop_assert_eq!(successes, count);
+
+            let batch_balance = ledger2.get_account(&address).unwrap().unwrap().balance;
+            prop_assert_eq!(individual_balance, batch_balance);
+        }
+
+        /// Property: speculative execution produces the same results as direct execution.
+        #[test]
+        fn prop_speculative_matches_direct(fee in 1u128..=1_000u128) {
+            let keypair = Keypair::generate();
+            let address = Address::from_slice(&keypair.to_address()).unwrap();
+            let initial = 100_000u128;
+
+            let tx = make_signed_tx(&keypair, 0, fee);
+
+            // Direct execution
+            let dir1 = TempDir::new().unwrap();
+            let storage1 = Storage::open(dir1.path()).unwrap();
+            let mut ledger1 = Ledger::new(storage1).unwrap();
+            ledger1.seed_account(&address, initial).unwrap();
+            ledger1.apply_transaction(&tx).unwrap();
+            let direct_balance = ledger1.get_account(&address).unwrap().unwrap().balance;
+
+            // Speculative execution + commit
+            let dir2 = TempDir::new().unwrap();
+            let storage2 = Storage::open(dir2.path()).unwrap();
+            let mut ledger2 = Ledger::new(storage2).unwrap();
+            ledger2.seed_account(&address, initial).unwrap();
+            let (receipts, overlay) = ledger2.apply_block_speculatively(&[tx]).unwrap();
+            prop_assert_eq!(receipts.len(), 1);
+            prop_assert!(matches!(receipts[0].status, TransactionStatus::Success));
+            ledger2.commit_overlay(overlay).unwrap();
+            let spec_balance = ledger2.get_account(&address).unwrap().unwrap().balance;
+
+            prop_assert_eq!(direct_balance, spec_balance);
+        }
     }
 }
