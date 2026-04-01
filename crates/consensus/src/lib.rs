@@ -81,6 +81,12 @@ pub trait ConsensusEngine: Send + Sync {
     ) -> Result<()> {
         Ok(()) // Default no-op for engines that don't use BLS
     }
+
+    /// Slash a validator by reducing their stake. Returns the amount slashed.
+    /// Used by the node to enforce detected double-signing or other offenses.
+    fn slash_validator(&mut self, _address: &aether_types::Address, _slash_bps: u128) -> u128 {
+        0 // Default no-op for engines that don't track stake mutably
+    }
 }
 
 /// Check if `voted_stake` represents a 2/3 quorum of `total_stake`.
@@ -117,4 +123,5 @@ pub use hotstuff::{ConsensusAction, HotStuffConsensus, TimeoutCertificate, Timeo
 pub use hybrid::HybridConsensus;
 pub use pacemaker::Pacemaker;
 pub use simple::SimpleConsensus;
+pub use slashing::SlashingDetector;
 pub use vrf_pos::VrfPosConsensus;

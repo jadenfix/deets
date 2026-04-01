@@ -334,6 +334,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "proptest",
  "serde",
  "sha2",
  "tempfile",
