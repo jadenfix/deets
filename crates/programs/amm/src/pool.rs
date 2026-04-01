@@ -55,15 +55,17 @@ impl LiquidityPool {
         }
 
         let lp_tokens = if self.lp_token_supply == 0 {
-            // Initial liquidity: use sqrt(a) * sqrt(b) to avoid u128 overflow in a*b
-            let sqrt_a = amount_a.integer_sqrt();
-            let sqrt_b = amount_b.integer_sqrt();
-            let liquidity = sqrt_a
-                .checked_mul(sqrt_b)
+            // Initial liquidity mints sqrt(amount_a * amount_b).
+            let liquidity = amount_a
+                .checked_mul(amount_b)
                 .ok_or("overflow in initial liquidity")?;
+            let liquidity = liquidity.integer_sqrt();
 
             if liquidity < 1000 {
                 return Err("insufficient initial liquidity".to_string());
+            }
+            if liquidity < min_lp_tokens {
+                return Err("insufficient LP tokens".to_string());
             }
 
             self.reserve_a = amount_a;
@@ -72,13 +74,23 @@ impl LiquidityPool {
 
             liquidity
         } else {
+            let ratio_lhs = amount_a
+                .checked_mul(self.reserve_b)
+                .ok_or("overflow in liquidity ratio check")?;
+            let ratio_rhs = amount_b
+                .checked_mul(self.reserve_a)
+                .ok_or("overflow in liquidity ratio check")?;
+            if ratio_lhs != ratio_rhs {
+                return Err("liquidity must be added at the current pool ratio".to_string());
+            }
+
             // Proportional liquidity — multiply before dividing for precision
             let liquidity_a = mul_div(amount_a, self.lp_token_supply, self.reserve_a)?;
             let liquidity_b = mul_div(amount_b, self.lp_token_supply, self.reserve_b)?;
 
             let liquidity = liquidity_a.min(liquidity_b);
 
-            if liquidity < min_lp_tokens {
+            if liquidity == 0 || liquidity < min_lp_tokens {
                 return Err("insufficient LP tokens".to_string());
             }
 
@@ -295,6 +307,26 @@ mod tests {
     }
 
     #[test]
+    fn test_add_initial_liquidity_uses_exact_product_sqrt() {
+        let mut pool = test_pool();
+
+        let lp_tokens = pool.add_liquidity(2_000, 8_000, 0).unwrap();
+
+        assert_eq!(lp_tokens, 4_000);
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_respects_min_lp_tokens() {
+        let mut pool = test_pool();
+
+        let result = pool.add_liquidity(10_000, 10_000, 10_001);
+        assert!(result.is_err());
+        assert_eq!(pool.reserve_a, 0);
+        assert_eq!(pool.reserve_b, 0);
+        assert_eq!(pool.lp_token_supply, 0);
+    }
+
+    #[test]
     fn test_add_proportional_liquidity() {
         let mut pool = test_pool();
 
@@ -304,6 +336,19 @@ mod tests {
         assert_eq!(pool.reserve_a, 1500);
         assert_eq!(pool.reserve_b, 3000);
         assert!(lp_tokens > 0);
+    }
+
+    #[test]
+    fn test_add_non_proportional_liquidity_rejected() {
+        let mut pool = test_pool();
+
+        pool.add_liquidity(1_000, 2_000, 0).unwrap();
+        let result = pool.add_liquidity(500, 900, 0);
+
+        assert!(result.is_err());
+        assert_eq!(pool.reserve_a, 1_000);
+        assert_eq!(pool.reserve_b, 2_000);
+        assert_eq!(pool.lp_token_supply, 1_414);
     }
 
     #[test]
