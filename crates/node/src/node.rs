@@ -53,7 +53,7 @@ pub struct Node {
     blocks_by_hash: HashMap<H256, Block>,
     receipts: HashMap<H256, TransactionReceipt>,
     /// Channel to send outbound messages (blocks, votes, txs) to P2P layer.
-    broadcast_tx: Option<mpsc::UnboundedSender<OutboundMessage>>,
+    broadcast_tx: Option<mpsc::Sender<OutboundMessage>>,
     /// Collected outbound messages when no broadcast channel is set (for testing).
     outbound_buffer: Vec<OutboundMessage>,
     /// Consecutive timeout counter for circuit breaker.
@@ -204,7 +204,7 @@ impl Node {
     }
 
     /// Set the broadcast channel for outbound P2P messages.
-    pub fn set_broadcast_tx(&mut self, tx: mpsc::UnboundedSender<OutboundMessage>) {
+    pub fn set_broadcast_tx(&mut self, tx: mpsc::Sender<OutboundMessage>) {
         self.broadcast_tx = Some(tx);
     }
 
@@ -215,15 +215,21 @@ impl Node {
 
     fn broadcast(&mut self, msg: OutboundMessage) {
         if let Some(ref tx) = self.broadcast_tx {
-            if let Err(e) = tx.send(msg) {
-                // Channel closed — fall back to buffer so message isn't lost
-                eprintln!("WARNING: broadcast channel closed: {e}");
-                if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
-                    self.outbound_buffer.push(e.0);
-                } else {
+            match tx.try_send(msg) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(msg)) => {
+                    // Backpressure: P2P layer can't keep up, drop the message
                     eprintln!(
-                        "CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message"
+                        "WARNING: P2P outbound channel full, dropping {:?}",
+                        std::mem::discriminant(&msg)
                     );
+                }
+                Err(mpsc::error::TrySendError::Closed(msg)) => {
+                    // Channel closed — fall back to buffer so message isn't lost
+                    eprintln!("WARNING: broadcast channel closed");
+                    if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
+                        self.outbound_buffer.push(msg);
+                    }
                 }
             }
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
