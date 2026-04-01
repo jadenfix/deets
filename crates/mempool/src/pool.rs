@@ -118,15 +118,34 @@ impl Mempool {
 
         let tx_hash = tx.hash();
 
-        // Duplicate / replace-by-fee check
+        // Exact duplicate check
         if self.by_hash.contains_key(&tx_hash) {
-            let existing = self.by_hash.get(&tx_hash).unwrap();
-            if tx.fee <= existing.fee + (existing.fee / 10) {
-                anyhow::bail!("fee not high enough to replace (need 10% increase)");
-            }
-            self.by_hash.remove(&tx_hash);
-            if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
-                sender_txs.remove(&tx_hash);
+            anyhow::bail!("duplicate transaction");
+        }
+
+        // Replace-by-fee: if the same sender already has a tx with the same nonce,
+        // allow replacement only if the new fee is >10% higher.
+        if let Some(existing_hashes) = self.by_sender.get(&tx.sender) {
+            let same_nonce_hash = existing_hashes
+                .iter()
+                .find(|h| self.by_hash.get(h).map_or(false, |t| t.nonce == tx.nonce))
+                .copied();
+            if let Some(old_hash) = same_nonce_hash {
+                let old_fee = self.by_hash[&old_hash].fee;
+                let min_replacement_fee = old_fee.saturating_add(old_fee / 10);
+                if tx.fee <= min_replacement_fee {
+                    anyhow::bail!(
+                        "fee {} not high enough to replace (need >10% above {})",
+                        tx.fee,
+                        old_fee
+                    );
+                }
+                // Remove the old transaction being replaced
+                self.by_hash.remove(&old_hash);
+                if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
+                    sender_txs.remove(&old_hash);
+                }
+                // Stale heap entry is harmless — skipped in get_transactions() via by_hash check
             }
         }
 

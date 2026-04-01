@@ -59,9 +59,13 @@ impl Storage {
         bb.set_bloom_filter(10.0, false); // 10 bits/key, full filter
         bb.set_block_cache(cache);
         bb.set_cache_index_and_filter_blocks(true);
+        bb.set_block_size(16 * 1024); // 16KB blocks — small account records
         opts.set_block_based_table_factory(&bb);
         opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
-        opts.optimize_for_point_lookup(64); // 64MB memtable for point lookups
+        // NOTE: do NOT call optimize_for_point_lookup() here — it internally
+        // replaces the block-based table factory, discarding our bloom filter
+        // and cache settings configured above.
+        opts.set_write_buffer_size(64 * 1024 * 1024); // 64MB memtable
         opts
     }
 
@@ -164,7 +168,7 @@ impl Storage {
         let iter = self
             .db
             .iterator_cf(cf_handle, rocksdb::IteratorMode::Start)
-            .map(|item| item.unwrap());
+            .map(|item| item.expect("RocksDB iterator corruption — database may need repair"));
         Ok(Box::new(iter))
     }
 

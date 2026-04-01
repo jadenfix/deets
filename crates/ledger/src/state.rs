@@ -119,11 +119,23 @@ impl Ledger {
     }
 
     fn apply_transaction_validated(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
-        // Validate UTxO inputs exist
+        // Validate UTxO inputs: existence, ownership, and accumulate total in one pass
+        let mut total_input = 0u128;
         for input in &tx.inputs {
-            if self.get_utxo(input)?.is_none() {
-                bail!("UTxO input not found: {:?}", input);
+            let utxo = self
+                .get_utxo(input)?
+                .ok_or_else(|| anyhow!("UTxO input not found: {:?}", input))?;
+            if utxo.owner != tx.sender {
+                bail!(
+                    "UTxO input {:?} owned by {:?}, not sender {:?}",
+                    input,
+                    utxo.owner,
+                    tx.sender
+                );
             }
+            total_input = total_input
+                .checked_add(utxo.amount)
+                .ok_or_else(|| anyhow!("UTxO total input overflow"))?;
         }
 
         let transfer_payload = self.decode_transfer_payload(tx)?;
@@ -174,18 +186,12 @@ impl Ledger {
             }
         }
 
-        // Process UTxO inputs (consume them)
-        let mut total_input = 0u128;
-        for input in &tx.inputs {
-            if let Some(utxo) = self.get_utxo(input)? {
-                total_input += utxo.amount;
-            }
-        }
-
         // Create new UTxOs (outputs)
         let mut total_output = 0u128;
         for output in &tx.outputs {
-            total_output += output.amount;
+            total_output = total_output
+                .checked_add(output.amount)
+                .ok_or_else(|| anyhow!("UTxO total output overflow"))?;
         }
 
         // Validate UTxO balance
@@ -627,7 +633,8 @@ impl Ledger {
         let value = bincode::serialize(&account)?;
         batch.put(CF_ACCOUNTS, key, value);
         self.storage.write_batch(batch)?;
-        self.recompute_state_root()?;
+        // Incremental update — O(depth) instead of O(n) full recompute
+        self.update_state_root_incremental(&account, None)?;
         Ok(())
     }
 
