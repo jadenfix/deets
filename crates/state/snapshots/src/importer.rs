@@ -45,13 +45,19 @@ pub fn import_snapshot(storage: &Storage, bytes: &[u8]) -> Result<StateSnapshot>
         batch.put(CF_UTXOS, key, value);
     }
 
-    storage.write_batch(batch)?;
-    storage.put(CF_METADATA, b"state_root", snapshot.state_root.as_bytes())?;
-    storage.put(
+    // Include metadata in the same batch for atomicity — a crash between
+    // account writes and metadata writes would leave the DB in an inconsistent state.
+    batch.put(
         CF_METADATA,
-        b"snapshot_height",
-        &snapshot.metadata.height.to_be_bytes(),
-    )?;
+        b"state_root".to_vec(),
+        snapshot.state_root.as_bytes().to_vec(),
+    );
+    batch.put(
+        CF_METADATA,
+        b"snapshot_height".to_vec(),
+        snapshot.metadata.height.to_be_bytes().to_vec(),
+    );
+    storage.write_batch(batch)?;
 
     Ok(snapshot)
 }

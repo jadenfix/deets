@@ -1,6 +1,6 @@
 use aether_types::{Block, H256};
 use anyhow::{Context, Result};
-use rocksdb::{ColumnFamilyDescriptor, Options, DB};
+use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -43,6 +43,9 @@ impl PersistentStore {
     }
 
     /// Ingest a block into the index.
+    ///
+    /// All writes (block record, tx→slot index, latest_slot) are committed in a
+    /// single atomic WriteBatch so a crash mid-ingest cannot leave partial state.
     pub fn ingest(&self, block: &Block) -> Result<()> {
         let indexed = IndexedBlock {
             slot: block.header.slot,
@@ -56,8 +59,10 @@ impl PersistentStore {
         let key = block.header.slot.to_be_bytes();
         let value = bincode::serialize(&indexed)?;
 
+        let mut batch = WriteBatch::default();
+
         let cf = self.db.cf_handle(CF_BLOCKS).context("missing blocks CF")?;
-        self.db.put_cf(cf, key, value)?;
+        batch.put_cf(cf, key, &value);
 
         // Index each transaction hash → slot
         let tx_cf = self
@@ -66,12 +71,15 @@ impl PersistentStore {
             .context("missing tx_index CF")?;
         for tx in &block.transactions {
             let tx_hash = tx.hash();
-            self.db.put_cf(tx_cf, tx_hash.as_bytes(), key)?;
+            batch.put_cf(tx_cf, tx_hash.as_bytes(), &key);
         }
 
         // Update latest slot
         let meta_cf = self.db.cf_handle(CF_META).context("missing meta CF")?;
-        self.db.put_cf(meta_cf, b"latest_slot", key)?;
+        batch.put_cf(meta_cf, b"latest_slot", &key);
+
+        // Atomic commit — all-or-nothing
+        self.db.write(batch)?;
 
         Ok(())
     }
