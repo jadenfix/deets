@@ -145,3 +145,11 @@ and wallet have mock data.
 - All writes confined to repo directory + /tmp/claude-build
 - Docker compose allowed for local test networks only
 - Model: always claude-opus-4-6 with 1M context
+
+## Autonomous Loop Protocol
+
+- You run in a continuous loop via `run-claude.sh`. Each cycle is a fresh claude session.
+- **Memory**: Read `PROGRESS.md` at the start of every cycle. Append to it before finishing. This is your cross-cycle memory.
+- **Self-merge**: After creating a PR, merge it immediately with `gh pr merge --squash --delete-branch`. The next cycle will `git pull` your changes.
+- **Task list**: `TASKS.md` has prioritized tiers. Work top-down. Check `gh pr list --state all` to avoid duplicate work.
+- **One PR per cycle**: Keep changes focused and atomic.

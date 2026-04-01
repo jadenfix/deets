@@ -8,25 +8,20 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/jadenfix/deets/run-claude.sh</string>
+        <string>/Users/jadenfix/deets/deets/run-claude.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/jadenfix/deets</string>
+    <string>/Users/jadenfix/deets/deets</string>
 
     <key>UserName</key>
     <string>jadenfix</string>
 
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>2</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
-
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
 
     <key>EnvironmentVariables</key>
     <dict>
@@ -38,21 +33,22 @@
         <string>1</string>
         <key>CARGO_TERM_COLOR</key>
         <string>never</string>
+        <key>MAX_HOURS</key>
+        <string>10</string>
+        <key>MAX_TURNS</key>
+        <string>200</string>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/jadenfix/deets/.claude/logs/launchd-stdout.log</string>
+    <string>/Users/jadenfix/deets/deets/.claude/logs/launchd-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/jadenfix/deets/.claude/logs/launchd-stderr.log</string>
+    <string>/Users/jadenfix/deets/deets/.claude/logs/launchd-stderr.log</string>
 
     <key>TimeOut</key>
-    <integer>14400</integer>
+    <integer>43200</integer>
 
     <key>Nice</key>
     <integer>5</integer>
-
-    <key>KeepAlive</key>
-    <false/>
 
     <key>AbandonProcessGroup</key>
     <false/>

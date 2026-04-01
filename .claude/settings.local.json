@@ -2,6 +2,8 @@
   "model": "claude-opus-4-6[1m]",
   "permissions": {
     "allow": [
+      "Edit",
+      "Write",
       "Bash(cargo build *)",
       "Bash(cargo test *)",
       "Bash(cargo check *)",
