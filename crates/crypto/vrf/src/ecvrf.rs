@@ -13,7 +13,6 @@ use sha2::{Digest, Sha512};
 ///
 /// Proof structure: Gamma (32 bytes) || c (16 bytes) || s (32 bytes) = 80 bytes
 /// Output: SHA-512(suite_string || 0x03 || Gamma_cofactor) truncated to 32 bytes
-
 const SUITE_STRING: u8 = 0x04; // ECVRF-EDWARDS25519-SHA512-ELL2
 
 #[derive(Clone, Debug)]
@@ -550,6 +549,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_output_to_value_range() {
         let output = [0u8; 32];
         let val = output_to_value(&output);
@@ -561,6 +561,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_leader_eligibility() {
         let low_output = [0u8; 32];
         assert!(check_leader_eligibility(&low_output, 100, 10_000, 0.8));
@@ -609,6 +610,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_stake_proportional_eligibility() {
         // Validator with 50% stake should be eligible ~40% of time (tau=0.8 * 0.5)
         let keypair = VrfKeypair::generate();
@@ -751,9 +753,10 @@ mod proptests {
 
         /// Output values are in [0, 1).
         #[test]
+        #[allow(deprecated)]
         fn output_in_range(output in prop::array::uniform32(any::<u8>())) {
             let val = output_to_value(&output);
-            prop_assert!(val >= 0.0 && val < 1.0, "output_to_value {} not in [0,1)", val);
+            prop_assert!((0.0..1.0).contains(&val), "output_to_value {} not in [0,1)", val);
         }
     }
 }
