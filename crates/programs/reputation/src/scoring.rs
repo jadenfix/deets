@@ -76,12 +76,10 @@ impl ProviderReputation {
     pub fn record_dispute(&mut self, won: bool) {
         if won {
             self.disputes_won += 1;
-            self.score += DISPUTE_WIN_BONUS;
         } else {
             self.disputes_lost += 1;
-            self.score -= DISPUTE_LOSS_PENALTY;
         }
-        self.score = self.score.clamp(SCORE_MIN, MAX_SCORE);
+        self.recompute_score();
     }
 
     pub fn uptime(&self) -> f64 {
@@ -124,14 +122,124 @@ mod tests {
     use super::*;
     use aether_types::H256;
 
+    fn test_addr() -> Address {
+        Address::from_slice(&[1u8; 20]).unwrap()
+    }
+
     #[test]
     fn updates_score_on_success() {
-        let mut rep = ProviderReputation::new(
-            Address::from_slice(&[1u8; 20]).unwrap(),
-            HardwareTier::Standard,
-        );
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
         rep.add_model(H256::zero());
         rep.record_job_success(100.0, 0.99, 10);
         assert!(rep.score > 50.0);
+    }
+
+    #[test]
+    fn record_job_failure_reduces_score() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        let initial = rep.score;
+        rep.record_job_failure(1);
+        assert!(rep.score < initial);
+        assert_eq!(rep.jobs_failed, 1);
+        assert!(rep.score >= SCORE_MIN);
+    }
+
+    #[test]
+    fn record_dispute_loss_penalty_not_doubled() {
+        // This was the bug: record_dispute subtracted penalty immediately,
+        // and recompute_score subtracted it again from counters.
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        // Record a success first so recompute_score has data
+        rep.record_job_success(100.0, 0.99, 1);
+        let score_after_success = rep.score;
+
+        // Lose a dispute
+        rep.record_dispute(false);
+        let score_after_dispute = rep.score;
+        assert!(score_after_dispute < score_after_success);
+
+        // Record another success — score should NOT drop further due to dispute
+        // (the dispute penalty should already be baked into the score)
+        rep.record_job_success(100.0, 0.99, 2);
+        let score_after_second_success = rep.score;
+        // With 2 successes and 1 dispute loss, score should be consistent
+        // and NOT lower than after the dispute (success should help, not hurt)
+        assert!(
+            score_after_second_success >= score_after_dispute,
+            "score dropped after success: {} < {} (double-penalty bug)",
+            score_after_second_success,
+            score_after_dispute
+        );
+    }
+
+    #[test]
+    fn record_dispute_win_bonus() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        rep.record_job_success(100.0, 0.99, 1);
+        let before = rep.score;
+        rep.record_dispute(true);
+        assert!(rep.score > before || rep.score == MAX_SCORE);
+        assert_eq!(rep.disputes_won, 1);
+    }
+
+    #[test]
+    fn score_clamped_to_min() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        // Lose many disputes
+        for _ in 0..20 {
+            rep.record_dispute(false);
+        }
+        assert_eq!(rep.score, SCORE_MIN);
+    }
+
+    #[test]
+    fn score_clamped_to_max() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        for _ in 0..100 {
+            rep.record_dispute(true);
+        }
+        assert_eq!(rep.score, MAX_SCORE);
+    }
+
+    #[test]
+    fn uptime_and_avg_latency() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        assert_eq!(rep.uptime(), 0.0);
+        assert_eq!(rep.avg_latency(), 0.0);
+
+        rep.record_job_success(200.0, 0.95, 1);
+        assert!((rep.avg_latency() - 200.0).abs() < 0.01);
+        assert!((rep.uptime() - 0.95).abs() < 0.01);
+    }
+
+    #[test]
+    fn add_model() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        let m1 = H256([1u8; 32]);
+        let m2 = H256([2u8; 32]);
+        rep.add_model(m1);
+        rep.add_model(m2);
+        rep.add_model(m1); // duplicate
+        assert_eq!(rep.supported_models.len(), 2);
+    }
+
+    #[test]
+    fn mixed_success_failure_dispute_consistency() {
+        let mut rep = ProviderReputation::new(test_addr(), HardwareTier::Standard);
+        rep.record_job_success(100.0, 0.99, 1);
+        rep.record_job_failure(2);
+        rep.record_dispute(false);
+        rep.record_job_success(150.0, 0.95, 3);
+
+        // Score should be deterministic from current state
+        let score1 = rep.score;
+        rep.recompute_score();
+        let score2 = rep.score;
+        assert!(
+            (score1 - score2).abs() < f64::EPSILON,
+            "recompute_score is not idempotent: {} vs {}",
+            score1,
+            score2
+        );
     }
 }
