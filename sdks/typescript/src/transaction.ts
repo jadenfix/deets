@@ -2,6 +2,17 @@ import { createHash } from "node:crypto";
 
 import type { TransactionFields } from "./types.js";
 
+function normalizeSignatureHex(signature: string): string {
+  const normalized = signature.startsWith("0x") ? signature.slice(2) : signature;
+  if (normalized.length !== 128) {
+    throw new Error("signature must be exactly 64 bytes (128 hex characters)");
+  }
+  if (!/^[0-9a-fA-F]+$/.test(normalized)) {
+    throw new Error("signature must be valid hex");
+  }
+  return `0x${normalized.toLowerCase()}`;
+}
+
 export class Transaction {
   readonly nonce: number;
   readonly sender: string;
@@ -16,13 +27,6 @@ export class Transaction {
   readonly writes: string[];
 
   constructor(fields: TransactionFields) {
-    if (!fields.signature || fields.signature.length !== 128) {
-      throw new Error("signature must be exactly 64 bytes (128 hex characters)");
-    }
-    if (!/^[0-9a-fA-F]+$/.test(fields.signature)) {
-      throw new Error("signature must be valid hex");
-    }
-
     this.nonce = fields.nonce;
     this.sender = fields.sender;
     this.senderPublicKey = fields.senderPublicKey;
@@ -31,7 +35,7 @@ export class Transaction {
     this.fee = fields.fee;
     this.gasLimit = fields.gasLimit;
     this.memo = fields.memo;
-    this.signature = fields.signature;
+    this.signature = normalizeSignatureHex(fields.signature);
     this.reads = [fields.sender];
     this.writes =
       fields.sender === fields.recipient
