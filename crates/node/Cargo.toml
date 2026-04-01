@@ -23,6 +23,7 @@ sha2.workspace = true
 
 aether-consensus = { path = "../consensus" }
 aether-ledger = { path = "../ledger" }
+aether-program-staking = { path = "../programs/staking" }
 aether-mempool = { path = "../mempool" }
 aether-types = { path = "../types" }
 aether-crypto-primitives = { path = "../crypto/primitives" }

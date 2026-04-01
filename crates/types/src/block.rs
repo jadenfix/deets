@@ -2,11 +2,29 @@ use crate::primitives::{Address, PublicKey, Slot, H256};
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 
+/// Evidence of validator misbehavior included in a block.
+///
+/// Included by the block proposer; processed during block validation to
+/// reduce the offending validator's stake.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlashEvidence {
+    /// Address of the validator being slashed.
+    pub validator: Address,
+    /// Slash rate in basis points (e.g. 500 = 5%).
+    pub slash_rate_bps: u32,
+    /// Human-readable reason tag (e.g. "double_sign", "surround_vote", "downtime").
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Block {
     pub header: BlockHeader,
     pub transactions: Vec<Transaction>,
     pub aggregated_vote: Option<AggregatedVote>,
+    /// Slash evidence included by the proposer.  Defaults to empty so
+    /// existing serialized blocks deserialize without error.
+    #[serde(default)]
+    pub slash_evidence: Vec<SlashEvidence>,
 }
 
 /// Current protocol version. Incremented on hard forks.
@@ -73,6 +91,7 @@ impl Block {
             },
             transactions,
             aggregated_vote: None,
+            slash_evidence: Vec::new(),
         }
     }
 }
