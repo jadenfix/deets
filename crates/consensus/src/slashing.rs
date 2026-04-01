@@ -115,6 +115,14 @@ pub fn verify_slash_proof(proof: &SlashProof) -> anyhow::Result<()> {
             if proof.vote1.validator != proof.vote2.validator {
                 anyhow::bail!("votes from different validators");
             }
+            // Ensure proof.validator matches the votes — prevents slashing
+            // an innocent validator using another validator's double-sign evidence.
+            if proof.validator != proof.vote1.validator {
+                anyhow::bail!(
+                    "proof.validator does not match vote validator — \
+                     cannot slash a different validator than the one who double-signed"
+                );
+            }
 
             // Verify signatures on both votes
             verify_vote_signature(&proof.vote1)?;
@@ -126,17 +134,29 @@ pub fn verify_slash_proof(proof: &SlashProof) -> anyhow::Result<()> {
             if proof.vote1.validator != proof.vote2.validator {
                 anyhow::bail!("votes from different validators");
             }
+            if proof.validator != proof.vote1.validator {
+                anyhow::bail!(
+                    "proof.validator does not match vote validator — \
+                     cannot slash a different validator than the one who surround-voted"
+                );
+            }
 
             verify_vote_signature(&proof.vote1)?;
             verify_vote_signature(&proof.vote2)?;
 
             Ok(())
         }
-        SlashType::Downtime { missing_slots } => {
-            if *missing_slots < 100 {
-                anyhow::bail!("downtime threshold not met (need >= 100 missing slots)");
-            }
-            Ok(())
+        SlashType::Downtime { .. } => {
+            // Downtime slashing requires on-chain slot attestation records that
+            // prove a validator missed consecutive slots. Without that evidence,
+            // anyone could fabricate a downtime proof to slash any validator.
+            // Until on-chain slot participation tracking is implemented,
+            // downtime slashing via externally-submitted proofs is rejected.
+            anyhow::bail!(
+                "downtime slashing via proof submission is not supported — \
+                 downtime penalties must be assessed by the protocol using \
+                 on-chain slot participation records"
+            );
         }
     }
 }
@@ -158,11 +178,10 @@ fn verify_vote_signature(vote: &Vote) -> anyhow::Result<()> {
 /// Calculate how much stake to slash.
 pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
     match proof_type {
-        SlashType::DoubleSign => (stake * 5) / 100,   // 5%
-        SlashType::SurroundVote => (stake * 5) / 100, // 5% (same as double-sign)
+        SlashType::DoubleSign => stake.saturating_mul(5) / 100,   // 5%
+        SlashType::SurroundVote => stake.saturating_mul(5) / 100, // 5%
         SlashType::Downtime { missing_slots } => {
-            let leak_rate = 1u128;
-            let leak = leak_rate * (*missing_slots as u128);
+            let leak = (*missing_slots as u128).saturating_mul(1);
             std::cmp::min(leak, stake / 10) // Cap at 10%
         }
     }
@@ -400,6 +419,81 @@ mod tests {
         assert_eq!(
             calculate_slash_amount(stake, &SlashType::Downtime { missing_slots: 200 }),
             200
+        );
+        // Downtime cap at 10% of stake
+        assert_eq!(
+            calculate_slash_amount(stake, &SlashType::Downtime { missing_slots: 1_000_000 }),
+            100_000
+        );
+        // Saturating arithmetic: no overflow on max stake
+        // u128::MAX.saturating_mul(5) == u128::MAX, then / 100
+        assert_eq!(
+            calculate_slash_amount(u128::MAX, &SlashType::DoubleSign),
+            u128::MAX / 100
+        );
+    }
+
+    #[test]
+    fn test_downtime_slash_proof_rejected() {
+        // Downtime proofs must be rejected — they require no cryptographic evidence
+        // and could be used to slash any validator by anyone.
+        let kp = BlsKeypair::generate();
+        let vote = make_vote(&kp, 100, 1);
+        let proof = SlashProof {
+            vote1: vote.clone(),
+            vote2: vote,
+            validator: PublicKey::from_bytes(kp.public_key()).to_address(),
+            proof_type: SlashType::Downtime { missing_slots: 200 },
+        };
+        let err = verify_slash_proof(&proof).unwrap_err();
+        assert!(
+            err.to_string().contains("not supported"),
+            "downtime proof should be rejected, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validator_mismatch_double_sign_rejected() {
+        // An attacker submits valid double-sign votes from validator A
+        // but sets proof.validator = B to try to slash B instead.
+        let kp_a = BlsKeypair::generate();
+        let kp_b = BlsKeypair::generate();
+        let vote1 = make_vote(&kp_a, 100, 1);
+        let vote2 = make_vote(&kp_a, 100, 2);
+
+        let proof = SlashProof {
+            vote1,
+            vote2,
+            validator: PublicKey::from_bytes(kp_b.public_key()).to_address(), // victim B
+            proof_type: SlashType::DoubleSign,
+        };
+        let err = verify_slash_proof(&proof).unwrap_err();
+        assert!(
+            err.to_string().contains("does not match"),
+            "validator mismatch should be rejected, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_validator_mismatch_surround_vote_rejected() {
+        let kp_a = BlsKeypair::generate();
+        let kp_b = BlsKeypair::generate();
+        let vote_a = make_vote(&kp_a, 100, 1);
+        let vote_b = make_vote(&kp_a, 50, 2);
+
+        let proof = SlashProof {
+            vote1: vote_a,
+            vote2: vote_b,
+            validator: PublicKey::from_bytes(kp_b.public_key()).to_address(),
+            proof_type: SlashType::SurroundVote,
+        };
+        let err = verify_slash_proof(&proof).unwrap_err();
+        assert!(
+            err.to_string().contains("does not match"),
+            "validator mismatch should be rejected, got: {}",
+            err
         );
     }
 
