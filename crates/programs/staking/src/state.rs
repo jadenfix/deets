@@ -567,7 +567,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         let result = state.slash(test_address(1), 10_001);
