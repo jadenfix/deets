@@ -10,6 +10,7 @@
 // - Full consensus + DA pipeline
 // ============================================================================
 
+use aether_crypto_primitives::Keypair;
 use aether_quic_transport::QuicEndpoint;
 use aether_da_turbine::{TurbineBroadcaster, TurbineReceiver};
 use aether_types::H256;
@@ -93,7 +94,7 @@ async fn test_turbine_block_propagation_with_quic() {
     const PARITY_SHARDS: usize = 2;
 
     // Create broadcaster (leader) and receivers (validators)
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     
     // Prepare block
     let block_data = b"test block payload for propagation".to_vec();
@@ -134,7 +135,7 @@ async fn test_concurrent_block_propagation() {
     const PARITY_SHARDS: usize = 2;
     const NUM_BLOCKS: usize = 10;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     let mut all_shreds = HashMap::new();
     let mut expected_blocks = HashMap::new();
 
@@ -176,7 +177,7 @@ async fn test_da_with_network_latency() {
     const PARITY_SHARDS: usize = 2;
     const LATENCY_MS: u64 = 50; // Simulate 50ms network latency
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     
     let block_data = b"latency test block".to_vec();
     let block_hash = H256::from_slice(&Sha256::digest(&block_data)).unwrap();
@@ -212,7 +213,7 @@ async fn test_da_byzantine_resilience() {
     const PARITY_SHARDS: usize = 4; // Higher redundancy for Byzantine tolerance
     const BYZANTINE_COUNT: usize = 2; // 2 Byzantine validators
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     
     let block_data = b"byzantine test block".to_vec();
     let block_hash = H256::from_slice(&Sha256::digest(&block_data)).unwrap();
@@ -252,7 +253,7 @@ async fn test_full_da_pipeline() {
     let block_hash = H256::from_slice(&Sha256::digest(&block_data)).unwrap();
 
     // Step 2: Leader encodes block with erasure coding
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     let shreds = broadcaster.make_shreds(1, block_hash, &block_data).unwrap();
     
     // Verify shred count
@@ -293,7 +294,7 @@ async fn bench_end_to_end_da_latency() {
     const PARITY_SHARDS: usize = 2;
     const ITERATIONS: usize = 100;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1, Keypair::generate()).unwrap();
     
     let block_data = vec![0u8; 2_000_000]; // 2MB block
     let block_hash = H256::from_slice(&Sha256::digest(&block_data)).unwrap();

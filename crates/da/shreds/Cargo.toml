@@ -13,3 +13,4 @@ anyhow.workspace = true
 sha2.workspace = true
 
 aether-types = { path = "../../types" }
+aether-crypto-primitives = { path = "../../crypto/primitives" }

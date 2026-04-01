@@ -52,6 +52,26 @@ impl Shred {
         hasher.update(payload);
         H256::from_slice(&hasher.finalize()).unwrap()
     }
+
+    /// Canonical message used for Ed25519 signing and verification.
+    /// Includes slot, index, and payload hash to bind the signature
+    /// to a specific shred without including the full payload.
+    pub fn signing_message(&self) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(8 + 4 + 32);
+        msg.extend_from_slice(&self.slot.to_le_bytes());
+        msg.extend_from_slice(&self.index.to_le_bytes());
+        msg.extend_from_slice(self.payload_hash.as_bytes());
+        msg
+    }
+
+    /// Build the signing message from components (for use before Shred construction).
+    pub fn build_signing_message(slot: Slot, index: u32, payload_hash: &H256) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(8 + 4 + 32);
+        msg.extend_from_slice(&slot.to_le_bytes());
+        msg.extend_from_slice(&index.to_le_bytes());
+        msg.extend_from_slice(payload_hash.as_bytes());
+        msg
+    }
 }
 
 #[cfg(test)]
