@@ -146,7 +146,10 @@ impl StakingState {
         };
 
         self.validators.push(validator);
-        self.total_staked = self.total_staked.checked_add(initial_stake).ok_or(StakingError::Overflow)?;
+        self.total_staked = self
+            .total_staked
+            .checked_add(initial_stake)
+            .ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -179,7 +182,10 @@ impl StakingState {
             .iter_mut()
             .find(|d| d.delegator == delegator && d.validator == validator)
         {
-            delegation.amount = delegation.amount.checked_add(amount).ok_or(StakingError::Overflow)?;
+            delegation.amount = delegation
+                .amount
+                .checked_add(amount)
+                .ok_or(StakingError::Overflow)?;
         } else {
             self.delegations.push(Delegation {
                 delegator,
@@ -190,8 +196,14 @@ impl StakingState {
         }
 
         // Update validator
-        self.validators[validator_idx].delegated_amount = self.validators[validator_idx].delegated_amount.checked_add(amount).ok_or(StakingError::Overflow)?;
-        self.total_staked = self.total_staked.checked_add(amount).ok_or(StakingError::Overflow)?;
+        self.validators[validator_idx].delegated_amount = self.validators[validator_idx]
+            .delegated_amount
+            .checked_add(amount)
+            .ok_or(StakingError::Overflow)?;
+        self.total_staked = self
+            .total_staked
+            .checked_add(amount)
+            .ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -223,7 +235,10 @@ impl StakingState {
         }
 
         // Update delegation
-        delegation.amount = delegation.amount.checked_sub(amount).ok_or(StakingError::Overflow)?;
+        delegation.amount = delegation
+            .amount
+            .checked_sub(amount)
+            .ok_or(StakingError::Overflow)?;
 
         // Remove if zero
         if delegation.amount == 0 {
@@ -233,7 +248,10 @@ impl StakingState {
 
         // Update validator
         if let Some(v) = self.validators.iter_mut().find(|v| v.address == validator) {
-            v.delegated_amount = v.delegated_amount.checked_sub(amount).ok_or(StakingError::Overflow)?;
+            v.delegated_amount = v
+                .delegated_amount
+                .checked_sub(amount)
+                .ok_or(StakingError::Overflow)?;
         }
 
         // Add to unbonding queue (7 days = 100,800 slots at 500ms/slot)
@@ -243,7 +261,10 @@ impl StakingState {
             complete_slot: current_slot + 100_800,
         });
 
-        self.total_staked = self.total_staked.checked_sub(amount).ok_or(StakingError::Overflow)?;
+        self.total_staked = self
+            .total_staked
+            .checked_sub(amount)
+            .ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -286,13 +307,17 @@ impl StakingState {
             .ok_or(StakingError::ValidatorNotFound(validator))?;
 
         // Calculate slash amount
-        let slash_amount = self.validators[validator_idx].staked_amount.saturating_mul(slash_rate) / 10000;
+        let slash_amount = self.validators[validator_idx]
+            .staked_amount
+            .saturating_mul(slash_rate)
+            / 10000;
 
         // Apply slash
         self.validators[validator_idx].staked_amount = self.validators[validator_idx]
             .staked_amount
             .saturating_sub(slash_amount);
-        self.validators[validator_idx].slash_count = self.validators[validator_idx].slash_count.saturating_add(1);
+        self.validators[validator_idx].slash_count =
+            self.validators[validator_idx].slash_count.saturating_add(1);
 
         // Slash each delegation entry so validator aggregate, unbonding, and
         // reward distribution all operate on the same post-slash balances.
@@ -304,7 +329,8 @@ impl StakingState {
         {
             let slash = delegation.amount.saturating_mul(slash_rate) / 10000;
             let remaining = delegation.amount.saturating_sub(slash);
-            delegated_slash = delegated_slash.saturating_add(delegation.amount.saturating_sub(remaining));
+            delegated_slash =
+                delegated_slash.saturating_add(delegation.amount.saturating_sub(remaining));
             delegation.amount = remaining;
         }
         self.delegations.retain(|delegation| delegation.amount > 0);
@@ -391,7 +417,8 @@ impl StakingState {
                 let remainder = delegator_pool.saturating_sub(distributed);
                 if remainder > 0 {
                     if let Some(idx) = last_delegation_idx {
-                        self.delegations[idx].amount = self.delegations[idx].amount.saturating_add(remainder);
+                        self.delegations[idx].amount =
+                            self.delegations[idx].amount.saturating_add(remainder);
                     }
                 }
             }

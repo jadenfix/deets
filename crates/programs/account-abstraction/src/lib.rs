@@ -163,7 +163,9 @@ impl EntryPoint {
                                     cost
                                 ));
                             }
-                            *deposit = deposit.checked_sub(cost).ok_or(anyhow::anyhow!("deposit underflow"))?;
+                            *deposit = deposit
+                                .checked_sub(cost)
+                                .ok_or(anyhow::anyhow!("deposit underflow"))?;
                         }
                     }
 

@@ -118,7 +118,9 @@ impl AicTokenState {
             return Err("insufficient balance".to_string());
         }
 
-        *from_balance = from_balance.checked_sub(amount).ok_or("balance underflow")?;
+        *from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or("balance underflow")?;
 
         let to_balance = self.balances.entry(to).or_insert(0);
         *to_balance = to_balance.checked_add(amount).ok_or("overflow")?;

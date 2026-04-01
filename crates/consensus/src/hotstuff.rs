@@ -596,7 +596,10 @@ impl HotStuffConsensus {
         msg.extend_from_slice(tv.highest_qc_hash.as_bytes());
         let valid = aether_crypto_bls::keypair::verify(bls_pk, &msg, &tv.signature)?;
         if !valid {
-            bail!("invalid BLS signature on timeout vote from {:?}", tv.validator);
+            bail!(
+                "invalid BLS signature on timeout vote from {:?}",
+                tv.validator
+            );
         }
         Ok(())
     }
@@ -785,11 +788,7 @@ mod tests {
     /// Helper: create validators with BLS keys and register them.
     fn setup_bls_consensus(
         count: usize,
-    ) -> (
-        HotStuffConsensus,
-        Vec<ValidatorInfo>,
-        Vec<BlsKeypair>,
-    ) {
+    ) -> (HotStuffConsensus, Vec<ValidatorInfo>, Vec<BlsKeypair>) {
         let bls_keys: Vec<BlsKeypair> = (0..count).map(|_| BlsKeypair::generate()).collect();
         let validators: Vec<ValidatorInfo> = bls_keys
             .iter()
@@ -925,7 +924,10 @@ mod tests {
         };
 
         let result = consensus.on_timeout_certificate(&tc);
-        assert!(result.is_err(), "TC with insufficient stake must be rejected");
+        assert!(
+            result.is_err(),
+            "TC with insufficient stake must be rejected"
+        );
     }
 
     #[test]
