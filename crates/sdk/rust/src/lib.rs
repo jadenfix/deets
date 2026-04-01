@@ -31,5 +31,8 @@ pub mod job_builder;
 pub mod transaction_builder;
 pub mod types;
 
+// TODO: Add a custom `AetherSdkError` enum instead of relying on `anyhow::Error`
+// throughout the public API. This would give callers typed error matching.
+
 pub use client::AetherClient;
 pub use job_builder::JobBuilder;

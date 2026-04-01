@@ -4,10 +4,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum StakingError {
-    #[error("insufficient stake: minimum is {min}, got {got}")]
+    #[error("insufficient stake: minimum is 100 SWR (100_000_000 base units), have {got} base units (min={min})")]
     InsufficientStake { min: u128, got: u128 },
     #[error("validator already exists: {0:?}")]
     ValidatorExists(Address),
+    #[error("unauthorized: caller must match validator address")]
+    Unauthorized,
     #[error("validator not found: {0:?}")]
     ValidatorNotFound(Address),
     #[error("validator is not active: {0:?}")]
@@ -96,14 +98,22 @@ impl StakingState {
         }
     }
 
-    /// Register a new validator
+    /// Register a new validator.
+    ///
+    /// `caller` must match `address` to prevent impersonation.
     pub fn register_validator(
         &mut self,
+        caller: Address,
         address: Address,
         initial_stake: u128,
         commission_rate: u16,
         reward_address: Address,
     ) -> Result<(), StakingError> {
+        // Authority check: only the validator itself can register
+        if caller != address {
+            return Err(StakingError::Unauthorized);
+        }
+
         const MIN_STAKE: u128 = 100_000_000; // 100 SWR with 6 decimals
         if initial_stake < MIN_STAKE {
             return Err(StakingError::InsufficientStake {
@@ -240,7 +250,12 @@ impl StakingState {
         completed
     }
 
-    /// Slash a validator for misbehavior
+    /// Slash a validator for misbehavior.
+    ///
+    /// NOTE: `slash_count` increments permanently and jails the validator at 3 slashes,
+    /// but there is currently no `unjail()` mechanism. Once jailed, a validator cannot
+    /// be reactivated. An unjail function (with a cooldown and/or governance vote)
+    /// should be added before mainnet.
     pub fn slash(
         &mut self,
         validator: Address,

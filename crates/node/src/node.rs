@@ -436,7 +436,9 @@ impl Node {
         let transactions_root = compute_transactions_root(&transactions);
         let receipts_root = compute_receipts_root(&receipts);
 
-        let proposer_bytes = self.validator_key.as_ref().unwrap().to_address();
+        let key = self.validator_key.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("validator_key required for block production"))?;
+        let proposer_bytes = key.to_address();
         let proposer = aether_types::Address::from_slice(&proposer_bytes)
             .map_err(|e| anyhow::anyhow!("invalid proposer address: {e}"))?;
 

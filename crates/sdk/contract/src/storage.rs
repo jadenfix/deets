@@ -49,7 +49,7 @@ pub fn storage_delete(key: &[u8]) -> ContractResult<()> {
 /// Clear all mock storage (for test isolation).
 pub fn clear_mock_storage() {
     MOCK_STORAGE.with(|s| {
-        let mut store = s.lock().unwrap();
+        let mut store = s.lock().map_err(|e| ContractError::StorageError(format!("storage lock poisoned: {e}"))).expect("mock storage lock poisoned");
         store.clear();
     });
 }
@@ -58,7 +58,7 @@ pub fn clear_mock_storage() {
 pub fn read_u128(key: &[u8]) -> ContractResult<u128> {
     match storage_read(key)? {
         Some(bytes) if bytes.len() == 16 => {
-            let arr: [u8; 16] = bytes.try_into().unwrap();
+            let arr: [u8; 16] = bytes.try_into().map_err(|_| ContractError::StorageError("invalid u128 encoding: expected 16 bytes".into()))?;
             Ok(u128::from_le_bytes(arr))
         }
         Some(_) => Err(ContractError::StorageError("invalid u128 encoding".into())),

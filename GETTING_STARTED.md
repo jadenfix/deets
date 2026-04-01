@@ -94,6 +94,11 @@ Useful commands:
 
 Inspect logs in `./data/devnet/node*.log`.
 
+**See also:**
+- **Technical Roadmap**: [`trm.md`](./trm.md) - Full 7-phase implementation plan
+- **Architecture**: [`docs/architecture.md`](./docs/architecture.md) - System design
+- **Status**: [`progress.md`](./progress.md) - What's done
+
 ## 5. Run the Docker-Based Test Network
 
 The integration environment used by CI is described in `docker-compose.test.yml`.

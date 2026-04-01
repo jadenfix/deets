@@ -74,7 +74,7 @@ fn resolve_config_path(path: Option<&str>) -> Result<PathBuf> {
         Ok(home.join(".aether").join("config.toml"))
     } else {
         Err(anyhow!(
-            "unable to resolve home directory; pass --config explicitly"
+            "unable to resolve home directory; pass --config explicitly (default: ~/.aether/config.toml)"
         ))
     }
 }

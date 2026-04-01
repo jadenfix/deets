@@ -41,5 +41,8 @@ RUN mkdir -p /app/data
 
 EXPOSE 8545 9000
 
+ENV AETHER_CONFIG_PATH=/app/config/genesis.toml
+ENV AETHER_NODE_DB_PATH=/app/data
+
 ENTRYPOINT ["aether-node"]
 CMD ["--config", "/app/config/genesis.toml", "--data-dir", "/app/data"]

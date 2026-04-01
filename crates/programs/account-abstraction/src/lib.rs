@@ -137,7 +137,14 @@ impl EntryPoint {
                     if let Some(paymaster) = &op.paymaster {
                         let cost = op.total_gas() as u128 * op.max_fee_per_gas;
                         if let Some(deposit) = self.paymasters.get_mut(paymaster) {
-                            *deposit = deposit.saturating_sub(cost);
+                            if *deposit < cost {
+                                return Err(anyhow::anyhow!(
+                                    "insufficient paymaster deposit: have {}, need {}",
+                                    deposit,
+                                    cost
+                                ));
+                            }
+                            *deposit -= cost;
                         }
                     }
 
