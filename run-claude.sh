@@ -2,9 +2,6 @@
 # ============================================================================
 # run-claude.sh — Autonomous engineering team for Aether blockchain
 # ============================================================================
-# Launches N specialized agents, each in its own git worktree, with distinct
-# roles. Agents coordinate via PROGRESS.md and gh pr list. No race conditions.
-#
 # Usage:
 #   AGENTS=5 ./run-claude.sh           # 5-agent engineering team
 #   ./run-claude.sh                    # Single agent (all roles)
@@ -28,23 +25,51 @@ COOLDOWN="${COOLDOWN:-30}"
 AGENTS="${AGENTS:-1}"
 RATE_WAIT="${RATE_WAIT:-300}"
 
+# ── Shared comms directory (filesystem-based, no git needed) ──
+COMMS_DIR="/tmp/aether-comms"
+mkdir -p "$COMMS_DIR"
+
 mkdir -p "$LOG_DIR"
 rm -f "$STOP_FILE"
 
-# ── Environment ──
 export CARGO_TERM_COLOR=never
 export RUST_BACKTRACE=1
 export CARGO_INCREMENTAL=1
 
-# ── Compute deadline ──
 START_EPOCH=$(date +%s)
 MAX_SECONDS=$(awk "BEGIN {printf \"%d\", $MAX_HOURS * 3600}")
 DEADLINE=$((START_EPOCH + MAX_SECONDS))
 
-# ── Agent role definitions ──
-# Each agent gets a specialized prompt focused on their area of expertise.
-# They coordinate through PROGRESS.md (shared memory) and gh pr list.
+# ── Initialize shared comms files ──
+init_comms() {
+    echo "# Agent Communication Board (live, filesystem-based)" > "$COMMS_DIR/general.log"
+    echo "# PR Review Requests" > "$COMMS_DIR/reviews.log"
+    echo "# Architecture Decisions" > "$COMMS_DIR/architecture.log"
+    echo "# Blockers" > "$COMMS_DIR/blockers.log"
+    echo "# Task Claims — agents write here before starting work" > "$COMMS_DIR/claims.log"
+    echo "# Completed Work" > "$COMMS_DIR/completed.log"
+}
 
+# ── Comms helper: append a message (atomic via temp+mv) ──
+comms_post() {
+    local CHANNEL="$1"
+    local MSG="$2"
+    local FILE="$COMMS_DIR/${CHANNEL}.log"
+    local TMP="$COMMS_DIR/.tmp.$$"
+    {
+        cat "$FILE" 2>/dev/null
+        echo "[$(date -Iseconds)] $MSG"
+    } > "$TMP" && mv "$TMP" "$FILE"
+}
+
+# ── Check if a task is already claimed ──
+task_claimed() {
+    local TASK_KEY="$1"
+    grep -q "$TASK_KEY" "$COMMS_DIR/claims.log" 2>/dev/null || \
+    grep -q "$TASK_KEY" "$COMMS_DIR/completed.log" 2>/dev/null
+}
+
+# ── Agent role definitions ──
 agent_prompt() {
     local AGENT_ID=$1
     local TOTAL=$2
@@ -52,63 +77,77 @@ agent_prompt() {
     local TASKS
     TASKS=$(cat "${REPO_DIR}/TASKS.md")
 
+    # Read current comms state
+    local CLAIMS COMPLETED GENERAL
+    CLAIMS=$(cat "$COMMS_DIR/claims.log" 2>/dev/null || echo "(empty)")
+    COMPLETED=$(cat "$COMMS_DIR/completed.log" 2>/dev/null || echo "(empty)")
+    GENERAL=$(tail -20 "$COMMS_DIR/general.log" 2>/dev/null || echo "(empty)")
+
     local ROLE=""
     local FOCUS=""
 
     case $AGENT_ID in
         1)
             ROLE="Architect — Correctness & Safety Lead"
-            FOCUS="You are the team lead. Methodical, precise, and deeply paranoid about correctness.
-You speak in clear, structured prose. You never ship without tests. You review others' work critically but fairly.
+            FOCUS="You are the team lead. Methodical, precise, deeply paranoid about correctness.
 
 **Your expertise:** Cryptographic verification, formal correctness, state machine invariants.
 **You own:** Tier 1 (tx signatures, double-spend, block validation, overflow, nonce, WASM gas).
-**Then:** Tier 4 (storage atomicity, persistence). Review PRs from other agents touching ledger/node code.
+**Then:** Tier 4 (storage atomicity, persistence).
 **Style:** You audit code line-by-line. You think about adversarial inputs. You add edge-case tests."
             ;;
         2)
             ROLE="Consensus Protocol Specialist"
             FOCUS="You are the consensus expert. You think in terms of safety and liveness proofs.
-You reference academic papers when relevant. You are thorough but pragmatic.
 
 **Your expertise:** BFT protocols, VRF, BLS aggregation, finality gadgets, fork choice rules.
 **You own:** Tier 2 (HotStuff liveness, slashing, fork choice, epochs, finality).
-**Then:** Help Agent 4 write Byzantine fault tests. Review any PR touching consensus.
-**Style:** You verify invariants formally. You think about n=3f+1. You simulate adversarial validators."
+**Then:** Help write Byzantine fault tests.
+**Style:** You verify invariants formally. You think about n=3f+1."
             ;;
         3)
             ROLE="Networking & Systems Engineer"
-            FOCUS="You are a systems programmer who thinks about failure modes, backpressure, and graceful degradation.
-You've debugged production P2P networks. You care about resource limits and DoS resistance.
+            FOCUS="You are a systems programmer who thinks about failure modes and graceful degradation.
 
-**Your expertise:** libp2p, gossipsub, QUIC transport, state sync protocols, connection management.
+**Your expertise:** libp2p, gossipsub, QUIC, state sync, connection management.
 **You own:** Tier 3 (state sync, peer banning, message limits, graceful shutdown, backpressure).
-**Then:** Tier 6 (Docker networking, genesis ceremony). Review PRs touching p2p/networking.
-**Style:** You think about what happens under load. You add rate limits. You handle errors gracefully."
+**Then:** Tier 6 (Docker networking, genesis ceremony).
+**Style:** You think about what happens under load. You add rate limits."
             ;;
         4)
             ROLE="Quality & Testing Engineer"
             FOCUS="You are obsessed with test coverage and proving correctness through property-based testing.
-You write tests that break things. You think about edge cases nobody else considers.
 
-**Your expertise:** proptest, fuzzing, integration testing, benchmarking, CI pipelines.
+**Your expertise:** proptest, fuzzing, integration testing, benchmarking.
 **You own:** Tier 5 (multi-node tests, proptests, Byzantine tests, benchmarks).
-**Also:** Review ALL other agents' PRs for test quality. If a PR lacks tests, comment on it.
-**Style:** You generate random inputs. You test boundaries. You benchmark before and after."
+**Style:** You generate random inputs. You test boundaries. You benchmark."
             ;;
         5)
             ROLE="Platform & Optimization Engineer"
-            FOCUS="You are the pragmatic engineer who makes things actually run in production.
-You care about observability, deployment, and performance. You optimize hot paths.
+            FOCUS="You are the pragmatic engineer who makes things run in production.
 
 **Your expertise:** Prometheus, tracing, Docker, RocksDB tuning, memory profiling.
 **You own:** Tier 6 (metrics, tracing, health checks, Docker) + Tier 4 (state pruning, snapshots).
-**Also:** Profile and optimize any code that other agents flag as slow.
-**Style:** You add metrics to everything. You make dashboards. You reduce allocations."
+**Style:** You add metrics to everything. You reduce allocations."
+            ;;
+        6)
+            ROLE="CI/CD & DevOps Engineer"
+            FOCUS="You are the build and release engineer. You understand every stage of a CI/CD pipeline deeply — from git hooks to container registries. You think about reproducibility, caching, and fast feedback loops.
+
+**Your expertise:** GitHub Actions, Dockerfile optimization, cargo workspace builds, test parallelization, build caching, release automation, multi-stage builds, dependency auditing.
+**You own:**
+- Ensure \`cargo test --workspace --all-features\` passes on clean checkout
+- Ensure \`cargo clippy --all-targets --all-features -- -D warnings\` is zero warnings
+- Optimize Dockerfile for layer caching and small images
+- Fix docker-compose.test.yml so the 4-node test network actually boots and passes health checks
+- Add a Makefile or justfile target for every common operation
+- Audit dependencies with \`cargo audit\` and \`cargo deny\`
+- Ensure the build is reproducible (pinned deps, deterministic features)
+**Style:** You run the full build from scratch. You time it. You make it faster. You make it never break."
             ;;
         *)
             ROLE="General Engineer"
-            FOCUS="Pick the highest-priority uncompleted task from any tier. Check PROGRESS.md and gh pr list first."
+            FOCUS="Pick the highest-priority uncompleted task from any tier."
             ;;
     esac
 
@@ -120,41 +159,43 @@ ${TASKS}
 
 ${FOCUS}
 
+## Live Team Status
+
+**Tasks claimed by other agents (DO NOT work on these):**
+${CLAIMS}
+
+**Tasks completed by the team:**
+${COMPLETED}
+
+**Recent team chat:**
+${GENERAL}
+
 ## Coordination Protocol
 
-You are part of a ${TOTAL}-agent engineering team. Each agent has its own git worktree — NO race conditions.
+You are part of a ${TOTAL}-agent team. Each agent has its own git worktree — NO file conflicts.
 
 **Before starting work:**
-1. Read PROGRESS.md for team status
-2. Read AGENT_COMMS.md for messages from other agents
-3. Run \`gh pr list --state all --limit 50\` to see what's in flight
-4. Pick a task that NO other agent is working on
+1. Run \`gh pr list --state all --limit 50\` to see what's done/in-flight
+2. Read the team status above — do NOT pick a task that's already claimed or completed
+3. Claim your task: \`echo "[$(date -Iseconds)] Agent ${AGENT_ID} (${ROLE}): CLAIMING <task>" >> ${COMMS_DIR}/claims.log\`
 
-**Communication channels (in AGENT_COMMS.md):**
-- **#general** — Status updates: "Agent ${AGENT_ID}: starting X" / "Agent ${AGENT_ID}: finished X"
-- **#code-review** — Request reviews: "@Agent2 please review PR #N — changes consensus"
-- **#architecture** — Design discussions: "I propose we change X because Y"
-- **#blockers** — "Blocked on Agent 3's sync work before I can test multi-node"
+**After finishing:**
+1. Post completion: \`echo "[$(date -Iseconds)] Agent ${AGENT_ID} (${ROLE}): DONE <task> — PR #N" >> ${COMMS_DIR}/completed.log\`
+2. Post to general: \`echo "[$(date -Iseconds)] Agent ${AGENT_ID}: <summary of what you did>" >> ${COMMS_DIR}/general.log\`
 
-**PR workflow (like a real company):**
-1. Create branch: \`fix/agent${AGENT_ID}-<scope>-<description>\`
-2. Implement with tests. Run \`cargo test --workspace --all-features\` + \`cargo clippy\`
-3. Commit with conventional format
-4. \`gh pr create\` with description + your signature: \`🤖 Agent ${AGENT_ID} — ${ROLE}\`
-5. If your change touches another agent's area, request review in AGENT_COMMS.md #code-review
-6. For straightforward changes in YOUR area: self-merge with \`gh pr merge --squash --delete-branch\`
-7. For cross-cutting changes: wait one cycle for review comments, then merge
-8. Update PROGRESS.md with what you did
+**Communication (real-time, no git needed):**
+- General chat: \`echo "msg" >> ${COMMS_DIR}/general.log\`
+- Request review: \`echo "msg" >> ${COMMS_DIR}/reviews.log\`
+- Flag blocker: \`echo "msg" >> ${COMMS_DIR}/blockers.log\`
+- Read any channel: \`cat ${COMMS_DIR}/<channel>.log\`
 
-**Handling merge conflicts:**
-- Before pushing, always: \`git fetch origin main && git rebase origin/main\`
-- If rebase has conflicts: resolve them, \`git rebase --continue\`, re-run tests
-- If conflicts are too complex: abort rebase, note in AGENT_COMMS.md #blockers, move to next task
-
-**Reviewing other agents' PRs:**
-- Check \`gh pr list\` for open PRs from other agents
-- If a PR touches your area of expertise, review it: \`gh pr review <N> --approve\` or \`--request-changes -b "reason"\`
-- Be constructive. Suggest specific fixes, not vague complaints.
+**PR workflow:**
+1. Branch: \`fix/agent${AGENT_ID}-<scope>-<description>\`
+2. Code + test: \`cargo test --workspace --all-features\` + \`cargo clippy\`
+3. Before push: \`git fetch origin main && git rebase origin/main\` (resolve conflicts if any)
+4. Commit with conventional format
+5. \`gh pr create\` with signature: \`🤖 Agent ${AGENT_ID} — ${ROLE}\`
+6. Self-merge: \`gh pr merge --squash --delete-branch\`
 
 **Working directory:** ${WORK_DIR}
 PROMPT
@@ -173,6 +214,7 @@ run_agent() {
     echo "=== Agent $AGENT_ID ===" | tee "$RUNNER_LOG"
     echo "Start:    $(date -Iseconds)" | tee -a "$RUNNER_LOG"
     echo "Work dir: $WORK_DIR" | tee -a "$RUNNER_LOG"
+    echo "Comms:    $COMMS_DIR" | tee -a "$RUNNER_LOG"
     echo "=======================" | tee -a "$RUNNER_LOG"
 
     cd "$WORK_DIR"
@@ -190,17 +232,18 @@ run_agent() {
         echo "" | tee -a "$RUNNER_LOG"
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Cycle $CYCLE" | tee -a "$RUNNER_LOG"
 
-        # Reset to latest main (detached HEAD in worktrees)
-        git fetch origin main 2>/dev/null || true
-        git checkout --detach origin/main 2>/dev/null || true
+        # ── SYNC: Always pull latest main before each cycle ──
+        echo "[$(date -Iseconds)] Agent $AGENT_ID: Syncing to latest main..." | tee -a "$RUNNER_LOG"
+        git fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
+        git checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
 
-        # Build prompt
+        # ── Build prompt with live comms state ──
         local TASK_PROMPT
         TASK_PROMPT=$(agent_prompt "$AGENT_ID" "$TOTAL" "$WORK_DIR")
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Running claude → $LOG_FILE" | tee -a "$RUNNER_LOG"
 
-        # Run claude
+        # ── Run claude ──
         caffeinate -dims \
             claude \
                 --permission-mode bypassPermissions \
@@ -211,17 +254,16 @@ run_agent() {
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Exit $EXIT_CODE" | tee -a "$RUNNER_LOG"
 
-        # Rate limit detection
+        # ── Rate limit detection ──
         if [ "$EXIT_CODE" -ne 0 ] && grep -qi 'rate.limit\|429\|overloaded\|capacity\|quota' "$LOG_FILE" 2>/dev/null; then
             echo "[$(date -Iseconds)] Agent $AGENT_ID: Rate limited → waiting ${RATE_WAIT}s" | tee -a "$RUNNER_LOG"
+            comms_post "general" "Agent $AGENT_ID: Rate limited, backing off ${RATE_WAIT}s"
             sleep "$RATE_WAIT"
             continue
         fi
 
-        # Notify
         osascript -e "display notification \"Agent $AGENT_ID cycle $CYCLE (exit $EXIT_CODE)\" with title \"Aether\"" 2>/dev/null || true
 
-        # Cooldown
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Cooldown ${COOLDOWN}s" | tee -a "$RUNNER_LOG"
         sleep "$COOLDOWN"
     done
@@ -230,12 +272,18 @@ run_agent() {
     echo "[$(date -Iseconds)] Agent $AGENT_ID: Finished ($CYCLE cycles)" | tee -a "$RUNNER_LOG"
 }
 
-# ── Main: set up worktrees and launch agents ──
+# ══════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════
+
 echo "=== Aether Engineering Team ===" | tee "${LOG_DIR}/runner.log"
-echo "Agents:   $AGENTS" | tee -a "${LOG_DIR}/runner.log"
-echo "Hours:    $MAX_HOURS" | tee -a "${LOG_DIR}/runner.log"
-echo "Start:    $(date -Iseconds)" | tee -a "${LOG_DIR}/runner.log"
+echo "Agents: $AGENTS | Hours: $MAX_HOURS | Comms: $COMMS_DIR" | tee -a "${LOG_DIR}/runner.log"
+echo "Start:  $(date -Iseconds)" | tee -a "${LOG_DIR}/runner.log"
 echo "================================" | tee -a "${LOG_DIR}/runner.log"
+
+# Initialize shared comms
+init_comms
+comms_post "general" "Runner: Launching $AGENTS agents"
 
 # Prune stale worktrees
 git worktree prune 2>/dev/null || true
@@ -256,16 +304,16 @@ for i in $(seq 2 "$AGENTS"); do
     WT="/tmp/aether-agent${i}"
     run_agent "$i" "$AGENTS" "$WT" &
     echo "Agent $i launched (PID $!)" | tee -a "${LOG_DIR}/runner.log"
+    comms_post "general" "Runner: Agent $i online"
 done
 
-# Agent 1 runs in foreground (main repo dir)
+# Agent 1 runs in foreground
 run_agent 1 "$AGENTS" "$REPO_DIR"
 
-# Wait for all background agents
 wait
 echo "[$(date -Iseconds)] All agents complete." | tee -a "${LOG_DIR}/runner.log"
 
-# Cleanup worktrees
+# Cleanup
 for i in $(seq 2 "$AGENTS"); do
     git worktree remove --force "/tmp/aether-agent${i}" 2>/dev/null || true
 done
