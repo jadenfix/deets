@@ -523,3 +523,137 @@ fn test_mempool_bounded() {
         initial_size
     );
 }
+
+// ============================================================================
+// Test 13: Reject blocks with wrong protocol version
+// ============================================================================
+
+#[test]
+fn test_reject_wrong_protocol_version() {
+    let mut network = TestNetwork::new(4);
+    // Produce a block first so we have a valid parent
+    network.run_slots(3);
+
+    // Forge a block with wrong protocol version
+    let forged = Block {
+        header: BlockHeader {
+            version: 999,
+            slot: 10,
+            parent_hash: H256::zero(),
+            state_root: H256::zero(),
+            transactions_root: H256::zero(),
+            receipts_root: H256::zero(),
+            proposer: Address::from_slice(&[1u8; 20]).unwrap(),
+            vrf_proof: VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            timestamp: 0,
+        },
+        transactions: vec![],
+        aggregated_vote: None,
+    };
+    let _ = forged.hash(); // ensure hash is computed
+
+    let result = network.nodes[0].on_block_received(forged);
+    assert!(result.is_err(), "should reject block with wrong version");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("unsupported protocol version"),
+        "error should mention protocol version, got: {}",
+        err_msg
+    );
+}
+
+// ============================================================================
+// Test 14: Reject blocks with slot <= parent slot (monotonicity violation)
+// ============================================================================
+
+#[test]
+fn test_reject_slot_monotonicity_violation() {
+    let mut network = TestNetwork::new(4);
+    // Run a few slots to produce blocks
+    network.run_slots(5);
+
+    // Find a block to use as parent
+    if let Some(parent_block) = network.nodes[0].get_block_by_slot(1) {
+        let parent_hash = parent_block.hash();
+        let parent_slot = parent_block.header.slot;
+
+        // Forge a block with slot <= parent's slot
+        let forged = Block {
+            header: BlockHeader {
+                version: aether_types::PROTOCOL_VERSION,
+                slot: parent_slot, // same slot as parent = violation
+                parent_hash,
+                state_root: H256::zero(),
+                transactions_root: H256::zero(),
+                receipts_root: H256::zero(),
+                proposer: Address::from_slice(&[1u8; 20]).unwrap(),
+                vrf_proof: VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
+                timestamp: 0,
+            },
+            transactions: vec![],
+            aggregated_vote: None,
+        };
+
+        let result = network.nodes[0].on_block_received(forged);
+        assert!(
+            result.is_err(),
+            "should reject block with slot <= parent slot"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("slot monotonicity") || err_msg.contains("future slot"),
+            "error should mention slot issue, got: {}",
+            err_msg
+        );
+    }
+}
+
+// ============================================================================
+// Test 15: Reject blocks with invalid receipts_root
+// ============================================================================
+
+#[test]
+fn test_reject_invalid_receipts_root() {
+    use aether_node::compute_transactions_root;
+
+    let mut network = TestNetwork::new(4);
+    network.run_slots(5);
+
+    // Forge a block with correct transactions_root but wrong receipts_root
+    // Use slot far enough ahead that consensus might accept it
+    let forged = Block {
+        header: BlockHeader {
+            version: aether_types::PROTOCOL_VERSION,
+            slot: 100,
+            parent_hash: H256::zero(),
+            state_root: H256::zero(),
+            transactions_root: compute_transactions_root(&[]),
+            receipts_root: H256::from_slice(&[0xFFu8; 32]).unwrap(), // bogus
+            proposer: Address::from_slice(&[1u8; 20]).unwrap(),
+            vrf_proof: VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        },
+        transactions: vec![],
+        aggregated_vote: None,
+    };
+
+    let result = network.nodes[0].on_block_received(forged);
+    // This should fail at receipts_root mismatch (empty txs => zero receipts_root)
+    // or at an earlier validation step (consensus/VRF). Either way, the block is rejected.
+    assert!(
+        result.is_err(),
+        "should reject block with invalid receipts_root"
+    );
+}

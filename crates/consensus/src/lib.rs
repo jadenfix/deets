@@ -66,6 +66,11 @@ pub trait ConsensusEngine: Send + Sync {
     /// Handle a timeout — advance phase/slot to prevent deadlock.
     fn on_timeout(&mut self) {}
 
+    /// Look up a validator's registered BLS public key by their Ed25519 address.
+    fn get_bls_pubkey(&self, _address: &aether_types::Address) -> Option<Vec<u8>> {
+        None
+    }
+
     /// Register a BLS public key for a validator.
     /// Required for vote signature verification in BFT consensus.
     fn register_bls_pubkey(
