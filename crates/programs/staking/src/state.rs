@@ -18,8 +18,6 @@ pub enum StakingError {
     InvalidCommission(u16),
     #[error("delegation not found")]
     DelegationNotFound,
-    #[error("unauthorized: caller does not match")]
-    Unauthorized,
     #[error("insufficient delegation: have {have}, requested {requested}")]
     InsufficientDelegation { have: u128, requested: u128 },
 }

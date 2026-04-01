@@ -203,7 +203,9 @@ impl LiquidityPool {
             .checked_add(amount_in_with_fee)
             .ok_or("overflow")?;
 
-        let amount_out = numerator.checked_div(denominator).ok_or("division overflow")?;
+        let amount_out = numerator
+            .checked_div(denominator)
+            .ok_or("division overflow")?;
 
         Ok(amount_out)
     }

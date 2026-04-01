@@ -154,10 +154,7 @@ impl TeeVerifier {
                 bail!("certificate {} too short for hash binding", i);
             }
             if cert[..32] != chain_hash[..32] {
-                bail!(
-                    "certificate {} does not bind to parent (hash mismatch)",
-                    i
-                );
+                bail!("certificate {} does not bind to parent (hash mismatch)", i);
             }
             expected_parent = cert.clone();
         }
