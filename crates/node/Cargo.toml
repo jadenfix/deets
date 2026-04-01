@@ -10,6 +10,10 @@ keywords = ["aether", "node", "validator", "blockchain"]
 name = "aether-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "genesis-ceremony"
+path = "src/bin/genesis_ceremony.rs"
+
 [dependencies]
 tokio.workspace = true
 anyhow.workspace = true

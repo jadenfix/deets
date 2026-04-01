@@ -17,8 +17,8 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY ai-mesh ./ai-mesh
 
-# Build release binary
-RUN cargo build --release --bin aether-node
+# Build release binaries
+RUN cargo build --release --bin aether-node --bin genesis-ceremony
 
 # Runtime stage
 FROM debian:bookworm-slim
@@ -30,11 +30,13 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy binary
+# Copy binaries
 COPY --from=builder /build/target/release/aether-node /usr/local/bin/
+COPY --from=builder /build/target/release/genesis-ceremony /usr/local/bin/
 
-# Copy config
+# Copy config and scripts
 COPY config/genesis.toml /app/config/
+COPY scripts/docker-entrypoint.sh /app/scripts/
 
 # Create data directory
 RUN mkdir -p /app/data
