@@ -37,6 +37,9 @@ impl Default for PeerScore {
     }
 }
 
+/// Maximum number of peers tracked before evicting lowest-scored entries.
+const MAX_TRACKED_PEERS: usize = 10_000;
+
 #[derive(Default, Debug)]
 pub struct PeerScores {
     scores: HashMap<PeerId, PeerScore>,
@@ -51,14 +54,31 @@ impl PeerScores {
 
     pub fn record_success(&mut self, peer: &PeerId) {
         self.scores.entry(*peer).or_default().apply_success();
+        self.maybe_evict();
     }
 
     pub fn record_failure(&mut self, peer: &PeerId) {
         self.scores.entry(*peer).or_default().apply_failure();
+        self.maybe_evict();
     }
 
     pub fn score(&self, peer: &PeerId) -> f64 {
         self.scores.get(peer).map(|s| s.score).unwrap_or(0.0)
+    }
+
+    /// Evict the lowest-scored peers when the map exceeds the cap.
+    fn maybe_evict(&mut self) {
+        if self.scores.len() <= MAX_TRACKED_PEERS {
+            return;
+        }
+        // Find and remove the peer with the lowest score.
+        if let Some((&worst_peer, _)) = self
+            .scores
+            .iter()
+            .min_by(|a, b| a.1.score.partial_cmp(&b.1.score).unwrap_or(std::cmp::Ordering::Equal))
+        {
+            self.scores.remove(&worst_peer);
+        }
     }
 }
 
