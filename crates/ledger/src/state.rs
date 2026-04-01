@@ -154,19 +154,27 @@ impl Ledger {
             );
         }
 
-        let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
-        let total_debit = tx
-            .fee
-            .checked_add(transfer_amount)
-            .ok_or_else(|| anyhow!("fee + transfer amount overflow"))?;
-        if sender_account.balance < total_debit {
-            bail!("insufficient balance for fee and transfer amount");
+        let is_utxo_tx = !tx.inputs.is_empty() || !tx.outputs.is_empty();
+
+        // For UTxO transactions, the fee is paid from the UTxO surplus
+        // (total_input - total_output >= fee). For account/transfer transactions,
+        // the fee is deducted from the sender's account balance.
+        if !is_utxo_tx {
+            let transfer_amount =
+                transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
+            let total_debit = tx
+                .fee
+                .checked_add(transfer_amount)
+                .ok_or_else(|| anyhow!("fee + transfer amount overflow"))?;
+            if sender_account.balance < total_debit {
+                bail!("insufficient balance for fee and transfer amount");
+            }
+            sender_account.balance = sender_account
+                .balance
+                .checked_sub(total_debit)
+                .ok_or_else(|| anyhow!("balance underflow during debit"))?;
         }
 
-        sender_account.balance = sender_account
-            .balance
-            .checked_sub(total_debit)
-            .ok_or_else(|| anyhow!("balance underflow during debit"))?;
         sender_account.nonce = sender_account
             .nonce
             .checked_add(1)
@@ -201,8 +209,15 @@ impl Ledger {
                 .ok_or_else(|| anyhow!("UTxO total output overflow"))?;
         }
 
-        // Validate UTxO balance
-        if total_input < total_output {
+        // Validate UTxO balance: inputs must cover outputs + fee
+        if is_utxo_tx {
+            let required = total_output
+                .checked_add(tx.fee)
+                .ok_or_else(|| anyhow!("UTxO output + fee overflow"))?;
+            if total_input < required {
+                bail!("UTxO inputs insufficient for outputs + fee");
+            }
+        } else if total_input < total_output {
             bail!("UTxO inputs insufficient for outputs");
         }
 
@@ -526,19 +541,27 @@ impl Ledger {
             bail!("transfer program transactions cannot mix UTxO inputs/outputs");
         }
 
-        let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
-        let total_debit = tx
-            .fee
-            .checked_add(transfer_amount)
-            .ok_or_else(|| anyhow!("fee + transfer amount overflow"))?;
-        if sender_account.balance < total_debit {
-            bail!("insufficient balance for fee and transfer amount");
+        let is_utxo_tx = !tx.inputs.is_empty() || !tx.outputs.is_empty();
+
+        // For UTxO transactions, the fee is paid from the UTxO surplus
+        // (total_input - total_output >= fee). For account/transfer transactions,
+        // the fee is deducted from the sender's account balance.
+        if !is_utxo_tx {
+            let transfer_amount =
+                transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
+            let total_debit = tx
+                .fee
+                .checked_add(transfer_amount)
+                .ok_or_else(|| anyhow!("fee + transfer amount overflow"))?;
+            if sender_account.balance < total_debit {
+                bail!("insufficient balance for fee and transfer amount");
+            }
+            sender_account.balance = sender_account
+                .balance
+                .checked_sub(total_debit)
+                .ok_or_else(|| anyhow!("balance underflow during debit"))?;
         }
 
-        sender_account.balance = sender_account
-            .balance
-            .checked_sub(total_debit)
-            .ok_or_else(|| anyhow!("balance underflow during debit"))?;
         sender_account.nonce = sender_account
             .nonce
             .checked_add(1)
@@ -617,7 +640,15 @@ impl Ledger {
                 .checked_add(output.amount)
                 .ok_or_else(|| anyhow!("UTxO total output overflow"))?;
         }
-        if total_input < total_output {
+        // Validate UTxO balance: inputs must cover outputs + fee
+        if is_utxo_tx {
+            let required = total_output
+                .checked_add(tx.fee)
+                .ok_or_else(|| anyhow!("UTxO output + fee overflow"))?;
+            if total_input < required {
+                bail!("UTxO inputs insufficient for outputs + fee");
+            }
+        } else if total_input < total_output {
             bail!("UTxO inputs insufficient for outputs");
         }
 
@@ -1229,6 +1260,200 @@ mod tests {
             matches!(&receipts[1].status, TransactionStatus::Failed { reason } if reason.contains("invalid nonce")),
             "duplicate nonce in same block should be rejected, got: {:?}",
             receipts[1].status
+        );
+    }
+
+    #[test]
+    fn test_utxo_fee_not_double_charged() {
+        // Regression test: UTxO transactions should pay fees from the UTxO surplus
+        // (total_input - total_output), NOT from the sender's account balance.
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Give account balance=500 and a UTxO worth 1000
+        ledger.seed_account(&address, 500).unwrap();
+
+        // Create a UTxO in storage
+        let fake_tx_hash = H256::from_slice(&[0xAA; 32]).unwrap();
+        let utxo_id = UtxoId {
+            tx_hash: fake_tx_hash,
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 1000,
+            owner: address,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        let key = bincode::serialize(&utxo_id).unwrap();
+        let value = bincode::serialize(&utxo).unwrap();
+        batch.put(CF_UTXOS, key, value);
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Spend the UTxO: 1000 in, 900 out, fee=100. Surplus covers fee exactly.
+        let recipient_kp = Keypair::generate();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900,
+                owner: PublicKey::from_bytes(recipient_kp.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let receipt = ledger.apply_transaction(&tx).unwrap();
+        assert!(
+            matches!(receipt.status, TransactionStatus::Success),
+            "UTxO tx should succeed; got: {:?}",
+            receipt.status
+        );
+
+        // Account balance should be UNCHANGED (fee came from UTxO surplus, not account)
+        let sender = ledger.get_account(&address).unwrap().unwrap();
+        assert_eq!(
+            sender.balance, 500,
+            "account balance must not be debited for UTxO tx fee"
+        );
+        assert_eq!(sender.nonce, 1);
+    }
+
+    #[test]
+    fn test_utxo_insufficient_surplus_for_fee() {
+        // UTxO tx where input - output < fee should be rejected
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 10_000).unwrap();
+
+        let fake_tx_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        let utxo_id = UtxoId {
+            tx_hash: fake_tx_hash,
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 1000,
+            owner: address,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        let key = bincode::serialize(&utxo_id).unwrap();
+        let value = bincode::serialize(&utxo).unwrap();
+        batch.put(CF_UTXOS, key, value);
+        ledger.storage.write_batch(batch).unwrap();
+
+        // 1000 in, 950 out, fee=100 => surplus=50 < fee=100 => should fail
+        let recipient_kp = Keypair::generate();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 950,
+                owner: PublicKey::from_bytes(recipient_kp.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let result = ledger.apply_transaction(&tx);
+        assert!(
+            result.is_err(),
+            "UTxO tx with insufficient surplus for fee should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("insufficient for outputs + fee"),
+            "expected fee-related error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_utxo_fee_in_speculative_path() {
+        // Same double-charge fix verified through the speculative (overlay) path
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 500).unwrap();
+
+        let fake_tx_hash = H256::from_slice(&[0xCC; 32]).unwrap();
+        let utxo_id = UtxoId {
+            tx_hash: fake_tx_hash,
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 1000,
+            owner: address,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        let key = bincode::serialize(&utxo_id).unwrap();
+        let value = bincode::serialize(&utxo).unwrap();
+        batch.put(CF_UTXOS, key, value);
+        ledger.storage.write_batch(batch).unwrap();
+
+        let recipient_kp = Keypair::generate();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900,
+                owner: PublicKey::from_bytes(recipient_kp.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(receipts[0].status, TransactionStatus::Success),
+            "speculative UTxO tx should succeed; got: {:?}",
+            receipts[0].status
         );
     }
 
