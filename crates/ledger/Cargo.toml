@@ -17,3 +17,7 @@ aether-state-storage = { path = "../state/storage" }
 
 [dev-dependencies]
 tempfile = "3"
+proptest = { workspace = true }
+
+[features]
+proptest = []
