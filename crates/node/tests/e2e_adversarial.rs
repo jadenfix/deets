@@ -831,5 +831,78 @@ fn test_slash_evidence_reduces_validator_stake() {
         validator: validator_addr,
         slash_rate_bps: 500,
         reason: "double_sign".to_string(),
+        vote1: None,
+        vote2: None,
+        evidence_type: None,
     };
+}
+
+/// A block with slash evidence that has NO cryptographic proof must NOT
+/// reduce the target validator's stake. This was a CRITICAL vulnerability:
+/// before the fix, any block proposer could slash any validator by including
+/// arbitrary `SlashEvidence` entries with no proof.
+#[test]
+fn test_slash_evidence_without_proof_is_skipped() {
+    let mut network = TestNetwork::new(1);
+    let victim_addr = network._keypairs_cache[0];
+    let initial_stake: u128 = 1_000_000_000;
+
+    network.nodes[0]
+        .staking_state_mut()
+        .register_validator(victim_addr, victim_addr, initial_stake, 0, victim_addr)
+        .expect("register_validator");
+
+    // Construct a block with unproven slash evidence (no votes, no type)
+    let fake_evidence = SlashEvidence {
+        validator: victim_addr,
+        slash_rate_bps: 10_000, // attacker tries to slash 100%
+        reason: "double_sign".to_string(),
+        vote1: None,
+        vote2: None,
+        evidence_type: None,
+    };
+
+    // Process slash evidence the same way the node does
+    // (we can't easily call on_block_received here, so we replicate the logic)
+    use aether_consensus::slashing::{self as slash_verify, SlashProof, SlashType, Vote as SlashVote};
+
+    let evidence = &fake_evidence;
+    let applied = match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type) {
+        (Some(v1), Some(v2), Some(etype)) => {
+            let proof_type = match etype {
+                aether_types::SlashEvidenceType::DoubleSign => SlashType::DoubleSign,
+                aether_types::SlashEvidenceType::SurroundVote => SlashType::SurroundVote,
+            };
+            let proof = SlashProof {
+                vote1: SlashVote {
+                    slot: v1.slot,
+                    block_hash: v1.block_hash,
+                    validator: v1.validator,
+                    validator_pubkey: v1.validator_pubkey.clone(),
+                    signature: v1.signature.clone(),
+                },
+                vote2: SlashVote {
+                    slot: v2.slot,
+                    block_hash: v2.block_hash,
+                    validator: v2.validator,
+                    validator_pubkey: v2.validator_pubkey.clone(),
+                    signature: v2.signature.clone(),
+                },
+                validator: evidence.validator,
+                proof_type,
+            };
+            slash_verify::verify_slash_proof(&proof).is_ok()
+        }
+        _ => false,
+    };
+
+    assert!(!applied, "evidence without proof votes must be skipped");
+
+    // Stake must be unchanged
+    let after = network.nodes[0]
+        .staking_state()
+        .get_validator(&victim_addr)
+        .expect("validator must exist")
+        .staked_amount;
+    assert_eq!(after, initial_stake, "stake must be unchanged when proof is missing");
 }

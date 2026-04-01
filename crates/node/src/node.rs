@@ -1,3 +1,4 @@
+use aether_consensus::slashing::{self as slash_verify, SlashProof, SlashType, Vote as SlashVote};
 use aether_consensus::{ConsensusEngine, SlashingDetector};
 use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
@@ -836,15 +837,77 @@ impl Node {
         // State root matches — commit overlay to permanent storage
         self.ledger.commit_overlay(overlay)?;
 
-        // Apply slash evidence: reduce offending validator stake in staking state.
-        // Invalid slash rates are clamped to the maximum (10 000 bps) rather than
-        // aborting block acceptance so a malformed entry cannot stall the chain.
+        // Apply slash evidence: verify cryptographic proof before reducing stake.
+        // Each SlashEvidence MUST carry two BLS-signed conflicting votes.
+        // Evidence without valid proof is silently skipped (no block rejection)
+        // so a single malformed entry cannot stall the chain.
         for evidence in &block.slash_evidence {
-            let rate = u128::from(evidence.slash_rate_bps.min(10_000));
-            match self.staking_state.slash(evidence.validator, rate) {
+            // Require both votes and evidence type
+            let (v1, v2, etype) = match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type)
+            {
+                (Some(v1), Some(v2), Some(etype)) => (v1, v2, etype),
+                _ => {
+                    println!(
+                        "  SLASH skipped: validator={:?} reason={} — missing proof votes/type",
+                        evidence.validator, evidence.reason
+                    );
+                    continue;
+                }
+            };
+
+            // Build a SlashProof from the wire-format evidence
+            let proof_type = match etype {
+                aether_types::SlashEvidenceType::DoubleSign => SlashType::DoubleSign,
+                aether_types::SlashEvidenceType::SurroundVote => SlashType::SurroundVote,
+            };
+            let proof = SlashProof {
+                vote1: SlashVote {
+                    slot: v1.slot,
+                    block_hash: v1.block_hash,
+                    validator: v1.validator,
+                    validator_pubkey: v1.validator_pubkey.clone(),
+                    signature: v1.signature.clone(),
+                },
+                vote2: SlashVote {
+                    slot: v2.slot,
+                    block_hash: v2.block_hash,
+                    validator: v2.validator,
+                    validator_pubkey: v2.validator_pubkey.clone(),
+                    signature: v2.signature.clone(),
+                },
+                validator: evidence.validator,
+                proof_type: proof_type.clone(),
+            };
+
+            // Cryptographically verify the proof (BLS signatures + structural checks)
+            if let Err(e) = slash_verify::verify_slash_proof(&proof) {
+                println!(
+                    "  SLASH rejected: validator={:?} reason={} — proof verification failed: {}",
+                    evidence.validator, evidence.reason, e
+                );
+                continue;
+            }
+
+            // Compute slash rate from the verified proof type — never trust
+            // the untrusted slash_rate_bps field from the block.
+            let validator_stake = self
+                .staking_state
+                .get_validator(&evidence.validator)
+                .map(|v| v.staked_amount)
+                .unwrap_or(0);
+            let slash_amount =
+                slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
+            // Convert to basis points: slash_amount / validator_stake * 10_000
+            let rate_bps = if validator_stake > 0 {
+                (slash_amount.saturating_mul(10_000) / validator_stake) as u32
+            } else {
+                0
+            };
+
+            match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
                 Ok(slashed) => println!(
-                    "  SLASH applied: validator={:?} rate={}bps slashed={} reason={}",
-                    evidence.validator, evidence.slash_rate_bps, slashed, evidence.reason
+                    "  SLASH applied: validator={:?} verified_rate={}bps slashed={} reason={}",
+                    evidence.validator, rate_bps, slashed, evidence.reason
                 ),
                 Err(e) => println!(
                     "  SLASH skipped: validator={:?} reason={} err={}",

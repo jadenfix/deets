@@ -1,19 +1,53 @@
-use crate::primitives::{Address, PublicKey, Slot, H256};
+use crate::primitives::{Address, PublicKey, Signature, Slot, H256};
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
+
+/// A signed vote included as part of slash evidence.
+///
+/// Contains enough information to cryptographically verify the vote
+/// was actually cast by the claimed validator.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlashVote {
+    pub slot: u64,
+    pub block_hash: H256,
+    pub validator: Address,
+    pub validator_pubkey: PublicKey,
+    pub signature: Signature,
+}
+
+/// The type of misbehavior being reported.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SlashEvidenceType {
+    /// Same slot, different blocks.
+    DoubleSign,
+    /// Vote A's range strictly contains Vote B's range.
+    SurroundVote,
+}
 
 /// Evidence of validator misbehavior included in a block.
 ///
 /// Included by the block proposer; processed during block validation to
-/// reduce the offending validator's stake.
+/// reduce the offending validator's stake.  Each entry MUST carry two
+/// cryptographically signed conflicting votes.  The node verifies the
+/// BLS signatures before applying the slash — without valid proof the
+/// evidence is silently skipped.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlashEvidence {
     /// Address of the validator being slashed.
     pub validator: Address,
-    /// Slash rate in basis points (e.g. 500 = 5%).
+    /// Slash rate in basis points (e.g. 500 = 5%).  Ignored by the
+    /// verifier — the actual rate is determined by `evidence_type`.
     pub slash_rate_bps: u32,
-    /// Human-readable reason tag (e.g. "double_sign", "surround_vote", "downtime").
+    /// Human-readable reason tag (e.g. "double_sign", "surround_vote").
     pub reason: String,
+    /// The two conflicting votes that prove the misbehavior.
+    #[serde(default)]
+    pub vote1: Option<SlashVote>,
+    #[serde(default)]
+    pub vote2: Option<SlashVote>,
+    /// The type of misbehavior.
+    #[serde(default)]
+    pub evidence_type: Option<SlashEvidenceType>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
