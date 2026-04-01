@@ -178,9 +178,9 @@ impl GovernanceState {
         // Record vote (1x conviction by default)
         proposal.voters.insert(voter, vote_for);
         if vote_for {
-            proposal.votes_for += power;
+            proposal.votes_for = proposal.votes_for.checked_add(power).ok_or("votes_for overflow")?;
         } else {
-            proposal.votes_against += power;
+            proposal.votes_against = proposal.votes_against.checked_add(power).ok_or("votes_against overflow")?;
         }
 
         Ok(())
@@ -329,7 +329,8 @@ impl GovernanceState {
                 // Remove from delegator
                 *effective.entry(*delegator).or_insert(0) = 0;
                 // Add to delegate
-                *effective.entry(*delegate).or_insert(0) += power;
+                let entry = effective.entry(*delegate).or_insert(0);
+                *entry = entry.saturating_add(power);
             }
         }
 
@@ -391,9 +392,9 @@ impl GovernanceState {
 
         proposal.voters.insert(voter, vote_for);
         if vote_for {
-            proposal.votes_for += weighted_power;
+            proposal.votes_for = proposal.votes_for.checked_add(weighted_power).ok_or("votes_for overflow")?;
         } else {
-            proposal.votes_against += weighted_power;
+            proposal.votes_against = proposal.votes_against.checked_add(weighted_power).ok_or("votes_against overflow")?;
         }
 
         Ok(())
@@ -402,8 +403,9 @@ impl GovernanceState {
     // ── Treasury ───────────────────────────────────────────
 
     /// Deposit funds into the governance treasury.
-    pub fn deposit_treasury(&mut self, amount: u128) {
-        self.treasury_balance += amount;
+    pub fn deposit_treasury(&mut self, amount: u128) -> Result<(), String> {
+        self.treasury_balance = self.treasury_balance.checked_add(amount).ok_or("treasury overflow")?;
+        Ok(())
     }
 
     /// Execute a treasury allocation (after proposal passes).
@@ -421,7 +423,7 @@ impl GovernanceState {
                 self.treasury_balance, amount
             ));
         }
-        self.treasury_balance -= amount;
+        self.treasury_balance = self.treasury_balance.checked_sub(amount).ok_or("treasury underflow")?;
         // TODO: emit event/log for treasury allocation to `recipient`
         let _ = recipient; // used once ledger integration is complete
         Ok(())
@@ -685,7 +687,7 @@ mod tests {
     #[test]
     fn test_treasury() {
         let mut state = GovernanceState::new();
-        state.deposit_treasury(1_000_000);
+        state.deposit_treasury(1_000_000).unwrap();
 
         assert_eq!(state.treasury_balance, 1_000_000);
 

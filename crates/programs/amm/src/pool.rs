@@ -96,9 +96,9 @@ impl LiquidityPool {
                 return Err("insufficient LP tokens".to_string());
             }
 
-            self.reserve_a += amount_a;
-            self.reserve_b += amount_b;
-            self.lp_token_supply += liquidity;
+            self.reserve_a = self.reserve_a.checked_add(amount_a).ok_or("reserve_a overflow")?;
+            self.reserve_b = self.reserve_b.checked_add(amount_b).ok_or("reserve_b overflow")?;
+            self.lp_token_supply = self.lp_token_supply.checked_add(liquidity).ok_or("lp_token_supply overflow")?;
 
             liquidity
         };
@@ -130,9 +130,9 @@ impl LiquidityPool {
             return Err("insufficient output amount".to_string());
         }
 
-        self.reserve_a -= amount_a;
-        self.reserve_b -= amount_b;
-        self.lp_token_supply -= lp_tokens;
+        self.reserve_a = self.reserve_a.checked_sub(amount_a).ok_or("reserve_a underflow")?;
+        self.reserve_b = self.reserve_b.checked_sub(amount_b).ok_or("reserve_b underflow")?;
+        self.lp_token_supply = self.lp_token_supply.checked_sub(lp_tokens).ok_or("lp_token_supply underflow")?;
 
         Ok((amount_a, amount_b))
     }
@@ -154,8 +154,8 @@ impl LiquidityPool {
             return Err("insufficient output amount".to_string());
         }
 
-        self.reserve_a += amount_in;
-        self.reserve_b -= amount_out;
+        self.reserve_a = self.reserve_a.checked_add(amount_in).ok_or("reserve_a overflow")?;
+        self.reserve_b = self.reserve_b.checked_sub(amount_out).ok_or("reserve_b underflow")?;
 
         // Verify invariant: k must not decrease
         self.check_invariant(k_old)?;
@@ -180,8 +180,8 @@ impl LiquidityPool {
             return Err("insufficient output amount".to_string());
         }
 
-        self.reserve_b += amount_in;
-        self.reserve_a -= amount_out;
+        self.reserve_b = self.reserve_b.checked_add(amount_in).ok_or("reserve_b overflow")?;
+        self.reserve_a = self.reserve_a.checked_sub(amount_out).ok_or("reserve_a underflow")?;
 
         // Verify invariant: k must not decrease
         self.check_invariant(k_old)?;

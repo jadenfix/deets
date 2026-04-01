@@ -22,6 +22,8 @@ pub enum StakingError {
     DelegationNotFound,
     #[error("insufficient delegation: have {have}, requested {requested}")]
     InsufficientDelegation { have: u128, requested: u128 },
+    #[error("arithmetic overflow in balance calculation")]
+    Overflow,
 }
 
 /// Staking Program State
@@ -144,7 +146,7 @@ impl StakingState {
         };
 
         self.validators.push(validator);
-        self.total_staked += initial_stake;
+        self.total_staked = self.total_staked.checked_add(initial_stake).ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -177,7 +179,7 @@ impl StakingState {
             .iter_mut()
             .find(|d| d.delegator == delegator && d.validator == validator)
         {
-            delegation.amount += amount;
+            delegation.amount = delegation.amount.checked_add(amount).ok_or(StakingError::Overflow)?;
         } else {
             self.delegations.push(Delegation {
                 delegator,
@@ -188,8 +190,8 @@ impl StakingState {
         }
 
         // Update validator
-        self.validators[validator_idx].delegated_amount += amount;
-        self.total_staked += amount;
+        self.validators[validator_idx].delegated_amount = self.validators[validator_idx].delegated_amount.checked_add(amount).ok_or(StakingError::Overflow)?;
+        self.total_staked = self.total_staked.checked_add(amount).ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -221,7 +223,7 @@ impl StakingState {
         }
 
         // Update delegation
-        delegation.amount -= amount;
+        delegation.amount = delegation.amount.checked_sub(amount).ok_or(StakingError::Overflow)?;
 
         // Remove if zero
         if delegation.amount == 0 {
@@ -231,7 +233,7 @@ impl StakingState {
 
         // Update validator
         if let Some(v) = self.validators.iter_mut().find(|v| v.address == validator) {
-            v.delegated_amount -= amount;
+            v.delegated_amount = v.delegated_amount.checked_sub(amount).ok_or(StakingError::Overflow)?;
         }
 
         // Add to unbonding queue (7 days = 100,800 slots at 500ms/slot)
@@ -241,7 +243,7 @@ impl StakingState {
             complete_slot: current_slot + 100_800,
         });
 
-        self.total_staked -= amount;
+        self.total_staked = self.total_staked.checked_sub(amount).ok_or(StakingError::Overflow)?;
 
         Ok(())
     }
@@ -284,13 +286,13 @@ impl StakingState {
             .ok_or(StakingError::ValidatorNotFound(validator))?;
 
         // Calculate slash amount
-        let slash_amount = self.validators[validator_idx].staked_amount * slash_rate / 10000;
+        let slash_amount = self.validators[validator_idx].staked_amount.saturating_mul(slash_rate) / 10000;
 
         // Apply slash
         self.validators[validator_idx].staked_amount = self.validators[validator_idx]
             .staked_amount
             .saturating_sub(slash_amount);
-        self.validators[validator_idx].slash_count += 1;
+        self.validators[validator_idx].slash_count = self.validators[validator_idx].slash_count.saturating_add(1);
 
         // Slash each delegation entry so validator aggregate, unbonding, and
         // reward distribution all operate on the same post-slash balances.
@@ -302,7 +304,7 @@ impl StakingState {
         {
             let slash = delegation.amount.saturating_mul(slash_rate) / 10000;
             let remaining = delegation.amount.saturating_sub(slash);
-            delegated_slash += delegation.amount.saturating_sub(remaining);
+            delegated_slash = delegated_slash.saturating_add(delegation.amount.saturating_sub(remaining));
             delegation.amount = remaining;
         }
         self.delegations.retain(|delegation| delegation.amount > 0);
@@ -334,7 +336,7 @@ impl StakingState {
             return;
         }
 
-        self.reward_pool += epoch_rewards;
+        self.reward_pool = self.reward_pool.saturating_add(epoch_rewards);
 
         // Collect validator reward info first (to avoid borrow issues)
         let validator_infos: Vec<(Address, u128, u128, u16, bool)> = self
@@ -357,18 +359,18 @@ impl StakingState {
                 continue;
             }
 
-            let total_stake = val_stake + delegated_amount;
+            let total_stake = val_stake.saturating_add(*delegated_amount);
             if total_stake == 0 {
                 continue;
             }
 
             let validator_reward = (epoch_rewards * total_stake) / self.total_staked;
             let commission = (validator_reward * *commission_rate as u128) / 10000;
-            let delegator_pool = validator_reward - commission;
+            let delegator_pool = validator_reward.saturating_sub(commission);
 
             // Credit commission to validator
             if let Some(v) = self.validators.iter_mut().find(|v| v.address == *val_addr) {
-                v.staked_amount += commission;
+                v.staked_amount = v.staked_amount.saturating_add(commission);
             }
 
             // Distribute remaining rewards to delegators proportionally.
@@ -380,8 +382,8 @@ impl StakingState {
                     if delegation.validator == *val_addr && delegation.amount > 0 {
                         let delegator_share =
                             (delegator_pool * delegation.amount) / delegated_amount;
-                        delegation.amount += delegator_share;
-                        distributed += delegator_share;
+                        delegation.amount = delegation.amount.saturating_add(delegator_share);
+                        distributed = distributed.saturating_add(delegator_share);
                         last_delegation_idx = Some(idx);
                     }
                 }
@@ -389,7 +391,7 @@ impl StakingState {
                 let remainder = delegator_pool.saturating_sub(distributed);
                 if remainder > 0 {
                     if let Some(idx) = last_delegation_idx {
-                        self.delegations[idx].amount += remainder;
+                        self.delegations[idx].amount = self.delegations[idx].amount.saturating_add(remainder);
                     }
                 }
             }
