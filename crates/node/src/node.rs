@@ -5,7 +5,9 @@ use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
 use aether_program_staking::StakingState;
-use aether_state_storage::{database::pruning, Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
+use aether_state_storage::{
+    database::pruning, Storage, StorageBatch, CF_BLOCKS, CF_METADATA, CF_RECEIPTS,
+};
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
     H256,
@@ -184,15 +186,14 @@ impl Node {
         Ok((by_slot, by_hash, latest_hash, latest_slot))
     }
 
-    /// Persist a block and its receipts to disk.
-    /// Persist a block and its receipts to disk in a SINGLE atomic batch.
-    fn persist_block(
+    /// Build a StorageBatch for block and receipt persistence (without writing).
+    /// Callers combine this with the overlay batch for a single atomic commit.
+    fn build_block_batch(
         &self,
         block: &Block,
         block_hash: H256,
         receipts: &[TransactionReceipt],
-    ) -> Result<()> {
-        use aether_state_storage::StorageBatch;
+    ) -> Result<StorageBatch> {
         let mut batch = StorageBatch::new();
 
         // Block data
@@ -217,9 +218,7 @@ impl Node {
             );
         }
 
-        // Atomic commit — all-or-nothing
-        self.ledger.storage().write_batch(batch)?;
-        Ok(())
+        Ok(batch)
     }
 
     /// Set the broadcast channel for outbound P2P messages.
@@ -539,8 +538,25 @@ impl Node {
             return Ok(());
         }
 
-        // Validation passed — NOW commit state to disk
-        self.ledger.commit_overlay(overlay)?;
+        // Build stored receipts (with block context) for both cache and disk
+        let stored_receipts: Vec<TransactionReceipt> = receipts
+            .iter()
+            .map(|r| {
+                let mut sr = r.clone();
+                sr.block_hash = block_hash;
+                sr.slot = slot;
+                sr
+            })
+            .collect();
+
+        // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
+        // Previously these were two separate write_batch calls; a crash between
+        // them could leave ledger state committed without the block record (or
+        // vice versa), corrupting the node on restart.
+        let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
+        let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
+        batch.extend(block_batch);
+        self.ledger.write_batch(batch)?;
 
         // Process fee market and credit proposer with priority fees
         let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
@@ -564,17 +580,6 @@ impl Node {
             }
         }
 
-        // Build stored receipts once (with block context), use for both cache and disk
-        let stored_receipts: Vec<TransactionReceipt> = receipts
-            .iter()
-            .map(|r| {
-                let mut sr = r.clone();
-                sr.block_hash = block_hash;
-                sr.slot = slot;
-                sr
-            })
-            .collect();
-
         for sr in &stored_receipts {
             self.receipts.insert(sr.tx_hash, sr.clone());
         }
@@ -584,9 +589,6 @@ impl Node {
         self.latest_block_slot = Some(slot);
         self.blocks_by_slot.insert(slot, block_hash);
         self.blocks_by_hash.insert(block_hash, block.clone());
-
-        // Persist block to disk
-        self.persist_block(&block, block_hash, &stored_receipts)?;
 
         // Record block parent for 2-chain finality tracking
         self.consensus
@@ -833,8 +835,25 @@ impl Node {
             );
         }
 
-        // State root matches — commit overlay to permanent storage
-        self.ledger.commit_overlay(overlay)?;
+        // Build stored receipts (with block context) for both cache and disk
+        let stored_receipts: Vec<TransactionReceipt> = receipts
+            .iter()
+            .map(|r| {
+                let mut sr = r.clone();
+                sr.block_hash = block_hash;
+                sr.slot = block.header.slot;
+                sr
+            })
+            .collect();
+
+        // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
+        // Previously these were two separate write_batch calls; a crash between
+        // them could leave ledger state committed without the block record,
+        // corrupting the chain on restart.
+        let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
+        let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
+        batch.extend(block_batch);
+        self.ledger.write_batch(batch)?;
 
         // Apply slash evidence: reduce offending validator stake in staking state.
         // Invalid slash rates are clamped to the maximum (10 000 bps) rather than
@@ -882,7 +901,7 @@ impl Node {
             }
         }
 
-        // Store block
+        // Store block in memory
         self.blocks_by_slot.insert(block.header.slot, block_hash);
         self.blocks_by_hash.insert(block_hash, block.clone());
 
@@ -896,20 +915,9 @@ impl Node {
         self.consensus
             .record_block(block_hash, block.header.parent_hash, block.header.slot);
 
-        // Build stored receipts once (with block context), use for both cache and disk
-        let stored_receipts: Vec<TransactionReceipt> = receipts
-            .iter()
-            .map(|r| {
-                let mut sr = r.clone();
-                sr.block_hash = block_hash;
-                sr.slot = block.header.slot;
-                sr
-            })
-            .collect();
         for sr in &stored_receipts {
             self.receipts.insert(sr.tx_hash, sr.clone());
         }
-        self.persist_block(&block, block_hash, &stored_receipts)?;
 
         // Remove included txs from mempool
         let tx_hashes: Vec<H256> = block.transactions.iter().map(|tx| tx.hash()).collect();

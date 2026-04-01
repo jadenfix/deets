@@ -669,10 +669,11 @@ impl Ledger {
         }
     }
 
-    /// Commit a speculative overlay to permanent storage.
-    /// All state changes (accounts, UTXOs, state root) are written in a single
-    /// atomic WriteBatch so a crash mid-commit cannot corrupt state.
-    pub fn commit_overlay(&mut self, overlay: PendingOverlay) -> Result<()> {
+    /// Build a StorageBatch from a speculative overlay WITHOUT writing to disk.
+    /// Updates the in-memory merkle tree and includes the state root in the batch.
+    /// The caller can extend this batch with additional data (e.g. block/receipt
+    /// persistence) before writing, ensuring a single atomic commit.
+    pub fn prepare_overlay_batch(&mut self, overlay: &PendingOverlay) -> Result<StorageBatch> {
         let mut batch = StorageBatch::new();
         for ((cf, key), value) in &overlay.writes {
             batch.put(cf, key.clone(), value.clone());
@@ -697,7 +698,7 @@ impl Ledger {
             }
         }
 
-        // Include state root in the same atomic batch
+        // Include state root in the batch
         let root = self.merkle_tree.root();
         batch.put(
             CF_METADATA,
@@ -705,9 +706,23 @@ impl Ledger {
             root.as_bytes().to_vec(),
         );
 
-        // Single atomic write — all or nothing
+        Ok(batch)
+    }
+
+    /// Commit a speculative overlay to permanent storage.
+    /// All state changes (accounts, UTXOs, state root) are written in a single
+    /// atomic WriteBatch so a crash mid-commit cannot corrupt state.
+    pub fn commit_overlay(&mut self, overlay: PendingOverlay) -> Result<()> {
+        let batch = self.prepare_overlay_batch(&overlay)?;
         self.storage.write_batch(batch)?;
         Ok(())
+    }
+
+    /// Write a pre-built StorageBatch to disk.
+    /// Used when the caller has combined multiple logical operations (e.g. overlay
+    /// commit + block persistence) into a single atomic batch.
+    pub fn write_batch(&self, batch: StorageBatch) -> Result<()> {
+        self.storage.write_batch(batch)
     }
 
     pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
@@ -1037,6 +1052,68 @@ mod tests {
             .map(|b| H256::from_slice(&b).unwrap());
         assert_eq!(Some(overlay_root), stored_root);
         assert_eq!(ledger.state_root(), overlay_root);
+    }
+
+    #[test]
+    fn test_prepare_overlay_batch_and_extend() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 50_000).unwrap();
+
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 200,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (_receipts, overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
+        let overlay_root = overlay.state_root;
+
+        // Build overlay batch WITHOUT writing
+        let mut batch = ledger.prepare_overlay_batch(&overlay).unwrap();
+
+        // Nothing should be persisted yet — state_root in DB is still the seed root
+        let root_before = ledger
+            .storage()
+            .get(CF_METADATA, b"state_root")
+            .unwrap()
+            .map(|b| H256::from_slice(&b).unwrap());
+        assert_ne!(root_before, Some(overlay_root), "batch should not be written yet");
+
+        // Extend with extra data (simulating block persistence)
+        let mut extra = StorageBatch::new();
+        extra.put(CF_METADATA, b"test_key".to_vec(), b"test_value".to_vec());
+        batch.extend(extra);
+
+        // Single atomic write
+        ledger.write_batch(batch).unwrap();
+
+        // Now both overlay state AND extra data should be persisted
+        let stored_root = ledger
+            .storage()
+            .get(CF_METADATA, b"state_root")
+            .unwrap()
+            .map(|b| H256::from_slice(&b).unwrap());
+        assert_eq!(Some(overlay_root), stored_root);
+
+        let extra_val = ledger.storage().get(CF_METADATA, b"test_key").unwrap();
+        assert_eq!(extra_val, Some(b"test_value".to_vec()));
     }
 
     #[test]
