@@ -229,6 +229,12 @@ impl StorageBatch {
             key,
         });
     }
+
+    /// Merge all operations from another batch into this one.
+    /// Used to combine multiple logical writes into a single atomic commit.
+    pub fn extend(&mut self, other: StorageBatch) {
+        self.operations.extend(other.operations);
+    }
 }
 
 impl Default for StorageBatch {
