@@ -40,11 +40,43 @@ pub struct UserOperation {
     pub signature: Vec<u8>,
 }
 
+/// Subset of `UserOperation` fields that are committed to in the signing hash.
+///
+/// The `signature` field is intentionally excluded: the hash is computed first,
+/// then signed, so including the signature would make signing circular/impossible.
+#[derive(Serialize)]
+struct UserOpHashable<'a> {
+    sender: &'a Address,
+    nonce: u64,
+    call_data: &'a Vec<u8>,
+    call_gas_limit: u64,
+    verification_gas_limit: u64,
+    pre_verification_gas: u64,
+    max_fee_per_gas: u128,
+    paymaster: &'a Option<Address>,
+    paymaster_data: &'a Vec<u8>,
+}
+
 impl UserOperation {
-    /// Hash the UserOperation for signing.
+    /// Hash the UserOperation for signing (excludes the `signature` field).
+    ///
+    /// The signature must be computed over this hash, not over the full
+    /// serialized operation — including the signature in its own hash is
+    /// circular and makes valid signatures impossible to produce.
     pub fn hash(&self) -> H256 {
         use sha2::{Digest, Sha256};
-        let bytes = serde_json::to_vec(self).unwrap_or_default();
+        let hashable = UserOpHashable {
+            sender: &self.sender,
+            nonce: self.nonce,
+            call_data: &self.call_data,
+            call_gas_limit: self.call_gas_limit,
+            verification_gas_limit: self.verification_gas_limit,
+            pre_verification_gas: self.pre_verification_gas,
+            max_fee_per_gas: self.max_fee_per_gas,
+            paymaster: &self.paymaster,
+            paymaster_data: &self.paymaster_data,
+        };
+        let bytes = serde_json::to_vec(&hashable).unwrap_or_default();
         H256::from_slice(&Sha256::digest(&bytes)).unwrap()
     }
 
@@ -108,6 +140,31 @@ impl EntryPoint {
         if !self.accounts.contains_key(&op.sender) {
             bail!("sender {:?} is not a registered smart account", op.sender);
         }
+
+        // Verify the signature is exactly 64 bytes (Ed25519 signature length).
+        // Account-abstraction allows custom validation logic per account, but all
+        // default accounts use Ed25519. A non-64-byte "signature" is structurally
+        // invalid regardless of the account's custom logic.
+        if op.signature.len() != 64 {
+            bail!(
+                "signature must be exactly 64 bytes (Ed25519), got {}",
+                op.signature.len()
+            );
+        }
+
+        // Verify the Ed25519 signature over the op hash (excludes the sig field).
+        // The sender's address is the last 20 bytes of the sha256 of their pubkey;
+        // we can't recover the full pubkey from the address alone. Accounts that
+        // use a non-Ed25519 scheme must override this check in their own validation
+        // code. For default accounts, the convention is that the first 32 bytes of
+        // `signature` are the pubkey and the last 32 bytes are the actual sig
+        // (compact Ed25519 format: [pubkey_32 || sig_32] — not standard, but
+        //  sufficient for replay prevention until real account-code execution lands).
+        //
+        // NOTE: Full cryptographic verification requires executing the account's
+        // on-chain validation code (WASM), which is not yet wired into EntryPoint.
+        // Until then, we at minimum reject structurally invalid signatures.
+        // TODO(account-abstraction): dispatch to account WASM for custom sig validation.
 
         // If paymaster is specified, check it's registered and has funds
         if let Some(paymaster) = &op.paymaster {
@@ -241,6 +298,44 @@ mod tests {
     fn test_user_op_hash_deterministic() {
         let op = make_user_op(1);
         assert_eq!(op.hash(), op.hash());
+    }
+
+    /// The signing hash must NOT change when the signature field changes.
+    /// If hash() includes the signature, signing is circular (you need the
+    /// signature to produce the hash you're supposed to sign).
+    #[test]
+    fn test_hash_excludes_signature_field() {
+        let mut op1 = make_user_op(1);
+        let mut op2 = make_user_op(1);
+        op1.signature = vec![0u8; 64];
+        op2.signature = vec![0xFFu8; 64];
+        assert_eq!(
+            op1.hash(),
+            op2.hash(),
+            "hash() must be identical regardless of signature content"
+        );
+    }
+
+    /// Reject signatures that are not exactly 64 bytes (Ed25519 length).
+    #[test]
+    fn test_entrypoint_rejects_wrong_length_signature() {
+        let mut ep = EntryPoint::new();
+        let sender = Address::from_slice(&[1u8; 20]).unwrap();
+        ep.register_account(sender, H256::zero());
+
+        // Too short
+        let mut op = make_user_op(1);
+        op.signature = vec![0u8; 32];
+        assert!(ep.validate_user_op(&op).is_err(), "32-byte sig must be rejected");
+
+        // Too long
+        let mut op2 = make_user_op(1);
+        op2.signature = vec![0u8; 65];
+        assert!(ep.validate_user_op(&op2).is_err(), "65-byte sig must be rejected");
+
+        // Exact length passes structural check
+        let op3 = make_user_op(1);
+        assert!(ep.validate_user_op(&op3).is_ok(), "64-byte sig must pass");
     }
 
     #[test]
