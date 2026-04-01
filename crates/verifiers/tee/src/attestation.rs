@@ -147,13 +147,18 @@ impl TeeVerifier {
             hasher.update(cert);
             let chain_hash = hasher.finalize();
 
-            // Verify the cert contains a binding to its parent via the hash prefix
+            // Verify the cert embeds a binding to its parent via hash prefix.
+            // Full x509 signature verification requires an x509 library —
+            // this implements structural + hash-chain validation as a baseline.
             if cert.len() < 32 {
                 bail!("certificate {} too short for hash binding", i);
             }
-            // NOTE: Full x509 signature verification requires an x509 library.
-            // This implements structural + hash-chain validation. Cryptographic
-            // verification should use rcgen/x509-parser in production.
+            if cert[..32] != chain_hash[..32] {
+                bail!(
+                    "certificate {} does not bind to parent (hash mismatch)",
+                    i
+                );
+            }
             expected_parent = cert.clone();
         }
 
