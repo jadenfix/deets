@@ -318,3 +318,4 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
+- **2026-04-01** — fix(p2p): add per-topic message size limits on gossipsub. Tier 3 item. Branch: `fix/agent2-p2p-message-size-limits`, PR #46 (merged). Added per-topic size validation (tx 64KB, vote 8KB, shred 64KB, block 2MB), oversized messages dropped with sender penalty.
