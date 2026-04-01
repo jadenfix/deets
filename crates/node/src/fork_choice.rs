@@ -191,4 +191,61 @@ mod tests {
             "canonical block should be the one with the lower hash, not first-seen"
         );
     }
+
+    #[test]
+    fn test_prune_removes_old_slots() {
+        let mut fc = ForkChoice::new();
+        fc.add_block(1, hash(1));
+        fc.add_block(2, hash(2));
+        fc.add_block(5, hash(5));
+        fc.finalize(1, hash(1));
+
+        fc.prune_before(3);
+
+        assert_eq!(fc.canonical_block(1), None);
+        assert_eq!(fc.canonical_block(2), None);
+        assert_eq!(fc.canonical_block(5), Some(hash(5)));
+        assert!(!fc.is_finalized(1));
+    }
+
+    #[test]
+    fn test_three_way_fork_lowest_hash_wins() {
+        let mut fc = ForkChoice::new();
+        fc.add_block(10, hash(0xCC));
+        fc.add_block(10, hash(0xAA));
+        fc.add_block(10, hash(0xBB));
+
+        assert_eq!(fc.canonical_block(10), Some(hash(0xAA)));
+        assert_eq!(fc.candidates_for(10).len(), 3);
+    }
+
+    #[test]
+    fn test_finalize_overrides_lower_hash_tiebreak() {
+        let mut fc = ForkChoice::new();
+        fc.add_block(7, hash(0x01));
+        fc.add_block(7, hash(0xFF));
+
+        assert_eq!(fc.canonical_block(7), Some(hash(0x01)));
+
+        // Finalize the higher hash (e.g., it got 2/3 votes)
+        assert!(fc.finalize(7, hash(0xFF)));
+        assert_eq!(
+            fc.canonical_block(7),
+            Some(hash(0xFF)),
+            "finalized block should override tiebreak"
+        );
+    }
+
+    #[test]
+    fn test_post_finalization_block_rejected() {
+        let mut fc = ForkChoice::new();
+        fc.add_block(3, hash(0x01));
+        fc.finalize(3, hash(0x01));
+
+        // Late-arriving fork for finalized slot
+        let is_fork = fc.add_block(3, hash(0x02));
+        assert!(!is_fork, "blocks at finalized slots should be rejected");
+        assert_eq!(fc.candidates_for(3).len(), 1);
+        assert_eq!(fc.canonical_block(3), Some(hash(0x01)));
+    }
 }
