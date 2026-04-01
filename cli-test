@@ -11,6 +11,7 @@ Usage: ./cli-test [--rust-only] [--no-doc] [--help]
 Runs the default balanced test suite:
   - Rust workspace tests + integration tests (doc tests by default)
   - JS/TS workspace tests in parallel (npm run test:ts)
+  - Installs JS workspace dependencies with npm ci when node_modules is missing
 
 Options:
   --rust-only  Run only Rust lanes and skip JS/TS tests.
@@ -56,6 +57,20 @@ require_cmd cargo
 if [[ "$RUST_ONLY" -eq 0 ]]; then
   require_cmd npm
 fi
+
+ensure_js_deps() {
+  if [[ -d "$ROOT_DIR/node_modules" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$ROOT_DIR/package-lock.json" ]]; then
+    echo "Missing package-lock.json; cannot bootstrap JS workspace dependencies." >&2
+    exit 1
+  fi
+
+  echo "Installing JS workspace dependencies with npm ci..."
+  npm ci
+}
 
 lane_names=()
 lane_pids=()
@@ -110,6 +125,7 @@ trap cleanup INT TERM
 echo "Starting test lanes..."
 start_lane "rust" run_rust_lane
 if [[ "$RUST_ONLY" -eq 0 ]]; then
+  ensure_js_deps
   start_lane "js-ts" run_js_lane
 fi
 

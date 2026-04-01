@@ -37,6 +37,12 @@ class JobSubmission:
 def ensure_hex(value: str, *, field: str) -> None:
     if not value.startswith("0x"):
         raise ValueError(f"{field} must be a hex string")
+    if len(value) == 2:
+        raise ValueError(f"{field} must not be empty")
+    try:
+        int(value[2:], 16)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be valid hex") from exc
 
 
 def ensure_positive_int(value: int, *, field: str) -> None:

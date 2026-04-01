@@ -133,7 +133,7 @@ impl TeeVerifier {
         // Verify leaf cert signed the report signature
         // Hash: TEE type || measurement || nonce || timestamp
         let mut report_msg = Vec::new();
-        report_msg.extend_from_slice(&format!("{:?}", report.tee_type).as_bytes());
+        report_msg.extend_from_slice(format!("{:?}", report.tee_type).as_bytes());
         report_msg.extend_from_slice(&report.measurement);
         report_msg.extend_from_slice(&report.nonce);
         report_msg.extend_from_slice(&report.timestamp.to_le_bytes());

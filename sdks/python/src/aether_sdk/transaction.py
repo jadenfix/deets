@@ -31,8 +31,9 @@ class Transaction:
         ensure_positive_int(self.fee, field="fee")
         ensure_positive_int(self.gas_limit, field="gas_limit")
         ensure_positive_int(self.nonce + 1, field="nonce + 1")  # nonce can be 0
-        if len(self.signature) < 130:
-            raise ValueError("signature must be at least 64 bytes (hex)")
+        signature_hex = self.signature[2:]
+        if len(signature_hex) != 128:
+            raise ValueError("signature must be exactly 64 bytes (128 hex characters)")
         if not self.reads:
             self.reads.append(self.sender)
         if not self.writes:

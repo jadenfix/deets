@@ -72,9 +72,6 @@ export class TransferBuilder {
     if (options.nonce < 0) {
       throw new Error("nonce must be non-negative");
     }
-    if (options.signature.length < 64) {
-      throw new Error("signature must be 64+ hex chars");
-    }
 
     return new Transaction({
       nonce: options.nonce,
