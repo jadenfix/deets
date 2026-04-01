@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jadenfix.claude-runner</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/jadenfix/deets/run-claude.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/jadenfix/deets</string>
+
+    <key>UserName</key>
+    <string>jadenfix</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/jadenfix/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/jadenfix</string>
+        <key>RUST_BACKTRACE</key>
+        <string>1</string>
+        <key>CARGO_TERM_COLOR</key>
+        <string>never</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/jadenfix/deets/.claude/logs/launchd-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jadenfix/deets/.claude/logs/launchd-stderr.log</string>
+
+    <key>TimeOut</key>
+    <integer>14400</integer>
+
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>AbandonProcessGroup</key>
+    <false/>
+</dict>
+</plist>
