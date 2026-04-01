@@ -279,7 +279,10 @@ impl LiquidityPool {
             return Err("zero reserve".to_string());
         }
 
-        Ok(self.reserve_b.saturating_mul(1_000_000) / self.reserve_a)
+        self.reserve_b
+            .checked_mul(1_000_000)
+            .ok_or_else(|| "overflow in price calculation".to_string())
+            .map(|n| n / self.reserve_a)
     }
 }
 
@@ -477,5 +480,90 @@ mod tests {
 
         let result = pool.swap_a_to_b(0, 0);
         assert!(result.is_err(), "swap of 0 tokens should be rejected");
+    }
+
+    // ── swap_b_to_a tests ───────────────────────────────────
+
+    #[test]
+    fn test_swap_b_to_a_happy_path() {
+        let mut pool = test_pool();
+        pool.add_liquidity(1000, 2000, 0).unwrap();
+
+        let amount_out = pool.swap_b_to_a(200, 0).unwrap();
+
+        assert!(amount_out > 0);
+        assert!(amount_out < 100, "should be less than proportional due to slippage");
+        assert_eq!(pool.reserve_b, 2200);
+        assert_eq!(pool.reserve_a, 1000 - amount_out);
+    }
+
+    #[test]
+    fn test_swap_b_to_a_constant_product() {
+        let mut pool = test_pool();
+        pool.add_liquidity(10000, 10000, 0).unwrap();
+        let k_before = pool.reserve_a * pool.reserve_b;
+
+        pool.swap_b_to_a(100, 0).unwrap();
+        let k_after = pool.reserve_a * pool.reserve_b;
+
+        assert!(k_after >= k_before, "invariant must not decrease");
+    }
+
+    #[test]
+    fn test_swap_b_to_a_min_amount_out_enforced() {
+        let mut pool = test_pool();
+        pool.add_liquidity(10000, 10000, 0).unwrap();
+
+        let result = pool.swap_b_to_a(100, u128::MAX);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_swap_b_to_a_zero_rejected() {
+        let mut pool = test_pool();
+        pool.add_liquidity(10000, 10000, 0).unwrap();
+
+        assert!(pool.swap_b_to_a(0, 0).is_err());
+    }
+
+    #[test]
+    fn test_swap_b_to_a_symmetry() {
+        // Two identical pools, swap same amount in opposite directions
+        let mut pool_ab = test_pool();
+        let mut pool_ba = test_pool();
+        pool_ab.add_liquidity(10000, 10000, 0).unwrap();
+        pool_ba.add_liquidity(10000, 10000, 0).unwrap();
+
+        let out_ab = pool_ab.swap_a_to_b(500, 0).unwrap();
+        let out_ba = pool_ba.swap_b_to_a(500, 0).unwrap();
+
+        // With equal reserves, A→B and B→A should yield identical output
+        assert_eq!(out_ab, out_ba);
+    }
+
+    // ── get_price overflow test ─────────────────────────────
+
+    #[test]
+    fn test_get_price_overflow_returns_error() {
+        let mut pool = test_pool();
+        // reserve_b near u128::MAX / 1_000_000 will not overflow
+        // but above that threshold it should error, not silently saturate
+        pool.reserve_a = 1;
+        pool.reserve_b = u128::MAX;
+        pool.lp_token_supply = 1;
+
+        let result = pool.get_price();
+        assert!(result.is_err(), "get_price must error on overflow, not saturate");
+    }
+
+    #[test]
+    fn test_get_price_large_but_valid() {
+        let mut pool = test_pool();
+        pool.reserve_a = 1_000_000;
+        pool.reserve_b = u128::MAX / 1_000_000; // just below overflow threshold
+        pool.lp_token_supply = 1;
+
+        let price = pool.get_price().unwrap();
+        assert!(price > 0);
     }
 }
