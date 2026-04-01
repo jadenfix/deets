@@ -362,7 +362,8 @@ impl StakingState {
             return;
         }
 
-        self.reward_pool = self.reward_pool.saturating_add(epoch_rewards);
+        // Track total distributed to update total_staked after distribution
+        let mut total_distributed: u128 = 0;
 
         // Collect validator reward info first (to avoid borrow issues)
         let validator_infos: Vec<(Address, u128, u128, u16, bool)> = self
@@ -397,6 +398,7 @@ impl StakingState {
             // Credit commission to validator
             if let Some(v) = self.validators.iter_mut().find(|v| v.address == *val_addr) {
                 v.staked_amount = v.staked_amount.saturating_add(commission);
+                total_distributed = total_distributed.saturating_add(commission);
             }
 
             // Distribute remaining rewards to delegators proportionally.
@@ -410,6 +412,7 @@ impl StakingState {
                             delegator_pool.saturating_mul(delegation.amount) / delegated_amount;
                         delegation.amount = delegation.amount.saturating_add(delegator_share);
                         distributed = distributed.saturating_add(delegator_share);
+                        total_distributed = total_distributed.saturating_add(delegator_share);
                         last_delegation_idx = Some(idx);
                     }
                 }
@@ -419,10 +422,15 @@ impl StakingState {
                     if let Some(idx) = last_delegation_idx {
                         self.delegations[idx].amount =
                             self.delegations[idx].amount.saturating_add(remainder);
+                        total_distributed = total_distributed.saturating_add(remainder);
                     }
                 }
             }
         }
+
+        // Update total_staked to reflect distributed rewards, preventing
+        // epoch-over-epoch divergence between total_staked and actual stakes.
+        self.total_staked = self.total_staked.saturating_add(total_distributed);
     }
 
     pub fn get_validator(&self, address: &Address) -> Option<&Validator> {
@@ -684,6 +692,163 @@ mod tests {
             state.get_validator(&test_address(1)).unwrap().staked_amount,
             1_000_000_000,
             "invalid slash rates must leave stake untouched"
+        );
+    }
+
+    #[test]
+    fn test_distribute_rewards_updates_total_staked() {
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                5000, // 50% commission
+                test_address(10),
+            )
+            .unwrap();
+        state
+            .register_validator(
+                test_address(2),
+                test_address(2),
+                1_000_000_000,
+                5000,
+                test_address(20),
+            )
+            .unwrap();
+        // Add delegators so rewards are actually distributed
+        state
+            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .unwrap();
+        state
+            .delegate(test_address(4), test_address(4), test_address(2), 500_000_000)
+            .unwrap();
+
+        let initial_total = state.get_total_staked();
+        assert_eq!(initial_total, 3_000_000_000);
+
+        let epoch_rewards = 100_000_000;
+        state.distribute_rewards(epoch_rewards);
+
+        // total_staked must increase by the distributed rewards
+        assert_eq!(
+            state.get_total_staked(),
+            initial_total + epoch_rewards,
+            "total_staked must track distributed rewards"
+        );
+
+        // Second epoch: rewards should be based on updated total_staked
+        state.distribute_rewards(epoch_rewards);
+        // After two epochs, total must reflect both distributions
+        let actual_total: u128 = state.validators.iter().map(|v| v.staked_amount).sum::<u128>()
+            + state.delegations.iter().map(|d| d.amount).sum::<u128>();
+        assert_eq!(
+            state.get_total_staked(),
+            actual_total,
+            "total_staked must equal sum of all stakes after multiple epochs"
+        );
+    }
+
+    #[test]
+    fn test_distribute_rewards_single_validator_with_delegators() {
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000, // 10% commission
+                test_address(10),
+            )
+            .unwrap();
+        state
+            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .unwrap();
+
+        let initial_total = state.get_total_staked();
+        let epoch_rewards = 150_000_000;
+        state.distribute_rewards(epoch_rewards);
+
+        // All rewards go to the single active validator's pool
+        // Commission = 10% of 150M = 15M to validator
+        // Delegator pool = 135M, split by stake ratio
+        // Validator stake:delegation = 1B:500M = 2:1
+        // But delegator_pool only goes to delegators, commission to validator
+        let new_total = state.get_total_staked();
+        assert_eq!(
+            new_total,
+            initial_total + epoch_rewards,
+            "total_staked must increase by full epoch_rewards"
+        );
+    }
+
+    #[test]
+    fn test_distribute_rewards_zero_rewards() {
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                500,
+                test_address(10),
+            )
+            .unwrap();
+
+        let initial_total = state.get_total_staked();
+        state.distribute_rewards(0);
+        assert_eq!(
+            state.get_total_staked(),
+            initial_total,
+            "zero rewards must not change total_staked"
+        );
+    }
+
+    #[test]
+    fn test_distribute_rewards_conservation() {
+        // Verify: sum of all staked + delegated amounts == total_staked after distribution
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                2000, // 20% commission
+                test_address(10),
+            )
+            .unwrap();
+        state
+            .register_validator(
+                test_address(2),
+                test_address(2),
+                500_000_000,
+                500, // 5% commission
+                test_address(20),
+            )
+            .unwrap();
+        state
+            .delegate(test_address(3), test_address(3), test_address(1), 200_000_000)
+            .unwrap();
+        state
+            .delegate(test_address(4), test_address(4), test_address(2), 300_000_000)
+            .unwrap();
+
+        for _ in 0..5 {
+            state.distribute_rewards(100_000_000);
+        }
+
+        // Recompute actual total from individual amounts
+        let actual_total: u128 = state
+            .validators
+            .iter()
+            .map(|v| v.staked_amount)
+            .sum::<u128>()
+            + state.delegations.iter().map(|d| d.amount).sum::<u128>();
+
+        assert_eq!(
+            state.get_total_staked(),
+            actual_total,
+            "total_staked must equal sum of validator stakes + delegation amounts"
         );
     }
 }
