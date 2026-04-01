@@ -315,12 +315,20 @@ impl Node {
             emission
         );
 
-        // In a full implementation we'd iterate the validator set and credit each.
-        // For now, credit the local validator if present.
+        // Credit emission proportionally to each validator based on stake.
+        // In production, this would integrate with the staking program's reward pool.
+        // For now, credit each known validator proportionally.
         if let Some(ref keypair) = self.validator_key {
-            if let Ok(addr) = Address::from_slice(&keypair.to_address()) {
-                if let Err(e) = self.ledger.credit_account(&addr, emission) {
-                    tracing::warn!("failed to credit emission reward to validator: {e}");
+            // Credit the local validator their proportional share
+            let my_pubkey = PublicKey::from_bytes(keypair.public_key());
+            let my_addr = my_pubkey.to_address();
+            let my_stake = self.consensus.validator_stake(&my_addr);
+            if my_stake > 0 {
+                let my_share = (emission * my_stake) / total_stake;
+                if my_share > 0 {
+                    if let Err(e) = self.ledger.credit_account(&my_addr, my_share) {
+                        eprintln!("WARNING: failed to credit emission reward: {e}");
+                    }
                 }
             }
         }
@@ -391,7 +399,10 @@ impl Node {
 
         // Apply transactions speculatively (NOT committed to disk yet)
         let (receipts, overlay) =
-            self.ledger.apply_block_speculatively(&transactions)?;
+            self.ledger.apply_block_speculatively_with_chain_id(
+                &transactions,
+                Some(self.chain_config.chain.chain_id_numeric),
+            )?;
         let successful = receipts
             .iter()
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
@@ -440,10 +451,24 @@ impl Node {
         // Validation passed — NOW commit state to disk
         self.ledger.commit_overlay(overlay)?;
 
-        // Process fee market (only once — on_block_received skips for already-known blocks)
+        // Process fee market and credit proposer with priority fees
         let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
         let gas_used: u64 = transactions.iter().map(|tx| tx.gas_limit).sum();
-        let _fee_result = self.fee_market.process_block(gas_used, total_fees);
+        let fee_result = self.fee_market.process_block(gas_used, total_fees);
+
+        // Credit proposer with their share (priority fees / tips)
+        if fee_result.proposer_reward > 0 {
+            if let Err(e) = self.ledger.credit_account(&block.header.proposer, fee_result.proposer_reward) {
+                eprintln!("WARNING: failed to credit proposer fee reward: {e}");
+            }
+        }
+
+        // Record burned fees in ledger (EIP-1559 deflationary mechanism)
+        if fee_result.burned > 0 {
+            if let Err(e) = self.ledger.record_burned_fees(fee_result.burned) {
+                eprintln!("WARNING: failed to record burned fees: {e}");
+            }
+        }
 
         // Store block and receipts — set block_hash/slot on receipts for storage
         for receipt in &receipts {
@@ -660,10 +685,17 @@ impl Node {
         let tx_hashes: Vec<H256> = block.transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
 
-        // Update fee market
+        // Update fee market, credit proposer, record burns
         let total_fees: u128 = block.transactions.iter().map(|tx| tx.fee).sum();
         let gas_used: u64 = block.transactions.iter().map(|tx| tx.gas_limit).sum();
-        let _fee_result = self.fee_market.process_block(gas_used, total_fees);
+        let fee_result = self.fee_market.process_block(gas_used, total_fees);
+
+        if fee_result.proposer_reward > 0 {
+            let _ = self.ledger.credit_account(&block.header.proposer, fee_result.proposer_reward);
+        }
+        if fee_result.burned > 0 {
+            let _ = self.ledger.record_burned_fees(fee_result.burned);
+        }
 
         // Vote on this block (if we're a validator)
         self.vote_on_block(&block)?;

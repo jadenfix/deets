@@ -9,7 +9,7 @@
 // ============================================================================
 
 use aether_node::{
-    create_hybrid_consensus_with_vrf_keys, validator_info_from_keypair, Node, OutboundMessage,
+    create_hybrid_consensus_with_all_keys, validator_info_from_keypair, Node, OutboundMessage,
     ValidatorKeypair,
 };
 use aether_types::{
@@ -47,6 +47,11 @@ impl TestNetwork {
             .map(|kp| (kp.address(), *kp.vrf.public_key()))
             .collect();
 
+        let bls_pubkeys: Vec<(Address, Vec<u8>, Vec<u8>)> = keypairs
+            .iter()
+            .map(|kp| (kp.address(), kp.bls.public_key(), kp.bls.proof_of_possession()))
+            .collect();
+
         let validator_addrs: Vec<Address> = keypairs.iter().map(|kp| kp.address()).collect();
 
         let mut nodes = Vec::new();
@@ -55,9 +60,10 @@ impl TestNetwork {
         for keypair in keypairs {
             let temp_dir = TempDir::new().unwrap();
             let consensus = Box::new(
-                create_hybrid_consensus_with_vrf_keys(
+                create_hybrid_consensus_with_all_keys(
                     validator_infos.clone(),
                     vrf_pubkeys.clone(),
+                    bls_pubkeys.clone(),
                     Some(&keypair),
                     0.8,
                     100,

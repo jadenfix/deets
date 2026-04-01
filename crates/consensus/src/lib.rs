@@ -65,6 +65,17 @@ pub trait ConsensusEngine: Send + Sync {
 
     /// Handle a timeout — advance phase/slot to prevent deadlock.
     fn on_timeout(&mut self) {}
+
+    /// Register a BLS public key for a validator.
+    /// Required for vote signature verification in BFT consensus.
+    fn register_bls_pubkey(
+        &mut self,
+        _address: aether_types::Address,
+        _bls_pubkey: Vec<u8>,
+        _pop_signature: &[u8],
+    ) -> Result<()> {
+        Ok(()) // Default no-op for engines that don't use BLS
+    }
 }
 
 /// Check if `voted_stake` represents a 2/3 quorum of `total_stake`.

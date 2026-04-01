@@ -57,17 +57,29 @@ pub fn create_hybrid_consensus(
         (None, None, None)
     };
 
-    Ok(HybridConsensus::new(
+    let mut consensus = HybridConsensus::new(
         validators,
         tau,
         epoch_length,
         my_vrf,
         my_bls,
         my_addr,
-    ))
+    );
+
+    // Register the local validator's BLS key so its own votes are accepted
+    if let Some(kp) = my_keypair {
+        let addr = kp.address();
+        let bls_pk = kp.bls.public_key();
+        let pop = kp.bls.proof_of_possession();
+        if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
+            eprintln!("WARNING: failed to register local BLS key: {e}");
+        }
+    }
+
+    Ok(consensus)
 }
 
-/// Create a hybrid consensus engine with VRF public keys for multi-validator verification.
+/// Create a hybrid consensus engine with VRF and BLS public keys for multi-validator verification.
 pub fn create_hybrid_consensus_with_vrf_keys(
     validators: Vec<ValidatorInfo>,
     vrf_pubkeys: Vec<(Address, [u8; 32])>,
@@ -97,6 +109,45 @@ pub fn create_hybrid_consensus_with_vrf_keys(
     // Register all VRF public keys for cross-validation
     for (addr, vrf_pk) in vrf_pubkeys {
         consensus.register_vrf_pubkey(addr, vrf_pk);
+    }
+
+    // Register the local validator's BLS key so votes are accepted
+    if let Some(kp) = my_keypair {
+        let addr = kp.address();
+        let bls_pk = kp.bls.public_key();
+        let pop = kp.bls.proof_of_possession();
+        if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
+            eprintln!("WARNING: failed to register local BLS key: {e}");
+        }
+    }
+
+    Ok(consensus)
+}
+
+/// Create a hybrid consensus with ALL validators' BLS keys registered.
+/// Required for multi-validator E2E scenarios where each node needs to verify
+/// votes from every other validator.
+pub fn create_hybrid_consensus_with_all_keys(
+    validators: Vec<ValidatorInfo>,
+    vrf_pubkeys: Vec<(Address, [u8; 32])>,
+    bls_pubkeys: Vec<(Address, Vec<u8>, Vec<u8>)>, // (addr, pubkey, pop_signature)
+    my_keypair: Option<&ValidatorKeypair>,
+    tau: f64,
+    epoch_length: u64,
+) -> Result<HybridConsensus> {
+    let mut consensus = create_hybrid_consensus_with_vrf_keys(
+        validators,
+        vrf_pubkeys,
+        my_keypair,
+        tau,
+        epoch_length,
+    )?;
+
+    // Register ALL validators' BLS keys for cross-validation
+    for (addr, bls_pk, pop) in bls_pubkeys {
+        if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
+            eprintln!("WARNING: failed to register BLS key for {:?}: {e}", addr);
+        }
     }
 
     Ok(consensus)

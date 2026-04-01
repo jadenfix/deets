@@ -327,6 +327,41 @@ impl Ledger {
         H256::from_slice(&hash).expect("SHA256 produces 32 bytes")
     }
 
+    /// Record burned fees in ledger metadata. This permanently removes tokens from
+    /// circulation, implementing EIP-1559 deflationary pressure.
+    pub fn record_burned_fees(&mut self, amount: u128) -> Result<()> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let current = self
+            .storage
+            .get(CF_METADATA, b"total_burned")?
+            .map(|bytes| {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16.min(bytes.len())]);
+                u128::from_le_bytes(arr)
+            })
+            .unwrap_or(0);
+        let new_total = current.saturating_add(amount);
+        self.storage
+            .put(CF_METADATA, b"total_burned", &new_total.to_le_bytes())?;
+        Ok(())
+    }
+
+    /// Get the total amount of fees burned since genesis.
+    pub fn total_burned(&self) -> u128 {
+        self.storage
+            .get(CF_METADATA, b"total_burned")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16.min(bytes.len())]);
+                u128::from_le_bytes(arr)
+            })
+            .unwrap_or(0)
+    }
+
     /// Credit an account with a reward (for epoch emissions, proposer rewards).
     pub fn credit_account(&mut self, address: &Address, amount: u128) -> Result<()> {
         let mut account = self.get_or_create_account(address)?;
@@ -353,6 +388,15 @@ impl Ledger {
     pub fn apply_block_speculatively(
         &mut self,
         transactions: &[Transaction],
+    ) -> Result<(Vec<TransactionReceipt>, PendingOverlay)> {
+        self.apply_block_speculatively_with_chain_id(transactions, None)
+    }
+
+    /// Execute a block's transactions speculatively, optionally validating chain_id.
+    pub fn apply_block_speculatively_with_chain_id(
+        &mut self,
+        transactions: &[Transaction],
+        expected_chain_id: Option<u64>,
     ) -> Result<(Vec<TransactionReceipt>, PendingOverlay)> {
         let mut overlay = PendingOverlay::new();
         let mut receipts = Vec::new();
@@ -383,6 +427,27 @@ impl Ledger {
                     state_root: spec_tree.root(),
                 });
                 continue;
+            }
+
+            // Validate chain_id to prevent cross-chain replay attacks
+            if let Some(expected_id) = expected_chain_id {
+                if tx.chain_id != expected_id {
+                    receipts.push(TransactionReceipt {
+                        tx_hash: tx.hash(),
+                        block_hash: H256::zero(),
+                        slot: 0,
+                        status: TransactionStatus::Failed {
+                            reason: format!(
+                                "wrong chain_id: expected {}, got {}",
+                                expected_id, tx.chain_id
+                            ),
+                        },
+                        gas_used: 0,
+                        logs: vec![],
+                        state_root: spec_tree.root(),
+                    });
+                    continue;
+                }
             }
 
             match self.apply_tx_to_overlay(tx, &mut overlay, &mut spec_tree) {

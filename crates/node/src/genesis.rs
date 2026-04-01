@@ -3,6 +3,8 @@ use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hybrid_node::ValidatorKeypair;
+
 /// Genesis configuration for bootstrapping a new network.
 ///
 /// Embeds the full `ChainConfig` (consensus, fees, networking, etc.)
@@ -33,7 +35,17 @@ fn default_protocol_version() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisValidator {
     pub name: String,
+    /// Ed25519 public key (32 bytes) — used for transaction signing and address derivation.
     pub pubkey: Vec<u8>,
+    /// BLS public key (48 bytes) — used for consensus vote signing.
+    #[serde(default)]
+    pub bls_pubkey: Vec<u8>,
+    /// BLS proof-of-possession signature — proves ownership of the BLS key.
+    #[serde(default)]
+    pub bls_pop: Vec<u8>,
+    /// VRF public key (32 bytes) — used for leader election.
+    #[serde(default)]
+    pub vrf_pubkey: [u8; 32],
     pub stake: u128,
     pub commission_bps: u16,
 }
@@ -135,6 +147,71 @@ impl GenesisConfig {
         H256::from_slice(&hasher.finalize()).unwrap()
     }
 
+    /// Extract VRF public keys for all validators (for consensus registration).
+    pub fn vrf_pubkeys(&self) -> Vec<(Address, [u8; 32])> {
+        self.validators
+            .iter()
+            .filter(|v| v.vrf_pubkey != [0u8; 32])
+            .map(|v| {
+                let addr = PublicKey::from_bytes(v.pubkey.clone()).to_address();
+                (addr, v.vrf_pubkey)
+            })
+            .collect()
+    }
+
+    /// Extract BLS public keys + PoP for all validators (for consensus registration).
+    pub fn bls_pubkeys(&self) -> Vec<(Address, Vec<u8>, Vec<u8>)> {
+        self.validators
+            .iter()
+            .filter(|v| !v.bls_pubkey.is_empty())
+            .map(|v| {
+                let addr = PublicKey::from_bytes(v.pubkey.clone()).to_address();
+                (addr, v.bls_pubkey.clone(), v.bls_pop.clone())
+            })
+            .collect()
+    }
+
+    /// Create a genesis config from a set of validator keypairs.
+    /// This is the primary way to bootstrap a new devnet/testnet.
+    pub fn from_keypairs(
+        chain_config: ChainConfig,
+        keypairs: &[ValidatorKeypair],
+        stake_per_validator: u128,
+    ) -> Self {
+        let validators: Vec<GenesisValidator> = keypairs
+            .iter()
+            .enumerate()
+            .map(|(i, kp)| GenesisValidator {
+                name: format!("validator-{}", i + 1),
+                pubkey: kp.ed25519.public_key(),
+                bls_pubkey: kp.bls.public_key(),
+                bls_pop: kp.bls.proof_of_possession(),
+                vrf_pubkey: *kp.vrf.public_key(),
+                stake: stake_per_validator,
+                commission_bps: 500, // 5% default
+            })
+            .collect();
+
+        let accounts: Vec<GenesisAccount> = keypairs
+            .iter()
+            .map(|kp| GenesisAccount {
+                address: kp.address(),
+                balance: stake_per_validator * 10, // 10x stake as initial balance
+            })
+            .collect();
+
+        GenesisConfig {
+            chain_config,
+            validators,
+            accounts,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            protocol_version: 1,
+        }
+    }
+
     /// Validate the genesis config.
     pub fn validate(&self) -> Result<()> {
         self.chain_config.validate()?;
@@ -165,12 +242,18 @@ mod tests {
                 GenesisValidator {
                     name: "validator-1".into(),
                     pubkey: vec![1u8; 32],
+                    bls_pubkey: vec![],
+                    bls_pop: vec![],
+                    vrf_pubkey: [0u8; 32],
                     stake: 1_000_000,
                     commission_bps: 500,
                 },
                 GenesisValidator {
                     name: "validator-2".into(),
                     pubkey: vec![2u8; 32],
+                    bls_pubkey: vec![],
+                    bls_pop: vec![],
+                    vrf_pubkey: [0u8; 32],
                     stake: 2_000_000,
                     commission_bps: 300,
                 },

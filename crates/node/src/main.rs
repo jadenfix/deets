@@ -4,7 +4,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use aether_node::{
-    create_hybrid_consensus, validator_info_from_keypair, Node, OutboundMessage, ValidatorKeypair,
+    create_hybrid_consensus, create_hybrid_consensus_with_all_keys, validator_info_from_keypair,
+    GenesisConfig, Node, OutboundMessage, ValidatorKeypair,
 };
 use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
@@ -178,16 +179,49 @@ async fn main() -> Result<()> {
         chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
     );
 
+    // Generate validator keypair (in production, load from HSM/keyfile)
+    // Seed can be set via AETHER_VALIDATOR_SEED for deterministic key generation in devnet
     let validator_keypair = ValidatorKeypair::generate();
-    let validators = vec![validator_info_from_keypair(&validator_keypair, 1_000_000)];
     let validator_address = validator_keypair.address();
 
-    let consensus = Box::new(create_hybrid_consensus(
-        validators,
-        Some(&validator_keypair),
-        chain_config.consensus.tau,
-        chain_config.chain.epoch_slots,
-    )?);
+    // Build consensus from genesis file (multi-validator) or single-validator mode
+    let consensus: Box<dyn aether_consensus::ConsensusEngine> =
+        if let Ok(genesis_path) = env::var("AETHER_GENESIS_PATH") {
+            println!("Loading genesis from: {genesis_path}");
+            let genesis_bytes = std::fs::read(&genesis_path)
+                .with_context(|| format!("failed to read genesis file: {genesis_path}"))?;
+            let genesis: GenesisConfig = serde_json::from_slice(&genesis_bytes)
+                .with_context(|| "failed to parse genesis JSON")?;
+            genesis.validate()?;
+
+            let result = genesis.build();
+            let vrf_pubkeys = genesis.vrf_pubkeys();
+            let bls_pubkeys = genesis.bls_pubkeys();
+
+            println!(
+                "Genesis: {} validators, {} total stake",
+                result.validator_set.len(),
+                result.total_stake
+            );
+
+            Box::new(create_hybrid_consensus_with_all_keys(
+                result.validator_set,
+                vrf_pubkeys,
+                bls_pubkeys,
+                Some(&validator_keypair),
+                chain_config.consensus.tau,
+                chain_config.chain.epoch_slots,
+            )?)
+        } else {
+            // Single-validator quick-start mode
+            let validators = vec![validator_info_from_keypair(&validator_keypair, 1_000_000)];
+            Box::new(create_hybrid_consensus(
+                validators,
+                Some(&validator_keypair),
+                chain_config.consensus.tau,
+                chain_config.chain.epoch_slots,
+            )?)
+        };
 
     let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
     let rpc_port: u16 = env::var("AETHER_RPC_PORT")

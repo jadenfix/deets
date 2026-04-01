@@ -620,6 +620,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "serde",
+ "sha2",
  "tempfile",
  "tokio",
  "zstd 0.13.3",

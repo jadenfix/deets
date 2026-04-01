@@ -641,6 +641,15 @@ impl ConsensusEngine for HybridConsensus {
         self.current_phase = Phase::Propose;
         self.votes.clear();
     }
+
+    fn register_bls_pubkey(
+        &mut self,
+        address: aether_types::Address,
+        bls_pubkey: Vec<u8>,
+        pop_signature: &[u8],
+    ) -> Result<()> {
+        self.register_bls_pubkey(address, bls_pubkey, pop_signature)
+    }
 }
 
 #[cfg(test)]

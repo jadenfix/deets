@@ -1,5 +1,7 @@
+use aether_state_merkle::SparseMerkleTree;
 use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
 use anyhow::{bail, Result};
+use sha2::{Digest, Sha256};
 
 use crate::generator::{decode_snapshot, StateSnapshot};
 
@@ -7,9 +9,27 @@ pub fn import_snapshot(storage: &Storage, bytes: &[u8]) -> Result<StateSnapshot>
     let snapshot = decode_snapshot(bytes)?;
 
     // Verify the snapshot's state root is non-zero to catch corruption.
-    // TODO: full verification by recomputing the Merkle root from imported data.
     if snapshot.state_root == aether_types::H256::zero() {
         bail!("snapshot has zero state root — likely corrupted");
+    }
+
+    // Verify Merkle root: recompute from imported accounts and compare
+    let mut verify_tree = SparseMerkleTree::new();
+    for (address, account) in &snapshot.accounts {
+        let account_bytes = bincode::serialize(account)?;
+        let account_hash = Sha256::digest(&account_bytes);
+        verify_tree.update(
+            *address,
+            aether_types::H256::from_slice(&account_hash).unwrap(),
+        );
+    }
+    let computed_root = verify_tree.root();
+    if computed_root != snapshot.state_root {
+        bail!(
+            "snapshot Merkle root mismatch: claimed {:?}, computed {:?} — data may be tampered",
+            snapshot.state_root,
+            computed_root
+        );
     }
 
     let mut batch = StorageBatch::new();
@@ -48,18 +68,27 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
 
+        let addr = Address::from_slice(&[1u8; 20]).unwrap();
+        let account = Account::new(addr);
+
+        // Compute the correct Merkle root for verification
+        let mut tree = SparseMerkleTree::new();
+        let account_bytes = bincode::serialize(&account).unwrap();
+        let account_hash = Sha256::digest(&account_bytes);
+        tree.update(addr, H256::from_slice(&account_hash).unwrap());
+        let correct_root = tree.root();
+
         let mut snapshot = StateSnapshot {
             metadata: crate::generator::SnapshotMetadata {
                 height: 42,
                 generated_at: 0,
             },
-            state_root: H256::from_slice(&[1u8; 32]).unwrap(),
+            state_root: correct_root,
             accounts: Vec::new(),
             utxos: Vec::new(),
         };
 
-        let addr = Address::from_slice(&[1u8; 20]).unwrap();
-        snapshot.accounts.push((addr, Account::new(addr)));
+        snapshot.accounts.push((addr, account));
 
         let utxo_id = UtxoId {
             tx_hash: H256::zero(),
