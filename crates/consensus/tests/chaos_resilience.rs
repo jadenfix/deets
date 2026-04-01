@@ -54,23 +54,55 @@ fn test_leader_crash_triggers_timeout() {
 
 /// Test: Timeout certificate forms with 2/3 stake.
 ///
-/// Simulates 3 of 4 validators sending timeout votes.
+/// Simulates 3 of 4 validators sending timeout votes with proper BLS signatures.
 #[test]
 fn test_timeout_certificate_quorum() {
-    let validators = create_validators(4);
-    let bls_kp = aether_crypto_bls::BlsKeypair::generate();
+    use aether_crypto_bls::BlsKeypair;
+
+    let bls_keys: Vec<BlsKeypair> = (0..4).map(|_| BlsKeypair::generate()).collect();
+    let validators: Vec<ValidatorInfo> = bls_keys
+        .iter()
+        .map(|bk| {
+            let pk_bytes = bk.public_key();
+            ValidatorInfo {
+                pubkey: PublicKey::from_bytes(pk_bytes[..32].to_vec()),
+                stake: 1000,
+                commission: 0,
+                active: true,
+            }
+        })
+        .collect();
+
     let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
+
+    // Register BLS keys for all validators
+    for (i, v) in validators.iter().enumerate() {
+        let addr = v.pubkey.to_address();
+        let pop = bls_keys[i].proof_of_possession();
+        consensus
+            .register_bls_pubkey(addr, bls_keys[i].public_key(), &pop)
+            .unwrap();
+    }
 
     // Collect timeout votes from 3 validators
     for (i, validator) in validators.iter().take(3).enumerate() {
+        let addr = validator.pubkey.to_address();
+        // Sign the correct timeout message format
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&1u64.to_le_bytes());
+        msg.extend_from_slice(&0u64.to_le_bytes());
+        msg.extend_from_slice(H256::zero().as_bytes());
+        let signature = bls_keys[i].sign(&msg);
+
         let tv = TimeoutVote {
             round: 1,
-            validator: validator.pubkey.to_address(),
+            validator: addr,
             validator_pubkey: validator.pubkey.clone(),
             stake: 1000,
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),
-            signature: bls_kp.sign(b"timeout_1"),
+            signature,
         };
 
         let result = consensus.on_timeout_vote(tv).unwrap();
@@ -169,7 +201,7 @@ fn test_tc_advances_consensus() {
         signers: vec![],
     };
 
-    consensus.on_timeout_certificate(&tc);
+    consensus.on_timeout_certificate(&tc).unwrap();
     assert_eq!(consensus.current_slot(), 1, "slot should advance after TC");
     assert_eq!(
         *consensus.current_phase(),

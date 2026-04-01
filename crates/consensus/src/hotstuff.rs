@@ -249,9 +249,31 @@ impl HotStuffConsensus {
             .or_insert(vote.parent_hash);
         self.block_slots.entry(vote.block_hash).or_insert(vote.slot);
 
-        // Store vote
+        // Verify the claimed stake matches registered stake
+        let registered_stake = self
+            .validators
+            .get(&vote.validator)
+            .map(|v| v.stake)
+            .unwrap_or(0);
+        if vote.stake != registered_stake {
+            bail!(
+                "vote stake mismatch: claimed {} but registered {}",
+                vote.stake,
+                registered_stake
+            );
+        }
+
+        // Store vote (deduplicate: reject if this validator already voted in this phase for this block)
         let phase_votes = self.votes.entry(vote.phase.clone()).or_default();
         let block_votes = phase_votes.entry(vote.block_hash).or_default();
+        if block_votes.iter().any(|v| v.validator == vote.validator) {
+            bail!(
+                "duplicate vote from {:?} in phase {:?} for block {:?}",
+                vote.validator,
+                vote.phase,
+                vote.block_hash
+            );
+        }
         block_votes.push(vote.clone());
 
         // Check for quorum
@@ -362,8 +384,41 @@ impl HotStuffConsensus {
 
     /// Process a timeout vote from another validator.
     /// Returns a TimeoutCertificate if quorum is reached.
+    ///
+    /// Safety invariants:
+    /// - Deduplicates votes from the same validator (prevents stake inflation)
+    /// - Verifies the voter is a known validator with correct stake
+    /// - Verifies BLS signature on the timeout message
     pub fn on_timeout_vote(&mut self, tv: TimeoutVote) -> Result<Option<TimeoutCertificate>> {
+        // Verify the voter is a known validator
+        let validator_info = self
+            .validators
+            .get(&tv.validator)
+            .ok_or_else(|| anyhow::anyhow!("unknown validator {:?}", tv.validator))?;
+
+        // Verify the claimed stake matches the registered stake
+        if tv.stake != validator_info.stake {
+            bail!(
+                "timeout vote stake mismatch: claimed {} but registered {}",
+                tv.stake,
+                validator_info.stake
+            );
+        }
+
+        // Verify BLS signature on the timeout vote
+        self.verify_timeout_vote_signature(&tv)?;
+
         let round_votes = self.timeout_votes.entry(tv.round).or_default();
+
+        // Deduplicate: reject if this validator already voted in this round
+        if round_votes.iter().any(|v| v.validator == tv.validator) {
+            bail!(
+                "duplicate timeout vote from {:?} in round {}",
+                tv.validator,
+                tv.round
+            );
+        }
+
         round_votes.push(tv.clone());
 
         let stake: u128 = round_votes.iter().map(|v| v.stake).sum();
@@ -393,11 +448,35 @@ impl HotStuffConsensus {
     }
 
     /// Process a timeout certificate: advance to new round.
-    pub fn on_timeout_certificate(&mut self, _tc: &TimeoutCertificate) {
+    ///
+    /// Safety invariants:
+    /// - Validates TC has >= 2/3 quorum stake
+    /// - Updates locked block to the highest QC referenced by the TC
+    ///   (ensures the new leader extends from the highest certified block)
+    /// - Clears stale votes from the previous round
+    pub fn on_timeout_certificate(&mut self, tc: &TimeoutCertificate) -> Result<()> {
+        // Verify the TC has sufficient stake (>= 2/3 quorum)
+        if !crate::has_quorum(tc.total_stake, self.total_stake) {
+            bail!(
+                "timeout certificate has insufficient stake: {} / {} total",
+                tc.total_stake,
+                self.total_stake
+            );
+        }
+
+        // Update locked block to the highest QC from the TC.
+        // This ensures the next leader proposes extending the most recent
+        // certified block, preserving the 2-chain finality invariant.
+        if tc.highest_qc_slot > self.locked_slot {
+            self.locked_block = Some(tc.highest_qc_hash);
+            self.locked_slot = tc.highest_qc_slot;
+        }
+
         // Advance slot (new round = new leader)
         self.current_slot += 1;
         self.current_phase = Phase::Propose;
         self.votes.clear();
+        Ok(())
     }
 
     /// Find the highest QC we've seen.
@@ -485,6 +564,39 @@ impl HotStuffConsensus {
         let valid = aether_crypto_bls::keypair::verify(bls_pk, &msg, &vote.signature)?;
         if !valid {
             bail!("invalid BLS signature from {:?}", vote.validator);
+        }
+        Ok(())
+    }
+
+    /// Verify BLS signature on a timeout vote message.
+    fn verify_timeout_vote_signature(&self, tv: &TimeoutVote) -> Result<()> {
+        let bls_pk = self
+            .bls_pubkeys
+            .get(&tv.validator)
+            .ok_or_else(|| anyhow::anyhow!("no BLS pubkey registered for {:?}", tv.validator))?;
+        if bls_pk.len() != 48 {
+            bail!(
+                "BLS pubkey invalid length {} for {:?}",
+                bls_pk.len(),
+                tv.validator
+            );
+        }
+        if tv.signature.len() != 96 {
+            bail!(
+                "timeout vote signature invalid length {} from {:?}",
+                tv.signature.len(),
+                tv.validator
+            );
+        }
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&tv.round.to_le_bytes());
+        msg.extend_from_slice(&tv.highest_qc_slot.to_le_bytes());
+        msg.extend_from_slice(tv.highest_qc_hash.as_bytes());
+        let valid = aether_crypto_bls::keypair::verify(bls_pk, &msg, &tv.signature)?;
+        if !valid {
+            bail!("invalid BLS signature on timeout vote from {:?}", tv.validator);
         }
         Ok(())
     }
@@ -670,23 +782,67 @@ mod tests {
         // If we got here without stack overflow, the recursive bug is fixed
     }
 
+    /// Helper: create validators with BLS keys and register them.
+    fn setup_bls_consensus(
+        count: usize,
+    ) -> (
+        HotStuffConsensus,
+        Vec<ValidatorInfo>,
+        Vec<BlsKeypair>,
+    ) {
+        let bls_keys: Vec<BlsKeypair> = (0..count).map(|_| BlsKeypair::generate()).collect();
+        let validators: Vec<ValidatorInfo> = bls_keys
+            .iter()
+            .map(|bk| {
+                let pk_bytes = bk.public_key();
+                ValidatorInfo {
+                    pubkey: PublicKey::from_bytes(pk_bytes[..32].to_vec()),
+                    stake: 1000,
+                    commission: 0,
+                    active: true,
+                }
+            })
+            .collect();
+
+        let my_addr = validators[0].pubkey.to_address();
+        let mut consensus =
+            HotStuffConsensus::new(validators.clone(), Some(bls_keys[0].clone()), Some(my_addr));
+
+        // Register BLS keys for all validators
+        for (i, v) in validators.iter().enumerate() {
+            let addr = v.pubkey.to_address();
+            let pop = bls_keys[i].proof_of_possession();
+            consensus
+                .register_bls_pubkey(addr, bls_keys[i].public_key(), &pop)
+                .unwrap();
+        }
+
+        (consensus, validators, bls_keys)
+    }
+
     #[test]
     fn test_timeout_vote_collection() {
-        let validators = create_test_validators(4);
-        let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
-
-        let kp = BlsKeypair::generate();
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
 
         // Collect timeout votes from 3 of 4 validators
         for (i, validator) in validators.iter().take(3).enumerate() {
+            let addr = validator.pubkey.to_address();
+            // Sign the correct timeout message
+            let mut msg = Vec::new();
+            msg.extend_from_slice(b"timeout");
+            msg.extend_from_slice(&1u64.to_le_bytes()); // round
+            msg.extend_from_slice(&0u64.to_le_bytes()); // highest_qc_slot
+            msg.extend_from_slice(H256::zero().as_bytes()); // highest_qc_hash
+            let signature = bls_keys[i].sign(&msg);
+
             let tv = TimeoutVote {
                 round: 1,
-                validator: validator.pubkey.to_address(),
+                validator: addr,
                 validator_pubkey: validator.pubkey.clone(),
                 stake: 1000,
                 highest_qc_slot: 0,
                 highest_qc_hash: H256::zero(),
-                signature: kp.sign(b"timeout"),
+                signature,
             };
 
             let result = consensus.on_timeout_vote(tv).unwrap();
@@ -699,6 +855,160 @@ mod tests {
                 assert_eq!(tc.signers.len(), 3);
             }
         }
+    }
+
+    #[test]
+    fn test_timeout_vote_rejects_duplicate() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        let addr = validators[0].pubkey.to_address();
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&1u64.to_le_bytes());
+        msg.extend_from_slice(&0u64.to_le_bytes());
+        msg.extend_from_slice(H256::zero().as_bytes());
+        let signature = bls_keys[0].sign(&msg);
+
+        let tv = TimeoutVote {
+            round: 1,
+            validator: addr,
+            validator_pubkey: validators[0].pubkey.clone(),
+            stake: 1000,
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signature: signature.clone(),
+        };
+
+        // First vote accepted
+        assert!(consensus.on_timeout_vote(tv.clone()).is_ok());
+        // Duplicate rejected
+        let result = consensus.on_timeout_vote(tv);
+        assert!(result.is_err(), "duplicate timeout vote must be rejected");
+    }
+
+    #[test]
+    fn test_timeout_vote_rejects_wrong_stake() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        let addr = validators[0].pubkey.to_address();
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&1u64.to_le_bytes());
+        msg.extend_from_slice(&0u64.to_le_bytes());
+        msg.extend_from_slice(H256::zero().as_bytes());
+        let signature = bls_keys[0].sign(&msg);
+
+        let tv = TimeoutVote {
+            round: 1,
+            validator: addr,
+            validator_pubkey: validators[0].pubkey.clone(),
+            stake: 9999, // wrong stake
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signature,
+        };
+
+        let result = consensus.on_timeout_vote(tv);
+        assert!(result.is_err(), "mismatched stake must be rejected");
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_insufficient_stake() {
+        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 1000, // only 25% — needs 66.7%
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![],
+        };
+
+        let result = consensus.on_timeout_certificate(&tc);
+        assert!(result.is_err(), "TC with insufficient stake must be rejected");
+    }
+
+    #[test]
+    fn test_timeout_certificate_updates_locked_block() {
+        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+
+        let highest_hash = H256::from_slice(&[0xAB; 32]).unwrap();
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 3000, // 75% quorum
+            highest_qc_slot: 5,
+            highest_qc_hash: highest_hash,
+            signers: vec![],
+        };
+
+        consensus.on_timeout_certificate(&tc).unwrap();
+        assert_eq!(consensus.locked_block, Some(highest_hash));
+        assert_eq!(consensus.locked_slot, 5);
+    }
+
+    #[test]
+    fn test_vote_rejects_duplicate() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        consensus.advance_phase(); // → Prevote
+        let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+        let parent_hash = H256::zero();
+        let addr = validators[1].pubkey.to_address();
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(block_hash.as_bytes());
+        msg.extend_from_slice(parent_hash.as_bytes());
+        msg.extend_from_slice(&consensus.current_slot().to_le_bytes());
+        msg.push(phase_to_byte(&Phase::Prevote));
+        let signature = bls_keys[1].sign(&msg);
+
+        let vote = HotStuffVote {
+            slot: consensus.current_slot(),
+            block_hash,
+            parent_hash,
+            phase: Phase::Prevote,
+            validator: addr,
+            validator_pubkey: validators[1].pubkey.clone(),
+            stake: 1000,
+            signature,
+        };
+
+        // First vote accepted
+        assert!(consensus.on_vote(vote.clone()).is_ok());
+        // Duplicate rejected
+        let result = consensus.on_vote(vote);
+        assert!(result.is_err(), "duplicate vote must be rejected");
+    }
+
+    #[test]
+    fn test_vote_rejects_wrong_stake() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        consensus.advance_phase(); // → Prevote
+        let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
+        let parent_hash = H256::zero();
+        let addr = validators[1].pubkey.to_address();
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(block_hash.as_bytes());
+        msg.extend_from_slice(parent_hash.as_bytes());
+        msg.extend_from_slice(&consensus.current_slot().to_le_bytes());
+        msg.push(phase_to_byte(&Phase::Prevote));
+        let signature = bls_keys[1].sign(&msg);
+
+        let vote = HotStuffVote {
+            slot: consensus.current_slot(),
+            block_hash,
+            parent_hash,
+            phase: Phase::Prevote,
+            validator: addr,
+            validator_pubkey: validators[1].pubkey.clone(),
+            stake: 5000, // wrong stake
+            signature,
+        };
+
+        let result = consensus.on_vote(vote);
+        assert!(result.is_err(), "mismatched stake must be rejected");
     }
 
     #[test]
@@ -715,7 +1025,7 @@ mod tests {
             signers: vec![],
         };
 
-        consensus.on_timeout_certificate(&tc);
+        consensus.on_timeout_certificate(&tc).unwrap();
         assert_eq!(consensus.current_slot(), initial_slot + 1);
         assert_eq!(*consensus.current_phase(), Phase::Propose);
     }
