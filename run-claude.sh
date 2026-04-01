@@ -16,7 +16,7 @@
 # Kill switch:   touch /tmp/claude-runner-stop
 # ============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${REPO_DIR}/.claude/logs"
@@ -225,13 +225,13 @@ run_agent() {
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Running $MODEL → $LOG_FILE" | tee -a "$RUNNER_LOG"
 
+        local EXIT_CODE=0
         caffeinate -dims \
             claude \
                 --permission-mode bypassPermissions \
                 --model "$MODEL" \
                 -p "$TASK_PROMPT" \
-            >> "$LOG_FILE" 2>&1
-        local EXIT_CODE=$?
+            >> "$LOG_FILE" 2>&1 || EXIT_CODE=$?
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Claude exit $EXIT_CODE" | tee -a "$RUNNER_LOG"
 
@@ -242,13 +242,13 @@ run_agent() {
 
             if [ -x "$CODEX" ]; then
                 local CODEX_LOG="${LOG_FILE%.log}-codex.log"
+                local CODEX_EXIT=0
                 caffeinate -dims \
                     "$CODEX" exec \
                         --dangerously-bypass-approvals-and-sandbox \
                         -C "$WORK_DIR" \
                         "$TASK_PROMPT" \
-                    < /dev/null >> "$CODEX_LOG" 2>&1
-                local CODEX_EXIT=$?
+                    < /dev/null >> "$CODEX_LOG" 2>&1 || CODEX_EXIT=$?
                 echo "[$(date -Iseconds)] Agent $AGENT_ID: Codex exit $CODEX_EXIT" | tee -a "$RUNNER_LOG"
 
                 if [ "$CODEX_EXIT" -ne 0 ] && grep -qi 'rate.limit\|429\|overloaded\|capacity\|quota' "$CODEX_LOG" 2>/dev/null; then
