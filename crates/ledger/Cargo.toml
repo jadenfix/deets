@@ -21,6 +21,11 @@ aether-state-storage = { path = "../state/storage" }
 [dev-dependencies]
 tempfile = "3"
 proptest = { workspace = true }
+criterion = { workspace = true }
 
 [features]
 proptest = []
+
+[[bench]]
+name = "ledger_bench"
+harness = false
