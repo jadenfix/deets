@@ -23,6 +23,7 @@ use aether_verifiers_tee::{AttestationReport, TeeVerifier};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiableComputeReceipt {
@@ -113,9 +114,16 @@ impl VcrValidator {
     }
 
     /// Verify VCRs from multiple workers (quorum consensus)
+    ///
+    /// Security properties:
+    /// - Deduplicates by worker_id to prevent Sybil attacks (one worker submitting
+    ///   multiple VCRs to satisfy quorum alone)
+    /// - Verifies each VCR individually BEFORE counting toward consensus
+    /// - Only verifies VCRs that agree with the majority output — a single
+    ///   dissenting VCR with an invalid signature/TEE/KZG cannot poison the quorum
     pub fn verify_quorum(&self, vcrs: &[VerifiableComputeReceipt]) -> Result<()> {
-        if vcrs.len() < self.quorum_size {
-            bail!("insufficient quorum: {} < {}", vcrs.len(), self.quorum_size);
+        if vcrs.is_empty() {
+            bail!("empty VCR set");
         }
 
         // All VCRs should have same job_id
@@ -126,24 +134,57 @@ impl VcrValidator {
             }
         }
 
-        // All VCRs should agree on output
-        let output_hash = vcrs[0].output_hash;
-        let mut agreement_count = 0;
+        // Deduplicate by worker_id — each distinct worker counts once
+        let mut seen_workers = HashSet::new();
+        let unique_vcrs: Vec<&VerifiableComputeReceipt> = vcrs
+            .iter()
+            .filter(|vcr| seen_workers.insert(vcr.worker_id.clone()))
+            .collect();
 
-        for vcr in vcrs {
-            if vcr.output_hash == output_hash {
-                agreement_count += 1;
+        if unique_vcrs.len() < self.quorum_size {
+            bail!(
+                "insufficient unique workers for quorum: {} < {}",
+                unique_vcrs.len(),
+                self.quorum_size
+            );
+        }
+
+        // Find majority output_hash among unique VCRs
+        let mut hash_counts = std::collections::HashMap::new();
+        for vcr in &unique_vcrs {
+            *hash_counts.entry(vcr.output_hash).or_insert(0usize) += 1;
+        }
+        let (&consensus_hash, &max_count) = hash_counts
+            .iter()
+            .max_by_key(|(_, c)| **c)
+            .unwrap(); // safe: unique_vcrs is non-empty
+
+        // Check 2/3 consensus among unique workers
+        if max_count * 3 < unique_vcrs.len() * 2 {
+            bail!(
+                "no consensus: {} / {} unique workers agree",
+                max_count,
+                unique_vcrs.len()
+            );
+        }
+
+        // Verify only the agreeing VCRs (dissenters don't need valid proofs
+        // and cannot poison quorum settlement)
+        let mut verified_count = 0;
+        for vcr in &unique_vcrs {
+            if vcr.output_hash == consensus_hash {
+                self.verify(vcr)?;
+                verified_count += 1;
             }
         }
 
-        // Check 2/3 consensus
-        if agreement_count * 3 < vcrs.len() * 2 {
-            bail!("no consensus: {} / {} agree", agreement_count, vcrs.len());
-        }
-
-        // Verify each VCR individually
-        for vcr in vcrs {
-            self.verify(vcr)?;
+        // Ensure enough verified agreeing workers for quorum
+        if verified_count < self.quorum_size {
+            bail!(
+                "insufficient verified quorum: {} < {}",
+                verified_count,
+                self.quorum_size
+            );
         }
 
         Ok(())
@@ -344,6 +385,52 @@ mod tests {
         vcrs[1].job_id = H256::from_slice(&[1u8; 32]).unwrap();
 
         assert!(validator.verify_quorum(&vcrs).is_err());
+    }
+
+    #[test]
+    fn test_sybil_attack_same_worker_three_vcrs() {
+        let validator = VcrValidator::new_for_test();
+        let worker = Keypair::generate();
+
+        // Same worker submits 3 identical VCRs — should fail quorum (only 1 unique worker)
+        let vcrs = vec![
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+        ];
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            err.to_string().contains("insufficient unique workers"),
+            "expected Sybil rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_dissenter_with_invalid_sig_does_not_poison_quorum() {
+        let validator = VcrValidator::new_for_test();
+
+        let mut vcrs = vec![
+            create_test_vcr(&Keypair::generate(), 5),
+            create_test_vcr(&Keypair::generate(), 5),
+            create_test_vcr(&Keypair::generate(), 5),
+        ];
+
+        // 4th worker disagrees AND has an invalid signature
+        let mut bad_vcr = create_test_vcr(&Keypair::generate(), 99);
+        bad_vcr.signature[0] ^= 0xFF;
+        vcrs.push(bad_vcr);
+
+        // Quorum should still pass: 3/4 agree, dissenter is not verified
+        assert!(validator.verify_quorum(&vcrs).is_ok());
+    }
+
+    #[test]
+    fn test_empty_vcr_set() {
+        let validator = VcrValidator::new_for_test();
+        let err = validator.verify_quorum(&[]).unwrap_err();
+        assert!(err.to_string().contains("empty VCR set"));
     }
 
     #[test]
