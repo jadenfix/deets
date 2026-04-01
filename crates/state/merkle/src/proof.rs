@@ -30,7 +30,7 @@ impl MerkleProof {
 
     /// Verify this proof against the claimed root.
     ///
-    /// Siblings are in leaf-to-root order: siblings[0] is the deepest sibling
+    /// Siblings are in leaf-to-root order: `siblings[0]` is the deepest sibling
     /// (at the leaf level, corresponding to the last bit of the key).
     /// We walk from the leaf upward to reconstruct the root.
     pub fn verify(&self) -> bool {

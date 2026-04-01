@@ -27,14 +27,14 @@ pub struct KzgProof {
 /// KZG trusted setup parameters (Structured Reference String).
 ///
 /// Generated from a Powers of Tau ceremony.
-/// Contains [τ^0]_1, [τ^1]_1, ..., [τ^n]_1 in G1
-/// and [1]_2, [τ]_2 in G2.
+/// Contains `[τ^0]_1`, `[τ^1]_1`, ..., `[τ^n]_1` in G1
+/// and `[1]_2`, `[τ]_2` in G2.
 pub struct TrustedSetup {
     /// G1 powers: [τ^i]_1 for i = 0..max_degree
     g1_points: Vec<blst_p1>,
-    /// [1]_2 - generator of G2
+    /// `[1]_2` - generator of G2
     g2_gen: blst_p2,
-    /// [τ]_2 - tau times the G2 generator
+    /// `[τ]_2` - tau times the G2 generator
     g2_tau: blst_p2,
     /// Maximum polynomial degree
     max_degree: usize,
@@ -147,7 +147,7 @@ impl KzgVerifier {
     /// Verify that P(z) = y using the commitment C and proof π.
     ///
     /// Checks the pairing equation:
-    /// e(C - [y]_1, [1]_2) == e(π, [τ]_2 - [z]_2)
+    /// `e(C - [y]_1, [1]_2) == e(π, [τ]_2 - [z]_2)`
     pub fn verify(
         &self,
         commitment: &KzgCommitment,

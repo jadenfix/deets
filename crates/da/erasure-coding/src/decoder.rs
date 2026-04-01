@@ -31,7 +31,7 @@ impl ReedSolomonDecoder {
 
     /// Decode shards back into original data
     ///
-    /// Accepts Option<Vec<u8>> to indicate present (Some) or missing (None) shards
+    /// Accepts `Option<Vec<u8>>` to indicate present (Some) or missing (None) shards
     /// Requires at least k (data_shards) shards to be present
     pub fn decode(&self, shards: &[Option<Vec<u8>>]) -> Result<Vec<u8>> {
         let expected = self.data_shards + self.parity_shards;
