@@ -2,7 +2,7 @@ use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair}
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, H256};
 use anyhow::{bail, Result};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// HotStuff 2-Chain BFT Consensus
 ///
@@ -450,16 +450,37 @@ impl HotStuffConsensus {
     /// Process a timeout certificate: advance to new round.
     ///
     /// Safety invariants:
-    /// - Validates TC has >= 2/3 quorum stake
+    /// - Recomputes voted stake from local validator set (never trusts tc.total_stake)
+    /// - Validates recomputed stake has >= 2/3 quorum
+    /// - Rejects TCs with unknown or duplicate signers
     /// - Updates locked block to the highest QC referenced by the TC
     ///   (ensures the new leader extends from the highest certified block)
     /// - Clears stale votes from the previous round
     pub fn on_timeout_certificate(&mut self, tc: &TimeoutCertificate) -> Result<()> {
-        // Verify the TC has sufficient stake (>= 2/3 quorum)
-        if !crate::has_quorum(tc.total_stake, self.total_stake) {
+        // Recompute voted stake from local validator set — never trust tc.total_stake.
+        // A malicious peer could forge a TC with inflated total_stake to bypass quorum.
+        let mut seen_signers = HashSet::new();
+        let mut voted_stake: u128 = 0;
+        for signer in &tc.signers {
+            if !seen_signers.insert(signer) {
+                bail!("duplicate signer in timeout certificate: {:?}", signer);
+            }
+            let stake = self
+                .validators
+                .get(signer)
+                .map(|v| v.stake)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("unknown signer in timeout certificate: {:?}", signer)
+                })?;
+            voted_stake = voted_stake
+                .checked_add(stake)
+                .ok_or_else(|| anyhow::anyhow!("voted stake overflow in timeout certificate"))?;
+        }
+
+        if !crate::has_quorum(voted_stake, self.total_stake) {
             bail!(
                 "timeout certificate has insufficient stake: {} / {} total",
-                tc.total_stake,
+                voted_stake,
                 self.total_stake
             );
         }
@@ -913,14 +934,15 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_rejects_insufficient_stake() {
-        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
 
+        // Only 1 signer = 1000/4000 = 25% — needs 66.7%
         let tc = TimeoutCertificate {
             round: 1,
-            total_stake: 1000, // only 25% — needs 66.7%
+            total_stake: 1000,
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),
-            signers: vec![],
+            signers: vec![validators[0].pubkey.to_address()],
         };
 
         let result = consensus.on_timeout_certificate(&tc);
@@ -932,15 +954,20 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_updates_locked_block() {
-        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
 
         let highest_hash = H256::from_slice(&[0xAB; 32]).unwrap();
+        // 3 signers = 3000/4000 = 75% quorum
         let tc = TimeoutCertificate {
             round: 1,
-            total_stake: 3000, // 75% quorum
+            total_stake: 3000,
             highest_qc_slot: 5,
             highest_qc_hash: highest_hash,
-            signers: vec![],
+            signers: vec![
+                validators[0].pubkey.to_address(),
+                validators[1].pubkey.to_address(),
+                validators[2].pubkey.to_address(),
+            ],
         };
 
         consensus.on_timeout_certificate(&tc).unwrap();
@@ -1016,6 +1043,7 @@ mod tests {
     #[test]
     fn test_timeout_certificate_advances_slot() {
         let validators = create_test_validators(4);
+        let addrs: Vec<Address> = validators.iter().map(|v| v.pubkey.to_address()).collect();
         let mut consensus = HotStuffConsensus::new(validators, None, None);
 
         let initial_slot = consensus.current_slot();
@@ -1024,12 +1052,68 @@ mod tests {
             total_stake: 3000,
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),
-            signers: vec![],
+            signers: vec![addrs[0], addrs[1], addrs[2]],
         };
 
         consensus.on_timeout_certificate(&tc).unwrap();
         assert_eq!(consensus.current_slot(), initial_slot + 1);
         assert_eq!(*consensus.current_phase(), Phase::Propose);
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_unknown_signer() {
+        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+
+        let fake_addr = Address::from_slice(&[0xDE; 20]).unwrap();
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 3000,
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![fake_addr],
+        };
+
+        let result = consensus.on_timeout_certificate(&tc);
+        assert!(result.is_err(), "TC with unknown signer must be rejected");
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_duplicate_signer() {
+        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+
+        let addr = validators[0].pubkey.to_address();
+        // Same signer listed 3 times — should be rejected
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 3000,
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![addr, addr, addr],
+        };
+
+        let result = consensus.on_timeout_certificate(&tc);
+        assert!(result.is_err(), "TC with duplicate signers must be rejected");
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_inflated_total_stake() {
+        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+
+        // Only 1 real signer (1000 stake) but total_stake claims 3000
+        // The fix recomputes stake from signers, so this should fail quorum
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 3000, // lie — only 1000 from 1 signer
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![validators[0].pubkey.to_address()],
+        };
+
+        let result = consensus.on_timeout_certificate(&tc);
+        assert!(
+            result.is_err(),
+            "TC with inflated total_stake must be rejected when recomputed stake is insufficient"
+        );
     }
 
     #[test]
