@@ -49,8 +49,9 @@ pub trait ConsensusEngine: Send + Sync {
     }
 
     /// Update epoch randomness from a finalized block's VRF output.
-    fn update_epoch_randomness(&mut self, _vrf_output: &[u8; 32]) {
-        // Default no-op for engines without VRF
+    /// Returns true if this was the first update this epoch.
+    fn update_epoch_randomness(&mut self, _vrf_output: &[u8; 32]) -> bool {
+        false
     }
 
     /// Get individual validator's registered stake by address.
