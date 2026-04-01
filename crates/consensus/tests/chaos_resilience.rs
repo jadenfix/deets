@@ -62,11 +62,11 @@ fn test_timeout_certificate_quorum() {
     let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
 
     // Collect timeout votes from 3 validators
-    for i in 0..3 {
+    for (i, v) in validators.iter().take(3).enumerate() {
         let tv = TimeoutVote {
             round: 1,
-            validator: validators[i].pubkey.to_address(),
-            validator_pubkey: validators[i].pubkey.clone(),
+            validator: v.pubkey.to_address(),
+            validator_pubkey: v.pubkey.clone(),
             stake: 1000,
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),

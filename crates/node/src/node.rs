@@ -88,7 +88,7 @@ impl Node {
 
         let fee_market = FeeMarket::new(
             chain_config.fees.a,
-            chain_config.chain.block_bytes_max as u64,
+            chain_config.chain.block_bytes_max,
             chain_config.fees.min_base_fee,
         );
         let emission_schedule = EmissionSchedule::new(
@@ -125,6 +125,7 @@ impl Node {
     ///
     /// Only keeps the most recent MAX_CACHED_BLOCKS to bound memory usage
     /// instead of loading the entire block history.
+    #[allow(clippy::type_complexity)]
     fn load_blocks_from_storage(
         storage: &Storage,
     ) -> Result<(
@@ -904,11 +905,11 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.status).unwrap_or_default());
-        receipt_hasher.update(&receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.logs).unwrap_or_default());
+        receipt_hasher.update(bincode::serialize(&receipt.status).unwrap_or_default());
+        receipt_hasher.update(receipt.gas_used.to_le_bytes());
+        receipt_hasher.update(bincode::serialize(&receipt.logs).unwrap_or_default());
         receipt_hasher.update(receipt.state_root.as_bytes());
-        hasher.update(&receipt_hasher.finalize());
+        hasher.update(receipt_hasher.finalize());
     }
     H256::from_slice(&hasher.finalize()).unwrap()
 }
@@ -1036,8 +1037,8 @@ mod tests {
             signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
         };
 
-        let root1 = compute_transactions_root(&[tx1.clone()]);
-        let root2 = compute_transactions_root(&[tx1]);
+        let root1 = compute_transactions_root(std::slice::from_ref(&tx1));
+        let root2 = compute_transactions_root(std::slice::from_ref(&tx1));
         assert_eq!(root1, root2, "same input must produce same root");
     }
 

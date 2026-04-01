@@ -273,6 +273,7 @@ dependencies = [
  "axum",
  "hex",
  "hyper 1.7.0",
+ "once_cell",
  "parking_lot 0.12.5",
  "regex",
  "serde",

@@ -1,5 +1,6 @@
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
@@ -83,9 +84,8 @@ enum FaucetError {
     Throttled(u64),
 }
 
-static GITHUB_HANDLE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap()
-});
+static GITHUB_HANDLE_RE: Lazy<regex::Regex> =
+    Lazy::new(|| regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap());
 
 fn validate_github(handle: &str) -> Result<(), FaucetError> {
     if handle.trim().is_empty() {

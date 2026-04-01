@@ -184,7 +184,7 @@ impl MeshCoordinator {
 
         self.reputation
             .entry(worker_id.to_vec())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(event);
 
         // Ban worker if reputation too low

@@ -17,10 +17,10 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────
-  # Lint: formatting, clippy, and security audit
+  # Lint: formatting and clippy
   # ──────────────────────────────────────────────
   lint:
-    name: Lint & Security Audit
+    name: Lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -47,15 +47,24 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked || true
+  # ──────────────────────────────────────────────
+  # Security audit (separate job, non-blocking but visible)
+  # ──────────────────────────────────────────────
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Security audit dependencies
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies for known vulnerabilities
         run: cargo audit
-        continue-on-error: true
 
   # ──────────────────────────────────────────────
-  # Test: unit tests, doc tests, integration tests
+  # Test: unit + doc tests via nextest
   # ──────────────────────────────────────────────
   test:
     name: Test Suite
@@ -66,6 +75,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -78,7 +90,7 @@ jobs:
           restore-keys: ${{ runner.os }}-test-
 
       - name: Run unit tests
-        run: cargo test --all-features --workspace
+        run: cargo nextest run --all-features --workspace
 
       - name: Run doc tests
         run: cargo test --doc --all-features --workspace
@@ -160,12 +172,15 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test]
+    needs: [test, docker]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -183,23 +198,23 @@ jobs:
       - name: Wait for network readiness
         run: |
           echo "Waiting for test network to be ready..."
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.test.yml ps | grep -q "healthy"; then
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.test.yml ps --format json | grep -q '"Health":"healthy"'; then
               echo "Network ready after ${i}s"
               break
             fi
-            if [ "$i" -eq 30 ]; then
-              echo "Warning: network may not be fully ready, proceeding anyway"
+            if [ "$i" -eq 60 ]; then
+              echo "::warning::Network may not be fully ready after 60s, proceeding"
             fi
             sleep 1
           done
 
-      - name: Run integration tests
-        run: cargo test --all-features --workspace
+      - name: Run integration tests (ignored tests only)
+        run: cargo nextest run --all-features --workspace --run-ignored ignored-only
 
       - name: Collect logs on failure
         if: failure()
-        run: docker compose -f docker-compose.test.yml logs --tail=100
+        run: docker compose -f docker-compose.test.yml logs --tail=200
 
       - name: Stop test network
         if: always()
@@ -233,11 +248,44 @@ jobs:
           key: ${{ runner.os }}-phase${{ matrix.phase }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-phase${{ matrix.phase }}-
 
+      - name: Verify acceptance script exists
+        run: |
+          SCRIPT="./scripts/run_phase${{ matrix.phase }}_acceptance.sh"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::error::Phase ${{ matrix.phase }} acceptance script not found: $SCRIPT"
+            exit 1
+          fi
+
       - name: Run Phase ${{ matrix.phase }} acceptance suite
         run: |
-          if [ -f "./scripts/run_phase${{ matrix.phase }}_acceptance.sh" ]; then
-            chmod +x ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
-            ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
-          else
-            echo "Phase ${{ matrix.phase }} acceptance script not found, skipping"
+          chmod +x ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
+          ./scripts/run_phase${{ matrix.phase }}_acceptance.sh
+
+  # ──────────────────────────────────────────────
+  # CI gate: single required check for branch protection
+  # ──────────────────────────────────────────────
+  ci-pass:
+    name: CI
+    if: always()
+    needs: [lint, test, build, docker, integration, phase-acceptance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Check all jobs passed
+        run: |
+          echo "Lint:        ${{ needs.lint.result }}"
+          echo "Test:        ${{ needs.test.result }}"
+          echo "Build:       ${{ needs.build.result }}"
+          echo "Docker:      ${{ needs.docker.result }}"
+          echo "Integration: ${{ needs.integration.result }}"
+          echo "Acceptance:  ${{ needs.phase-acceptance.result }}"
+          if [[ "${{ needs.lint.result }}" != "success" ]] ||
+             [[ "${{ needs.test.result }}" != "success" ]] ||
+             [[ "${{ needs.build.result }}" != "success" ]] ||
+             [[ "${{ needs.docker.result }}" != "success" ]] ||
+             [[ "${{ needs.integration.result }}" != "success" ]] ||
+             [[ "${{ needs.phase-acceptance.result }}" != "success" ]]; then
+            echo "::error::One or more required jobs failed"
+            exit 1
           fi
+          echo "All CI checks passed"

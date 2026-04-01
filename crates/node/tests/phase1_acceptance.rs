@@ -6,7 +6,9 @@ use aether_consensus::SimpleConsensus;
 use aether_crypto_bls::aggregate::{aggregate_public_keys, aggregate_signatures};
 use aether_crypto_bls::{verify_aggregated, BlsKeypair};
 use aether_crypto_primitives::Keypair;
-use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair};
+#[allow(deprecated)]
+use aether_crypto_vrf::check_leader_eligibility;
+use aether_crypto_vrf::{verify_proof, VrfKeypair};
 use aether_quic_transport::{connection::QuicConnection, QuicEndpoint};
 use aether_runtime::{ExecutionContext, ParallelScheduler, WasmVm};
 use aether_types::{
@@ -15,6 +17,7 @@ use aether_types::{
 use tokio::sync::Mutex;
 
 #[test]
+#[allow(deprecated)]
 fn test_phase1_ecvrf_leader_election() {
     let vrf = VrfKeypair::generate();
     let slot: Slot = 42;

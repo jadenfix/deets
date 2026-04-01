@@ -17,6 +17,7 @@ thiserror = "1"
 hex = "0.4"
 aether-types = { path = "../../types" }
 regex = "1"
+once_cell = "1"
 
 [dev-dependencies]
 axum = { version = "0.7", features = ["macros"] }

@@ -1,14 +1,14 @@
-/// EIP-1559 style dynamic base fee with burn mechanism.
-///
-/// The base fee adjusts each block based on gas utilization:
-/// - If block gas > target: base fee increases (up to 12.5% per block)
-/// - If block gas < target: base fee decreases (up to 12.5% per block)
-///
-/// Fee distribution:
-/// - Base fee is BURNED (removed from supply permanently)
-/// - Priority fee (tip) goes to the block proposer
-///
-/// This creates deflationary pressure proportional to network usage.
+//! EIP-1559 style dynamic base fee with burn mechanism.
+//!
+//! The base fee adjusts each block based on gas utilization:
+//! - If block gas > target: base fee increases (up to 12.5% per block)
+//! - If block gas < target: base fee decreases (up to 12.5% per block)
+//!
+//! Fee distribution:
+//! - Base fee is BURNED (removed from supply permanently)
+//! - Priority fee (tip) goes to the block proposer
+//!
+//! This creates deflationary pressure proportional to network usage.
 
 /// Fee market state tracked per-block.
 #[derive(Debug, Clone)]

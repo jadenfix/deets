@@ -1,5 +1,13 @@
 version: '3.8'
 
+x-validator-healthcheck: &validator-healthcheck
+  healthcheck:
+    test: ["CMD-SHELL", "curl -sf http://localhost:8545 -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"aeth_getSlotNumber\",\"params\":[],\"id\":1}' || exit 1"]
+    interval: 2s
+    timeout: 5s
+    retries: 15
+    start_period: 10s
+
 services:
   # 4-node test network
   validator-1:
@@ -16,6 +24,7 @@ services:
       - validator-1-data:/app/data
     networks:
       - aether-testnet
+    <<: *validator-healthcheck
 
   validator-2:
     build:
@@ -31,6 +40,7 @@ services:
       - validator-2-data:/app/data
     networks:
       - aether-testnet
+    <<: *validator-healthcheck
 
   validator-3:
     build:
@@ -46,6 +56,7 @@ services:
       - validator-3-data:/app/data
     networks:
       - aether-testnet
+    <<: *validator-healthcheck
 
   validator-4:
     build:
@@ -61,6 +72,7 @@ services:
       - validator-4-data:/app/data
     networks:
       - aether-testnet
+    <<: *validator-healthcheck
 
   # Test runner
   test-runner:
@@ -68,19 +80,19 @@ services:
       context: .
       dockerfile: Dockerfile.test
     depends_on:
-      - validator-1
-      - validator-2
-      - validator-3
-      - validator-4
+      validator-1:
+        condition: service_healthy
+      validator-2:
+        condition: service_healthy
+      validator-3:
+        condition: service_healthy
+      validator-4:
+        condition: service_healthy
     environment:
       - RPC_URL=http://validator-1:8545
     networks:
       - aether-testnet
-    command: |
-      sh -c "
-        sleep 10 &&
-        cargo test --all-features --workspace
-      "
+    command: cargo test --all-features --workspace
 
 volumes:
   validator-1-data:
@@ -91,4 +103,3 @@ volumes:
 networks:
   aether-testnet:
     driver: bridge
-

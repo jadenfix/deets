@@ -1,20 +1,20 @@
-/// Token emission schedule for SWR staking rewards.
-///
-/// The emission rate decreases over time:
-/// - Year 1: 5% annual inflation
-/// - Year 2: 4%
-/// - Year 3: 3%
-/// - Year 4: 2%
-/// - Year 5+: 1% (terminal rate)
-///
-/// Rewards are distributed per-epoch to validators proportional to their stake.
-///
-/// Fee distribution (from EIP-1559 fee market):
-/// - Base fee × gas_used: BURNED (removed from supply)
-/// - 60% of priority fee (tip): to block proposer
-/// - 40% of priority fee (tip): to treasury
+//! Token emission schedule for SWR staking rewards.
+//!
+//! The emission rate decreases over time:
+//! - Year 1: 5% annual inflation
+//! - Year 2: 4%
+//! - Year 3: 3%
+//! - Year 4: 2%
+//! - Year 5+: 1% (terminal rate)
+//!
+//! Rewards are distributed per-epoch to validators proportional to their stake.
+//!
+//! Fee distribution (from EIP-1559 fee market):
+//! - Base fee x gas_used: BURNED (removed from supply)
+//! - 60% of priority fee (tip): to block proposer
+//! - 40% of priority fee (tip): to treasury
 
-/// Default slots per year (500ms slots × 2 per second × 86400 seconds/day × 365 days).
+/// Default slots per year (500ms slots x 2 per second x 86400 seconds/day x 365 days).
 /// Prefer using EmissionSchedule fields which are derived from ChainConfig.
 pub const DEFAULT_SLOTS_PER_YEAR: u64 = 63_072_000;
 
@@ -137,7 +137,7 @@ mod tests {
         let annual = emission * DEFAULT_EPOCHS_PER_YEAR as u128;
         let annual_rate = (annual * 10_000) / supply;
         assert!(
-            annual_rate >= 490 && annual_rate <= 510,
+            (490..=510).contains(&annual_rate),
             "annual rate should be ~5%, got {} bps",
             annual_rate
         );

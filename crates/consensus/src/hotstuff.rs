@@ -14,16 +14,16 @@ use std::collections::HashMap;
 ///
 /// 2-CHAIN RULE:
 /// Block B is finalized when:
-///   1. B has prevote QC (≥2/3 stake)
-///   2. B's child C has precommit QC (≥2/3 stake)
-///   3. C.parent_hash == B.hash
-///   → B is finalized
+///     1. B has prevote QC (>=2/3 stake)
+///     2. B's child C has precommit QC (>=2/3 stake)
+///     3. C.parent_hash == B.hash
+///     -> B is finalized
 ///
 /// VIEW-CHANGE:
 /// When pacemaker timeout fires:
-///   1. Validator broadcasts TimeoutVote { round, highest_qc }
-///   2. New leader collects ≥2/3 stake of timeout votes → TimeoutCertificate
-///   3. New leader proposes block extending highest QC from TC
+///     1. Validator broadcasts TimeoutVote { round, highest_qc }
+///     2. New leader collects >=2/3 stake of timeout votes -> TimeoutCertificate
+///     3. New leader proposes block extending highest QC from TC
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Phase {
@@ -403,7 +403,7 @@ impl HotStuffConsensus {
     fn highest_qc(&self) -> (Slot, H256) {
         let mut best_slot = 0;
         let mut best_hash = H256::zero();
-        for ((slot, _, hash), _) in &self.qcs {
+        for (slot, _, hash) in self.qcs.keys() {
             if *slot > best_slot {
                 best_slot = *slot;
                 best_hash = *hash;
@@ -635,14 +635,14 @@ mod tests {
 
         // Directly insert votes (bypassing signature verification for this unit test)
         // to test the action-return logic
-        for i in 0..3 {
+        for v in validators.iter().take(3) {
             let vote = HotStuffVote {
                 slot: 0,
                 block_hash,
                 parent_hash,
                 phase: Phase::Prevote,
-                validator: validators[i].pubkey.to_address(),
-                validator_pubkey: validators[i].pubkey.clone(),
+                validator: v.pubkey.to_address(),
+                validator_pubkey: v.pubkey.clone(),
                 stake: 1000,
                 signature: vec![0u8; 96], // dummy sig
             };
@@ -677,11 +677,11 @@ mod tests {
         let kp = BlsKeypair::generate();
 
         // Collect timeout votes from 3 of 4 validators
-        for i in 0..3 {
+        for (i, v) in validators.iter().take(3).enumerate() {
             let tv = TimeoutVote {
                 round: 1,
-                validator: validators[i].pubkey.to_address(),
-                validator_pubkey: validators[i].pubkey.clone(),
+                validator: v.pubkey.to_address(),
+                validator_pubkey: v.pubkey.clone(),
                 stake: 1000,
                 highest_qc_slot: 0,
                 highest_qc_hash: H256::zero(),

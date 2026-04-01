@@ -24,15 +24,16 @@ dev:
 
 # Run all tests
 test:
-	./cli-test --rust-only
+	cargo test --all-features --workspace
 
 # Run property tests
 proptest:
-	cargo test --all --features proptest -- --ignored
+	cargo test --all-features --workspace -- --ignored
 
-# Lint and format
+# Lint and format (matches CI exactly)
 lint:
-	./cli-format
+	cargo fmt --all -- --check
+	cargo clippy --all-targets --all-features -- -D warnings
 
 # Format code
 fmt:
