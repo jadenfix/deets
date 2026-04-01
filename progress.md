@@ -319,3 +319,8 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
 - **2026-04-01** — fix(p2p): add per-topic message size limits on gossipsub. Tier 3 item. Branch: `fix/agent2-p2p-message-size-limits`, PR #46 (merged). Added per-topic size validation (tx 64KB, vote 8KB, shred 64KB, block 2MB), oversized messages dropped with sender penalty.
+
+- **2026-04-01** — fix(staking): wire complete_unbonding() into epoch transition. HIGH integration gap. Branch: `fix/agent4-nonce-replay-protection`, PR #74 (merged).
+  - `complete_unbonding()` was defined and tested in staking crate but never called from the node — unbonded tokens were permanently locked
+  - Added call to `self.staking_state.complete_unbonding(slot)` in `process_epoch_transition()`, credits each returned `(Address, u128)` pair via `ledger.credit_account()`
+  - Added test `epoch_transition_completes_unbonding_and_credits_account` verifying end-to-end flow

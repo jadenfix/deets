@@ -426,13 +426,15 @@ impl GovernanceState {
 
     /// Execute a treasury allocation (after proposal passes).
     ///
-    /// TODO: Currently only decrements the treasury balance. A production
-    /// implementation must transfer `amount` to `recipient` via the ledger.
+    /// Decrements the treasury balance and returns `(recipient, amount)` so
+    /// the caller (node / ledger layer) can credit the recipient's account.
+    /// The caller **must** invoke `ledger.credit_account(recipient, amount)`
+    /// with the returned values to complete the transfer.
     pub fn execute_treasury_allocation(
         &mut self,
         recipient: &Address,
         amount: u128,
-    ) -> Result<(), String> {
+    ) -> Result<(Address, u128), String> {
         if amount > self.treasury_balance {
             return Err(format!(
                 "insufficient treasury balance: have {}, need {}",
@@ -443,9 +445,7 @@ impl GovernanceState {
             .treasury_balance
             .checked_sub(amount)
             .ok_or("treasury underflow")?;
-        // TODO: emit event/log for treasury allocation to `recipient`
-        let _ = recipient; // used once ledger integration is complete
-        Ok(())
+        Ok((*recipient, amount))
     }
 
     pub fn get_proposal(&self, proposal_id: &H256) -> Option<&Proposal> {
@@ -710,14 +710,126 @@ mod tests {
 
         assert_eq!(state.treasury_balance, 1_000_000);
 
-        state
+        let (recipient, amount) = state
             .execute_treasury_allocation(&addr(1), 500_000)
             .unwrap();
+        // Caller must credit recipient with amount via the ledger
+        assert_eq!(recipient, addr(1));
+        assert_eq!(amount, 500_000);
         assert_eq!(state.treasury_balance, 500_000);
 
         // Insufficient funds
         let result = state.execute_treasury_allocation(&addr(2), 999_999);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_treasury_allocation_returns_correct_recipient_and_amount() {
+        let mut state = GovernanceState::new();
+        state.deposit_treasury(10_000).unwrap();
+
+        let (r1, a1) = state.execute_treasury_allocation(&addr(7), 3_000).unwrap();
+        assert_eq!(r1, addr(7), "must return the requested recipient");
+        assert_eq!(a1, 3_000, "must return the exact requested amount");
+        assert_eq!(state.treasury_balance, 7_000);
+
+        // Second allocation to a different recipient
+        let (r2, a2) = state.execute_treasury_allocation(&addr(8), 7_000).unwrap();
+        assert_eq!(r2, addr(8));
+        assert_eq!(a2, 7_000);
+        assert_eq!(state.treasury_balance, 0);
+
+        // Now treasury is empty — any allocation must fail
+        let err = state
+            .execute_treasury_allocation(&addr(9), 1)
+            .unwrap_err();
+        assert!(err.contains("insufficient treasury balance"));
+    }
+
+    #[test]
+    fn test_cancel_non_active_proposal_fails() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 5_000_000_000_000);
+        state.update_voting_power(addr(2), 5_000_000_000_000);
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "test".into(),
+                    value: 1,
+                },
+                "Test".into(),
+                1000,
+            )
+            .unwrap();
+
+        // Pass and execute the proposal
+        state.vote(pid, addr(1), true, 1500).unwrap();
+        state.vote(pid, addr(2), true, 1500).unwrap();
+        state.finalize(pid, 102_000).unwrap();
+        state.execute(pid, 200_000).unwrap();
+
+        // Trying to cancel an already-executed proposal must fail
+        let err = state.cancel(pid, addr(1)).unwrap_err();
+        assert!(
+            err.contains("cannot cancel"),
+            "cancel of executed proposal should fail: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cancel_by_non_proposer_fails() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 5_000_000_000_000);
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "x".into(),
+                    value: 0,
+                },
+                "Test".into(),
+                1000,
+            )
+            .unwrap();
+
+        let err = state.cancel(pid, addr(2)).unwrap_err();
+        assert!(err.contains("not proposer"), "cancel by non-proposer must fail: {err}");
+    }
+
+    #[test]
+    fn test_cancelled_proposal_rejects_votes() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 5_000_000_000_000);
+        state.update_voting_power(addr(2), 2_000_000_000_000);
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "x".into(),
+                    value: 0,
+                },
+                "Test".into(),
+                1000,
+            )
+            .unwrap();
+
+        state.cancel(pid, addr(1)).unwrap();
+
+        let err = state.vote(pid, addr(2), true, 1500).unwrap_err();
+        assert!(err.contains("not active"), "vote on cancelled proposal must fail: {err}");
+
+        let err2 = state.finalize(pid, 102_000).unwrap_err();
+        assert!(err2.contains("not active"), "finalize on cancelled proposal must fail: {err2}");
     }
 
     // ── Adversarial tests ────────────────────────────────────
