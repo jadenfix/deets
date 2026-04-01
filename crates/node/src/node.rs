@@ -377,7 +377,7 @@ impl Node {
             let my_addr = my_pubkey.to_address();
             let my_stake = self.consensus.validator_stake(&my_addr);
             if my_stake > 0 {
-                let my_share = (emission * my_stake) / total_stake;
+                let my_share = emission.checked_mul(my_stake).map(|n| n / total_stake).unwrap_or(0);
                 if my_share > 0 {
                     if let Err(e) = self.ledger.credit_account(&my_addr, my_share) {
                         eprintln!("WARNING: failed to credit emission reward: {e}");
