@@ -695,8 +695,29 @@ impl Node {
             );
         }
 
+        // Non-genesis blocks MUST carry a quorum certificate (aggregated vote).
+        // Without this check, a malicious proposer could omit the QC entirely
+        // and bypass BLS quorum verification.
+        let is_genesis_or_bootstrap = block.header.slot <= 1
+            || block.header.parent_hash == H256::zero();
+        if !is_genesis_or_bootstrap && block.aggregated_vote.is_none() {
+            bail!(
+                "block at slot {} missing required quorum certificate (aggregated_vote)",
+                block.header.slot
+            );
+        }
+
         // Verify BLS aggregate signature when present (proves quorum voted for parent)
         if let Some(ref agg_vote) = block.aggregated_vote {
+            // The QC must reference this block's parent — it certifies that
+            // a supermajority voted for the parent, justifying this extension.
+            if !is_genesis_or_bootstrap && agg_vote.block_hash != block.header.parent_hash {
+                bail!(
+                    "aggregated vote references block {:?} but parent is {:?}",
+                    agg_vote.block_hash,
+                    block.header.parent_hash
+                );
+            }
             if agg_vote.signers.is_empty() {
                 bail!("aggregated vote has no signers");
             }

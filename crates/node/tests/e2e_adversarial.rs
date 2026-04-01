@@ -13,8 +13,8 @@ use aether_node::{
     ValidatorKeypair,
 };
 use aether_types::{
-    Address, Block, BlockHeader, ChainConfig, PublicKey, Signature, SlashEvidence, Slot,
-    Transaction, ValidatorInfo, Vote, VrfProof, H256,
+    Address, AggregatedVote, Block, BlockHeader, ChainConfig, PublicKey, Signature, SlashEvidence,
+    Slot, Transaction, ValidatorInfo, Vote, VrfProof, H256,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -663,7 +663,124 @@ fn test_reject_invalid_receipts_root() {
 }
 
 // ============================================================================
-// Test 16: Slash evidence reduces validator stake via StakingState
+// Test 16: Block at slot > 1 without aggregated_vote is rejected
+// ============================================================================
+
+#[test]
+fn test_reject_block_missing_quorum_certificate() {
+    use aether_node::compute_transactions_root;
+
+    let mut network = TestNetwork::new(4);
+    network.run_slots(5);
+
+    // Find a real block to get valid parent hash and proposer
+    if let Some(real_block) = network.nodes[0].get_block_by_slot(1) {
+        let parent_hash = real_block.hash();
+        let proposer = real_block.header.proposer;
+
+        // Forge a block at slot 3 (> 1) with NO aggregated_vote
+        // Use the real proposer so we pass VRF check and hit the QC check
+        let forged = Block {
+            header: BlockHeader {
+                version: aether_types::PROTOCOL_VERSION,
+                slot: 3,
+                parent_hash,
+                state_root: H256::zero(),
+                transactions_root: compute_transactions_root(&[]),
+                receipts_root: H256::zero(),
+                proposer,
+                vrf_proof: real_block.header.vrf_proof.clone(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            },
+            transactions: vec![],
+            aggregated_vote: None, // Missing QC!
+            slash_evidence: Vec::new(),
+        };
+
+        let result = network.nodes[0].on_block_received(forged);
+        assert!(
+            result.is_err(),
+            "block at slot > 1 with non-zero parent must have aggregated_vote"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        // Should fail either at QC check or earlier consensus validation
+        assert!(
+            err_msg.contains("missing required quorum certificate")
+                || err_msg.contains("quorum")
+                || err_msg.contains("leader"),
+            "error should mention QC or validation issue, got: {}",
+            err_msg
+        );
+    }
+}
+
+// ============================================================================
+// Test 17: Block with QC referencing wrong parent is rejected
+// ============================================================================
+
+#[test]
+fn test_reject_block_qc_wrong_parent() {
+    use aether_node::compute_transactions_root;
+
+    let mut network = TestNetwork::new(4);
+    network.run_slots(5);
+
+    if let Some(real_block) = network.nodes[0].get_block_by_slot(1) {
+        let parent_hash = real_block.hash();
+        let proposer = real_block.header.proposer;
+
+        // Create a QC that references a different block (not the parent)
+        let wrong_hash = H256::from_slice(&[0xDE; 32]).unwrap();
+        let agg_vote = AggregatedVote {
+            block_hash: wrong_hash, // Wrong! Should be parent_hash
+            slot: 1,
+            signers: vec![PublicKey::from_bytes(vec![1u8; 32])],
+            aggregated_signature: vec![0u8; 96],
+            total_stake: 1000,
+        };
+
+        let forged = Block {
+            header: BlockHeader {
+                version: aether_types::PROTOCOL_VERSION,
+                slot: 3,
+                parent_hash,
+                state_root: H256::zero(),
+                transactions_root: compute_transactions_root(&[]),
+                receipts_root: H256::zero(),
+                proposer,
+                vrf_proof: real_block.header.vrf_proof.clone(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            },
+            transactions: vec![],
+            aggregated_vote: Some(agg_vote),
+            slash_evidence: Vec::new(),
+        };
+
+        let result = network.nodes[0].on_block_received(forged);
+        assert!(
+            result.is_err(),
+            "block with QC referencing wrong parent should be rejected"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        // Should fail at QC/parent check or earlier consensus validation
+        assert!(
+            err_msg.contains("aggregated vote references block")
+                || err_msg.contains("leader")
+                || err_msg.contains("quorum"),
+            "error should mention QC/parent mismatch or validation, got: {}",
+            err_msg
+        );
+    }
+}
+
+// ============================================================================
+// Test 18: Slash evidence reduces validator stake via StakingState
 // ============================================================================
 
 #[test]
