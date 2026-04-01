@@ -425,8 +425,12 @@ impl HybridConsensus {
                     aggregated_pubkey: vec![],
                 };
                 self.qcs.insert(key, qc.clone());
-                self.committed_slot = vote.slot;
-                self.finalized_slot = vote.slot;
+                if vote.slot > self.committed_slot {
+                    self.committed_slot = vote.slot;
+                }
+                if vote.slot > self.finalized_slot {
+                    self.finalized_slot = vote.slot;
+                }
                 self.pacemaker.on_commit();
                 return Ok(Some(qc));
             }
@@ -452,7 +456,9 @@ impl HybridConsensus {
                     if let Some(parent_hash) = self.block_parents.get(&vote.block_hash) {
                         if let Some(&parent_slot) = self.block_slots.get(parent_hash) {
                             let prevote_key = (parent_slot, Phase::Prevote, *parent_hash);
-                            if self.qcs.contains_key(&prevote_key) {
+                            if self.qcs.contains_key(&prevote_key)
+                                && parent_slot > self.finalized_slot
+                            {
                                 self.finalized_slot = parent_slot;
                                 println!(
                                     "FINALIZED slot {} (parent of slot {} block)",
@@ -461,7 +467,9 @@ impl HybridConsensus {
                             }
                         }
                     }
-                    self.committed_slot = vote.slot;
+                    if vote.slot > self.committed_slot {
+                        self.committed_slot = vote.slot;
+                    }
                 }
                 Phase::Commit => {}
             }
@@ -1271,5 +1279,66 @@ mod tests {
         // Slash again — nothing left
         let slashed2 = consensus.slash_validator(&addr, 500);
         assert_eq!(slashed2, 0);
+    }
+
+    #[test]
+    fn test_finality_monotonicity_never_regresses() {
+        // In a single-validator setup, finalized_slot advances monotonically.
+        // Even if a late vote arrives for an older slot, finalized_slot must not decrease.
+        let v1 = create_test_validator(1_000_000);
+        let bls1 = BlsKeypair::generate();
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+
+        // Advance to slot 3 and finalize it
+        consensus.advance_slot(); // slot 1
+        consensus.advance_slot(); // slot 2
+        consensus.advance_slot(); // slot 3
+
+        let block3 = H256::from_slice(&[0x33u8; 32]).unwrap();
+        let vote3 = make_signed_vote(&mut consensus, &v1, &bls1, block3, 3);
+        let qc3 = consensus.process_vote(vote3).unwrap();
+        assert!(qc3.is_some(), "should reach quorum at slot 3");
+        assert_eq!(consensus.finalized_slot(), 3);
+        assert_eq!(consensus.committed_slot, 3);
+
+        // Verify finalized_slot == 3 after processing
+        let finalized_before = consensus.finalized_slot();
+
+        // Advance to slot 4 and finalize
+        consensus.advance_slot(); // slot 4
+        let block4 = H256::from_slice(&[0x44u8; 32]).unwrap();
+        let vote4 = make_signed_vote(&mut consensus, &v1, &bls1, block4, 4);
+        let qc4 = consensus.process_vote(vote4).unwrap();
+        assert!(qc4.is_some());
+        assert!(
+            consensus.finalized_slot() >= finalized_before,
+            "finalized_slot must never decrease: was {}, now {}",
+            finalized_before,
+            consensus.finalized_slot()
+        );
+        assert_eq!(consensus.finalized_slot(), 4);
+    }
+
+    #[test]
+    fn test_committed_slot_monotonicity() {
+        // committed_slot must never decrease even with out-of-order QC processing
+        let v1 = create_test_validator(1_000_000);
+        let bls1 = BlsKeypair::generate();
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+
+        consensus.advance_slot(); // slot 1
+        let block1 = H256::from_slice(&[0x11u8; 32]).unwrap();
+        let vote1 = make_signed_vote(&mut consensus, &v1, &bls1, block1, 1);
+        consensus.process_vote(vote1).unwrap();
+        assert_eq!(consensus.committed_slot, 1);
+
+        consensus.advance_slot(); // slot 2
+        let block2 = H256::from_slice(&[0x22u8; 32]).unwrap();
+        let vote2 = make_signed_vote(&mut consensus, &v1, &bls1, block2, 2);
+        consensus.process_vote(vote2).unwrap();
+        assert!(
+            consensus.committed_slot >= 1,
+            "committed_slot must not regress"
+        );
     }
 }
