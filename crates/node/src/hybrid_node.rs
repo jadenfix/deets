@@ -9,7 +9,9 @@ use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
 use aether_crypto_vrf::VrfKeypair;
 use aether_types::{Address, PublicKey, ValidatorInfo};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Keypair bundle for a validator in hybrid consensus
 pub struct ValidatorKeypair {
@@ -38,6 +40,75 @@ impl ValidatorKeypair {
     pub fn public_key(&self) -> PublicKey {
         PublicKey::from_bytes(self.ed25519.public_key())
     }
+
+    /// Save keys to a JSON file on disk.
+    pub fn save_to_file(&self, path: &Path) -> Result<()> {
+        let keyfile = KeyFile {
+            ed25519_secret: to_hex(&self.ed25519.secret_key()),
+            bls_secret: to_hex(&self.bls.secret_key()),
+            vrf_secret: to_hex(&self.vrf.secret_bytes()),
+        };
+        let json = serde_json::to_string_pretty(&keyfile)?;
+
+        // Write with restrictive permissions (owner-only read/write)
+        std::fs::write(path, json)
+            .with_context(|| format!("failed to write key file: {}", path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+
+        Ok(())
+    }
+
+    /// Load keys from a JSON file.
+    pub fn load_from_file(path: &Path) -> Result<Self> {
+        let json = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read key file: {}", path.display()))?;
+        let keyfile: KeyFile = serde_json::from_str(&json)
+            .with_context(|| "failed to parse key file JSON")?;
+
+        let ed25519_bytes = from_hex(&keyfile.ed25519_secret)
+            .with_context(|| "invalid hex in ed25519_secret")?;
+        let bls_bytes = from_hex(&keyfile.bls_secret)
+            .with_context(|| "invalid hex in bls_secret")?;
+        let vrf_bytes = from_hex(&keyfile.vrf_secret)
+            .with_context(|| "invalid hex in vrf_secret")?;
+
+        let ed25519 = Keypair::from_bytes(&ed25519_bytes)
+            .map_err(|e| anyhow::anyhow!("invalid ed25519 key: {:?}", e))?;
+        let bls = BlsKeypair::from_secret(bls_bytes)?;
+        let vrf = VrfKeypair::from_secret(&vrf_bytes)?;
+
+        Ok(ValidatorKeypair { ed25519, vrf, bls })
+    }
+}
+
+/// On-disk key file format (JSON).
+#[derive(Serialize, Deserialize)]
+struct KeyFile {
+    ed25519_secret: String,
+    bls_secret: String,
+    vrf_secret: String,
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn from_hex(s: &str) -> Result<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        anyhow::bail!("hex string has odd length");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("invalid hex at position {}: {}", i, e))
+        })
+        .collect()
 }
 
 /// Create a hybrid consensus engine with VRF + HotStuff + BLS

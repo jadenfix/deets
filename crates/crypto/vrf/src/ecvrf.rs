@@ -48,6 +48,12 @@ impl VrfKeypair {
         Self::from_secret_bytes(&secret_bytes)
     }
 
+    /// Export the secret key bytes (for key persistence).
+    /// WARNING: Handle with care — this is the raw secret key.
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret.to_bytes()
+    }
+
     /// Create keypair from raw 32-byte secret.
     pub fn from_secret(secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {

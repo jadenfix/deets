@@ -179,9 +179,27 @@ async fn main() -> Result<()> {
         chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
     );
 
-    // Generate validator keypair (in production, load from HSM/keyfile)
-    // Seed can be set via AETHER_VALIDATOR_SEED for deterministic key generation in devnet
-    let validator_keypair = ValidatorKeypair::generate();
+    let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
+
+    // Load or generate validator keypair
+    let key_path = env::var("AETHER_VALIDATOR_KEY")
+        .unwrap_or_else(|_| format!("{}/validator.key", db_path));
+    let key_path = std::path::Path::new(&key_path);
+
+    let validator_keypair = if key_path.exists() {
+        println!("Loading validator key from: {}", key_path.display());
+        ValidatorKeypair::load_from_file(key_path)?
+    } else {
+        println!("Generating new validator keypair...");
+        let kp = ValidatorKeypair::generate();
+        // Auto-save so the node keeps the same identity on restart
+        if let Err(e) = kp.save_to_file(key_path) {
+            eprintln!("WARNING: failed to save validator key: {e}");
+        } else {
+            println!("Saved validator key to: {}", key_path.display());
+        }
+        kp
+    };
     let validator_address = validator_keypair.address();
 
     // Build consensus from genesis file (multi-validator) or single-validator mode
@@ -223,7 +241,6 @@ async fn main() -> Result<()> {
             )?)
         };
 
-    let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
     let rpc_port: u16 = env::var("AETHER_RPC_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
