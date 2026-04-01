@@ -198,11 +198,22 @@ impl P2PNetwork {
         self.publish(TOPIC_BLOCK, data)
     }
 
-    /// Connect to a peer by multiaddr.
+    /// Connect to a peer by multiaddr. Refuses to dial banned peers.
     pub fn connect_peer(&mut self, addr: &str) -> Result<()> {
         let multiaddr: Multiaddr = addr
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid multiaddr: {}", e))?;
+
+        // Extract peer ID from multiaddr and reject if banned
+        if let Some(libp2p::multiaddr::Protocol::P2p(peer_id)) = multiaddr.iter().last() {
+            if self.is_banned(&peer_id) {
+                return Err(anyhow::anyhow!(
+                    "peer {} is banned, refusing to dial",
+                    peer_id
+                ));
+            }
+        }
+
         self.swarm.dial(multiaddr)?;
         Ok(())
     }
@@ -238,8 +249,17 @@ impl P2PNetwork {
         loop {
             match self.swarm.select_next_some().await {
                 SwarmEvent::Behaviour(AetherBehaviourEvent::Gossipsub(
-                    gossipsub::Event::Message { message, .. },
+                    gossipsub::Event::Message {
+                        message,
+                        propagation_source,
+                        ..
+                    },
                 )) => {
+                    // Drop messages from banned peers that arrived before disconnect
+                    if self.is_banned(&propagation_source) {
+                        let _ = self.swarm.disconnect_peer_id(propagation_source);
+                        continue;
+                    }
                     let topic = message.topic.to_string();
                     let data = message.data;
 
@@ -403,5 +423,97 @@ mod tests {
         }
 
         assert!(connected, "nodes should connect to each other");
+    }
+
+    #[test]
+    fn test_ban_peer_and_check() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            // Peer starts unbanned
+            assert!(!network.is_banned(&peer_id));
+            assert_eq!(network.banned_count(), 0);
+
+            // Ban the peer
+            let ban_expiry = current_timestamp() + BAN_DURATION_SECS;
+            network.banned_peers.insert(peer_id, ban_expiry);
+
+            assert!(network.is_banned(&peer_id));
+            assert_eq!(network.banned_count(), 1);
+        });
+    }
+
+    #[test]
+    fn test_ban_via_low_score() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            // Add the peer to connected peers
+            network.peers.insert(
+                peer_id,
+                PeerInfo {
+                    id: peer_id.to_string(),
+                    address: String::new(),
+                    score: 0,
+                    connected_at: current_timestamp(),
+                },
+            );
+
+            // Decrease score below -100 threshold
+            network.update_peer_score(&peer_id, -101);
+
+            // Peer should be banned and removed from connected peers
+            assert!(network.is_banned(&peer_id));
+            assert_eq!(network.peer_count(), 0);
+        });
+    }
+
+    #[test]
+    fn test_connect_peer_rejects_banned() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let banned_peer_id = PeerId::random();
+
+            // Ban the peer
+            let ban_expiry = current_timestamp() + BAN_DURATION_SECS;
+            network.banned_peers.insert(banned_peer_id, ban_expiry);
+
+            // Attempt to dial banned peer — should fail
+            let addr = format!("/ip4/127.0.0.1/tcp/9999/p2p/{}", banned_peer_id);
+            let result = network.connect_peer(&addr);
+            assert!(result.is_err());
+            assert!(
+                result.unwrap_err().to_string().contains("banned"),
+                "error should mention peer is banned"
+            );
+        });
+    }
+
+    #[test]
+    fn test_ban_expiry() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            // Ban with an already-expired timestamp
+            network.banned_peers.insert(peer_id, current_timestamp() - 1);
+
+            // Should not be considered banned
+            assert!(!network.is_banned(&peer_id));
+            assert_eq!(network.banned_count(), 0);
+
+            // Dialing should succeed (won't actually connect, but won't be rejected)
+            let addr = format!("/ip4/127.0.0.1/tcp/9999/p2p/{}", peer_id);
+            // This will fail to connect but NOT because of ban
+            let result = network.connect_peer(&addr);
+            // The dial itself should be accepted (connection will fail async)
+            assert!(result.is_ok());
+        });
     }
 }
