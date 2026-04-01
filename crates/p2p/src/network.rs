@@ -19,6 +19,16 @@ pub const TOPIC_BLOCK: &str = "/aether/1/block";
 pub const TOPIC_VOTE: &str = "/aether/1/vote";
 pub const TOPIC_SHRED: &str = "/aether/1/shred";
 
+/// Per-topic maximum message sizes (bytes).
+/// Transactions are small (~1-2 KB typical, 64 KB generous max).
+/// Votes are BLS signatures + metadata (~512 bytes typical, 8 KB max).
+/// Shreds are erasure-coded block fragments (~1 KB typical, 64 KB max).
+/// Blocks can be large but still bounded (2 MB via gossipsub max_transmit_size).
+const MAX_TX_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
+const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
+
 /// Events emitted by the P2P network to the node.
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -262,18 +272,36 @@ impl P2PNetwork {
                     }
                     let topic = message.topic.to_string();
                     let data = message.data;
+                    let size = data.len();
 
-                    let event = if topic.contains("/tx") {
-                        NetworkEvent::TransactionReceived(data)
-                    } else if topic.contains("/block") {
-                        NetworkEvent::BlockReceived(data)
-                    } else if topic.contains("/vote") {
-                        NetworkEvent::VoteReceived(data)
-                    } else if topic.contains("/shred") {
-                        NetworkEvent::ShredReceived(data)
-                    } else {
+                    // Per-topic message size validation.
+                    // Oversized messages penalize the sender and are dropped.
+                    let (max_size, event_fn): (usize, fn(Vec<u8>) -> NetworkEvent) =
+                        if topic.contains("/tx") {
+                            (MAX_TX_SIZE, NetworkEvent::TransactionReceived)
+                        } else if topic.contains("/block") {
+                            (MAX_BLOCK_SIZE, NetworkEvent::BlockReceived)
+                        } else if topic.contains("/vote") {
+                            (MAX_VOTE_SIZE, NetworkEvent::VoteReceived)
+                        } else if topic.contains("/shred") {
+                            (MAX_SHRED_SIZE, NetworkEvent::ShredReceived)
+                        } else {
+                            continue;
+                        };
+
+                    if size > max_size {
+                        tracing::warn!(
+                            peer = %propagation_source,
+                            topic = %topic,
+                            size,
+                            max_size,
+                            "dropping oversized gossipsub message, penalizing peer"
+                        );
+                        self.update_peer_score(&propagation_source, -10);
                         continue;
-                    };
+                    }
+
+                    let event = event_fn(data);
 
                     return Some(event);
                 }
@@ -492,6 +520,24 @@ mod tests {
                 "error should mention peer is banned"
             );
         });
+    }
+
+    #[test]
+    fn test_message_size_constants() {
+        // Use runtime values to avoid clippy assertions_on_constants
+        let tx = MAX_TX_SIZE;
+        let block = MAX_BLOCK_SIZE;
+        let vote = MAX_VOTE_SIZE;
+        let shred = MAX_SHRED_SIZE;
+        let global_max = 2 * 1024 * 1024usize;
+
+        assert!(tx > 0 && block > 0 && vote > 0 && shred > 0);
+        assert!(tx <= global_max);
+        assert!(block <= global_max);
+        assert!(vote <= global_max);
+        assert!(shred <= global_max);
+        assert!(vote < tx);
+        assert!(tx < block);
     }
 
     #[test]
