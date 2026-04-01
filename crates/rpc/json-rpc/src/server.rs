@@ -175,9 +175,9 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(with_backend(backend))
             .and_then(handle_rpc_request);
 
-        let health = warp::get()
-            .and(warp::path("health"))
-            .map(|| warp::reply::json(&json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")})));
+        let health = warp::get().and(warp::path("health")).map(|| {
+            warp::reply::json(&json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")}))
+        });
 
         // WebSocket subscription endpoint
         let ws_subs = subs.clone();
@@ -342,7 +342,10 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
 
     let tx_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: format!("Invalid parameter type: expected hex string, got {}", params[0]),
+        message: format!(
+            "Invalid parameter type: expected hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -564,7 +567,10 @@ async fn handle_get_block_by_hash<B: RpcBackend>(
 
     let hash_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hash: expected 0x-prefixed 64-char hex string, got {}", params[0]),
+        message: format!(
+            "Invalid hash: expected 0x-prefixed 64-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -608,7 +614,10 @@ async fn handle_get_transaction_receipt<B: RpcBackend>(
 
     let hash_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hash: expected 0x-prefixed 64-char hex string, got {}", params[0]),
+        message: format!(
+            "Invalid hash: expected 0x-prefixed 64-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -668,7 +677,10 @@ async fn handle_get_account<B: RpcBackend>(
 
     let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: format!("Invalid address: expected 0x-prefixed 40-char hex string, got {}", params[0]),
+        message: format!(
+            "Invalid address: expected 0x-prefixed 40-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -738,7 +750,10 @@ async fn handle_request_airdrop<B: RpcBackend>(
 
     let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: format!("Invalid address: expected 0x-prefixed 40-char hex string, got {}", params[0]),
+        message: format!(
+            "Invalid address: expected 0x-prefixed 40-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
     let address = parse_address(addr_hex, "address")?;
