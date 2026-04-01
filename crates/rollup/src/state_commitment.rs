@@ -24,8 +24,8 @@ pub struct L2Batch {
 impl L2Batch {
     /// Hash this batch for commitment.
     pub fn hash(&self) -> H256 {
-        let bytes = bincode::serialize(self).unwrap_or_default();
-        H256::from_slice(&Sha256::digest(&bytes)).unwrap()
+        let bytes = bincode::serialize(self).expect("L2Batch serialization infallible");
+        H256::from_slice(&Sha256::digest(&bytes)).expect("SHA256 produces 32 bytes")
     }
 }
 
