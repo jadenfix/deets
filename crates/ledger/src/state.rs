@@ -231,11 +231,11 @@ impl Ledger {
             batch.put(CF_UTXOS, key, value);
         }
 
-        // Commit batch
-        self.storage.write_batch(batch)?;
+        // Incremental Merkle update — include state_root in the same batch
+        self.update_state_root_incremental(&sender_account, recipient_account.as_ref(), Some(&mut batch))?;
 
-        // Incremental Merkle update — only update changed accounts
-        self.update_state_root_incremental(&sender_account, recipient_account.as_ref())?;
+        // Commit everything atomically in a single WriteBatch
+        self.storage.write_batch(batch)?;
 
         Ok(TransactionReceipt {
             tx_hash,
@@ -274,10 +274,14 @@ impl Ledger {
 
     /// Incrementally update the Merkle tree for changed accounts only.
     /// This is O(k) where k = number of changed accounts, instead of O(n) for all accounts.
+    ///
+    /// If `batch` is provided, the state root is written into the batch for atomic
+    /// commit with other state changes. Otherwise, the root is written directly.
     fn update_state_root_incremental(
         &mut self,
         sender: &Account,
         recipient: Option<&Account>,
+        batch: Option<&mut StorageBatch>,
     ) -> Result<()> {
         // Update sender leaf
         let sender_hash = self.hash_account(sender);
@@ -289,15 +293,20 @@ impl Ledger {
             self.merkle_tree.update(recipient.address, recipient_hash);
         }
 
-        // Persist the new root
+        // Persist the new root — either in the batch (atomic) or directly
         let root = self.merkle_tree.root();
-        self.storage
-            .put(CF_METADATA, b"state_root", root.as_bytes())?;
+        if let Some(batch) = batch {
+            batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+        } else {
+            self.storage
+                .put(CF_METADATA, b"state_root", root.as_bytes())?;
+        }
 
         Ok(())
     }
 
-    /// Full rebuild of state root from all accounts (used on startup/seed).
+    /// Full rebuild of state root from all accounts (used on startup/recovery).
+    /// Safe because this runs during initialization before any concurrent access.
     fn recompute_state_root(&mut self) -> Result<()> {
         let mut accounts = HashMap::new();
         for item in self.storage.iterator(CF_ACCOUNTS)? {
@@ -315,9 +324,11 @@ impl Ledger {
             self.merkle_tree.update(address, hash);
         }
 
+        // Persist recomputed root atomically
         let root = self.merkle_tree.root();
-        self.storage
-            .put(CF_METADATA, b"state_root", root.as_bytes())?;
+        let mut batch = StorageBatch::new();
+        batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+        self.storage.write_batch(batch)?;
 
         Ok(())
     }
@@ -374,8 +385,8 @@ impl Ledger {
 
         let mut batch = StorageBatch::new();
         self.update_account_in_batch(&mut batch, account.clone())?;
+        self.update_state_root_incremental(&account, None, Some(&mut batch))?;
         self.storage.write_batch(batch)?;
-        self.update_state_root_incremental(&account, None)?;
         Ok(())
     }
 
@@ -631,6 +642,8 @@ impl Ledger {
     }
 
     /// Commit a speculative overlay to permanent storage.
+    /// All state changes (accounts, UTXOs, state root) are written in a single
+    /// atomic WriteBatch so a crash mid-commit cannot corrupt state.
     pub fn commit_overlay(&mut self, overlay: PendingOverlay) -> Result<()> {
         let mut batch = StorageBatch::new();
         for ((cf, key), value) in &overlay.writes {
@@ -639,7 +652,6 @@ impl Ledger {
         for (cf, key) in &overlay.deletes {
             batch.delete(cf, key.clone());
         }
-        self.storage.write_batch(batch)?;
 
         // Update merkle tree with changed accounts
         for addr in &overlay.changed_accounts {
@@ -657,10 +669,12 @@ impl Ledger {
             }
         }
 
-        // Persist state root
+        // Include state root in the same atomic batch
         let root = self.merkle_tree.root();
-        self.storage
-            .put(CF_METADATA, b"state_root", root.as_bytes())?;
+        batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+
+        // Single atomic write — all or nothing
+        self.storage.write_batch(batch)?;
         Ok(())
     }
 
@@ -670,9 +684,9 @@ impl Ledger {
         let key = address.as_bytes().to_vec();
         let value = bincode::serialize(&account)?;
         batch.put(CF_ACCOUNTS, key, value);
+        // Include state root in same atomic batch
+        self.update_state_root_incremental(&account, None, Some(&mut batch))?;
         self.storage.write_batch(batch)?;
-        // Incremental update — O(depth) instead of O(n) full recompute
-        self.update_state_root_incremental(&account, None)?;
         Ok(())
     }
 
@@ -896,5 +910,100 @@ mod tests {
         assert_eq!(sender_after.nonce, 1);
         assert_eq!(sender_after.balance, 98_100);
         assert_eq!(recipient_after.balance, 1_500);
+    }
+
+    #[test]
+    fn test_state_root_persisted_atomically_with_accounts() {
+        // Verify that after a transaction, the state root stored in metadata
+        // matches the in-memory merkle tree — proving they were written together.
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 10_000).unwrap();
+
+        let root_after_seed = ledger.state_root();
+        let stored_root = ledger
+            .storage()
+            .get(CF_METADATA, b"state_root")
+            .unwrap()
+            .map(|b| H256::from_slice(&b).unwrap());
+        assert_eq!(Some(root_after_seed), stored_root);
+
+        // Apply a transaction and verify consistency again
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+        ledger.apply_transaction(&tx).unwrap();
+
+        let root_after_tx = ledger.state_root();
+        let stored_root2 = ledger
+            .storage()
+            .get(CF_METADATA, b"state_root")
+            .unwrap()
+            .map(|b| H256::from_slice(&b).unwrap());
+        assert_eq!(Some(root_after_tx), stored_root2);
+        assert_ne!(root_after_seed, root_after_tx);
+    }
+
+    #[test]
+    fn test_overlay_commit_atomic_state_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 50_000).unwrap();
+
+        // Build and commit an overlay
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 200,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
+        assert!(matches!(receipts[0].status, TransactionStatus::Success));
+
+        let overlay_root = overlay.state_root;
+        ledger.commit_overlay(overlay).unwrap();
+
+        // After commit, stored root must match overlay's computed root
+        let stored_root = ledger
+            .storage()
+            .get(CF_METADATA, b"state_root")
+            .unwrap()
+            .map(|b| H256::from_slice(&b).unwrap());
+        assert_eq!(Some(overlay_root), stored_root);
+        assert_eq!(ledger.state_root(), overlay_root);
     }
 }
