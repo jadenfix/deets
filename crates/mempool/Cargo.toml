@@ -2,6 +2,9 @@
 name = "aether-mempool"
 version.workspace = true
 edition.workspace = true
+description = "Fee-priority transaction pool with QoS support for the Aether mempool"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "mempool", "transactions", "fee"]
 
 [dependencies]
 tokio.workspace = true

@@ -2,6 +2,9 @@
 name = "aether-rpc-json"
 version.workspace = true
 edition.workspace = true
+description = "JSON-RPC 2.0 server for Aether node API access (accounts, transactions, blocks)"
+categories = ["web-programming", "cryptography::cryptocurrencies"]
+keywords = ["aether", "rpc", "json-rpc", "api"]
 
 [dependencies]
 tokio = { workspace = true, features = ["sync"] }

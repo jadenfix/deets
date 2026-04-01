@@ -2,6 +2,9 @@
 name = "aether-runtime"
 version.workspace = true
 edition.workspace = true
+description = "Wasmtime-based parallel WASM execution runtime for Aether smart contracts"
+categories = ["wasm", "cryptography::cryptocurrencies"]
+keywords = ["aether", "wasm", "runtime", "smart-contracts"]
 
 [dependencies]
 aether-types = { path = "../types" }

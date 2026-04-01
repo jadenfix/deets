@@ -2,6 +2,9 @@
 name = "aether-da-shreds"
 version.workspace = true
 edition.workspace = true
+description = "Data availability shred types and Merkle proof structures for Aether Turbine"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "shreds", "data-availability", "turbine"]
 
 [dependencies]
 serde.workspace = true

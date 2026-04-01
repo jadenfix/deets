@@ -2,6 +2,9 @@
 name = "aether-crypto-bls"
 version.workspace = true
 edition.workspace = true
+description = "BLS12-381 aggregate signature scheme for Aether validator vote aggregation"
+categories = ["cryptography"]
+keywords = ["aether", "bls", "crypto", "aggregate"]
 
 [dependencies]
 blst.workspace = true

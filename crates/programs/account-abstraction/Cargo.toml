@@ -2,6 +2,9 @@
 name = "aether-account-abstraction"
 version.workspace = true
 edition.workspace = true
+description = "Account abstraction program enabling smart-contract-controlled accounts on Aether"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "account-abstraction", "smart-accounts"]
 
 [dependencies]
 anyhow.workspace = true

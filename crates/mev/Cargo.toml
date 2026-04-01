@@ -2,6 +2,9 @@
 name = "aether-mev"
 version.workspace = true
 edition.workspace = true
+description = "MEV mitigation strategies and fair ordering for the Aether transaction pipeline"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "mev", "ordering", "fairness"]
 
 [dependencies]
 anyhow.workspace = true

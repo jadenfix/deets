@@ -2,6 +2,9 @@
 name = "aether-verifiers-vcr"
 version.workspace = true
 edition.workspace = true
+description = "Verifiable Compute Receipt (VCR) validator combining TEE attestation and KZG proofs"
+categories = ["cryptography"]
+keywords = ["aether", "vcr", "verifier", "ai"]
 
 [dependencies]
 aether-types = { path = "../../types" }

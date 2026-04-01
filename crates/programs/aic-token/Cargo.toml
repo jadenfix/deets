@@ -2,6 +2,9 @@
 name = "aether-program-aic-token"
 version.workspace = true
 edition.workspace = true
+description = "AIC compute credit token program: minting, burning, and transfer for Aether AI jobs"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "aic", "token", "credits"]
 
 [dependencies]
 aether-types = { path = "../../types" }

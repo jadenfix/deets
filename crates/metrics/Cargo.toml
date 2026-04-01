@@ -2,6 +2,9 @@
 name = "aether-metrics"
 version.workspace = true
 edition.workspace = true
+description = "Prometheus instrumentation and metrics collection for Aether node operators"
+categories = ["development-tools::profiling"]
+keywords = ["aether", "metrics", "prometheus", "observability"]
 
 [dependencies]
 prometheus.workspace = true

@@ -2,6 +2,9 @@
 name = "aether-verifiers-tee"
 version.workspace = true
 edition.workspace = true
+description = "TEE attestation verifier: validates SGX/TDX remote attestation quotes for Aether AI jobs"
+categories = ["cryptography"]
+keywords = ["aether", "tee", "sgx", "attestation"]
 
 [dependencies]
 serde.workspace = true

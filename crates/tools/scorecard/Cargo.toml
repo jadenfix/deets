@@ -2,6 +2,9 @@
 name = "aether-scorecard"
 version.workspace = true
 edition.workspace = true
+description = "Validator performance scorecard: uptime, latency, and liveness metrics for Aether"
+categories = ["development-tools::profiling"]
+keywords = ["aether", "scorecard", "validators", "metrics"]
 
 [dependencies]
 anyhow.workspace = true

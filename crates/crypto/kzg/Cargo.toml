@@ -2,6 +2,9 @@
 name = "aether-crypto-kzg"
 version.workspace = true
 edition.workspace = true
+description = "KZG polynomial commitment scheme for Aether data availability proofs"
+categories = ["cryptography"]
+keywords = ["aether", "kzg", "polynomial", "commitments"]
 
 [dependencies]
 serde.workspace = true

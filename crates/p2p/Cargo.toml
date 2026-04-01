@@ -2,6 +2,9 @@
 name = "aether-p2p"
 version.workspace = true
 edition.workspace = true
+description = "libp2p-based peer-to-peer networking layer for the Aether blockchain"
+categories = ["network-programming"]
+keywords = ["aether", "p2p", "libp2p", "networking"]
 
 [dependencies]
 aether-types = { path = "../types" }

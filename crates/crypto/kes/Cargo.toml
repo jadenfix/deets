@@ -2,6 +2,9 @@
 name = "aether-crypto-kes"
 version.workspace = true
 edition.workspace = true
+description = "Key-Evolving Signature (KES) scheme for Aether forward-secure validator keys"
+categories = ["cryptography"]
+keywords = ["aether", "kes", "forward-secure", "signatures"]
 
 [dependencies]
 anyhow.workspace = true

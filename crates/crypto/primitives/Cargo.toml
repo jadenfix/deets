@@ -2,6 +2,9 @@
 name = "aether-crypto-primitives"
 version.workspace = true
 edition.workspace = true
+description = "Ed25519 signing, SHA-256/BLAKE3 hashing, and batch verification primitives for Aether"
+categories = ["cryptography"]
+keywords = ["aether", "crypto", "ed25519", "blake3"]
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core", "batch"] }

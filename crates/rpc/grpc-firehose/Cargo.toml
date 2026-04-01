@@ -2,6 +2,9 @@
 name = "aether-rpc-grpc"
 version.workspace = true
 edition.workspace = true
+description = "gRPC streaming firehose for real-time Aether block and event delivery"
+categories = ["network-programming"]
+keywords = ["aether", "grpc", "firehose", "streaming"]
 
 [dependencies]
 tokio.workspace = true

@@ -2,6 +2,9 @@
 name = "aether-cli"
 version.workspace = true
 edition.workspace = true
+description = "aetherctl: command-line interface for Aether node management, key operations, and DevNet control"
+categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
+keywords = ["aether", "cli", "aetherctl", "devnet"]
 
 [[bin]]
 name = "aetherctl"
