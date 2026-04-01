@@ -128,7 +128,7 @@ impl Mempool {
         if let Some(existing_hashes) = self.by_sender.get(&tx.sender) {
             let same_nonce_hash = existing_hashes
                 .iter()
-                .find(|h| self.by_hash.get(h).map_or(false, |t| t.nonce == tx.nonce))
+                .find(|h| self.by_hash.get(h).is_some_and(|t| t.nonce == tx.nonce))
                 .copied();
             if let Some(old_hash) = same_nonce_hash {
                 let old_fee = self.by_hash[&old_hash].fee;
