@@ -99,8 +99,8 @@ impl EmissionSchedule {
 
     /// Fee distribution: split priority fees between proposer and treasury.
     pub fn distribute_priority_fee(priority_fee: u128) -> (u128, u128) {
-        let proposer_share = (priority_fee * 60) / 100; // 60% to proposer
-        let treasury_share = priority_fee - proposer_share; // 40% to treasury
+        let proposer_share = priority_fee.saturating_mul(60) / 100; // 60% to proposer
+        let treasury_share = priority_fee.saturating_sub(proposer_share); // 40% to treasury
         (proposer_share, treasury_share)
     }
 }

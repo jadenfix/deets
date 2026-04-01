@@ -340,7 +340,7 @@ impl StakingState {
             .filter(|delegation| delegation.validator == validator)
             .map(|delegation| delegation.amount)
             .sum();
-        let total_slash = slash_amount + delegated_slash;
+        let total_slash = slash_amount.saturating_add(delegated_slash);
         self.total_staked = self.total_staked.saturating_sub(total_slash);
 
         // Jail validator if slashed too many times
@@ -390,8 +390,8 @@ impl StakingState {
                 continue;
             }
 
-            let validator_reward = (epoch_rewards * total_stake) / self.total_staked;
-            let commission = (validator_reward * *commission_rate as u128) / 10000;
+            let validator_reward = epoch_rewards.saturating_mul(total_stake) / self.total_staked;
+            let commission = validator_reward.saturating_mul(*commission_rate as u128) / 10000;
             let delegator_pool = validator_reward.saturating_sub(commission);
 
             // Credit commission to validator
@@ -407,7 +407,7 @@ impl StakingState {
                 for (idx, delegation) in self.delegations.iter_mut().enumerate() {
                     if delegation.validator == *val_addr && delegation.amount > 0 {
                         let delegator_share =
-                            (delegator_pool * delegation.amount) / delegated_amount;
+                            delegator_pool.saturating_mul(delegation.amount) / delegated_amount;
                         delegation.amount = delegation.amount.saturating_add(delegator_share);
                         distributed = distributed.saturating_add(delegator_share);
                         last_delegation_idx = Some(idx);

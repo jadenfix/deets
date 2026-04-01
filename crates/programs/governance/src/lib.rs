@@ -208,8 +208,9 @@ impl GovernanceState {
         }
 
         // Check quorum
-        let total_votes = proposal.votes_for + proposal.votes_against;
-        let quorum_threshold = (self.total_voting_power * self.quorum_percentage as u128) / 100;
+        let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
+        let quorum_threshold =
+            self.total_voting_power.saturating_mul(self.quorum_percentage as u128) / 100;
         if quorum_threshold == 0 {
             return Err("quorum is zero: no voting power registered".to_string());
         }
