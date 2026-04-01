@@ -1035,4 +1035,197 @@ mod tests {
         assert_eq!(Some(overlay_root), stored_root);
         assert_eq!(ledger.state_root(), overlay_root);
     }
+
+    #[test]
+    fn test_nonce_replay_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed balance
+        let account = Account::with_balance(address, 10_000);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // First tx with nonce 0 succeeds
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let receipt = ledger.apply_transaction(&tx).unwrap();
+        assert!(matches!(receipt.status, TransactionStatus::Success));
+
+        // Replay same tx (nonce 0 again) must fail
+        let err = ledger.apply_transaction(&tx).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid nonce"),
+            "replay should be rejected with nonce error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_nonce_must_be_sequential() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        let account = Account::with_balance(address, 10_000);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Skip nonce 0, try nonce 1 — must fail
+        let mut tx = Transaction {
+            nonce: 1,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let err = ledger.apply_transaction(&tx).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid nonce"),
+            "out-of-order nonce should be rejected, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_cross_chain_replay_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        let account = Account::with_balance(address, 10_000);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Tx with chain_id=999 (wrong chain)
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 999,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        // With chain_id enforcement, tx should be rejected
+        let (receipts, _overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&[tx], Some(900))
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("wrong chain_id")),
+            "cross-chain tx should be rejected, got: {:?}",
+            receipts[0].status
+        );
+    }
+
+    #[test]
+    fn test_intra_block_nonce_replay_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        let account = Account::with_balance(address, 10_000);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Two identical transactions in the same block (same nonce)
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, _overlay) = ledger
+            .apply_block_speculatively(&[tx.clone(), tx])
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(matches!(receipts[0].status, TransactionStatus::Success));
+        assert!(
+            matches!(&receipts[1].status, TransactionStatus::Failed { reason } if reason.contains("invalid nonce")),
+            "duplicate nonce in same block should be rejected, got: {:?}",
+            receipts[1].status
+        );
+    }
 }
