@@ -73,8 +73,8 @@ impl FeeMarket {
         // Proposer gets the remainder (priority fees / tips)
         let proposer_reward = total_fees_collected.saturating_sub(burned);
 
-        self.total_burned += burned;
-        self.total_priority_fees += proposer_reward;
+        self.total_burned = self.total_burned.saturating_add(burned);
+        self.total_priority_fees = self.total_priority_fees.saturating_add(proposer_reward);
 
         // Adjust base fee for next block (EIP-1559 formula)
         let next_base_fee = self.calculate_next_base_fee(block_gas_used);

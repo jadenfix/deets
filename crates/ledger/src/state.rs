@@ -163,8 +163,14 @@ impl Ledger {
             bail!("insufficient balance for fee and transfer amount");
         }
 
-        sender_account.balance -= total_debit;
-        sender_account.nonce += 1;
+        sender_account.balance = sender_account
+            .balance
+            .checked_sub(total_debit)
+            .ok_or_else(|| anyhow!("balance underflow during debit"))?;
+        sender_account.nonce = sender_account
+            .nonce
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("nonce overflow"))?;
 
         // Track which accounts changed for incremental Merkle update
         let mut changed_accounts = vec![tx.sender];
@@ -526,8 +532,14 @@ impl Ledger {
             bail!("insufficient balance for fee and transfer amount");
         }
 
-        sender_account.balance -= total_debit;
-        sender_account.nonce += 1;
+        sender_account.balance = sender_account
+            .balance
+            .checked_sub(total_debit)
+            .ok_or_else(|| anyhow!("balance underflow during debit"))?;
+        sender_account.nonce = sender_account
+            .nonce
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("nonce overflow"))?;
 
         let mut recipient_account: Option<Account> = None;
         if let Some(payload) = &transfer_payload {

@@ -279,7 +279,7 @@ impl LiquidityPool {
             return Err("zero reserve".to_string());
         }
 
-        Ok((self.reserve_b * 1_000_000) / self.reserve_a)
+        Ok(self.reserve_b.saturating_mul(1_000_000) / self.reserve_a)
     }
 }
 
