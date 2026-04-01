@@ -188,6 +188,7 @@ fn test_byzantine_double_vote_detected() {
 #[test]
 fn test_tc_advances_consensus() {
     let validators = create_validators(4);
+    let addrs: Vec<_> = validators.iter().map(|v| v.pubkey.to_address()).collect();
     let mut consensus = HotStuffConsensus::new(validators, None, None);
 
     assert_eq!(consensus.current_slot(), 0);
@@ -198,7 +199,7 @@ fn test_tc_advances_consensus() {
         total_stake: 3000,
         highest_qc_slot: 0,
         highest_qc_hash: H256::zero(),
-        signers: vec![],
+        signers: vec![addrs[0], addrs[1], addrs[2]],
     };
 
     consensus.on_timeout_certificate(&tc).unwrap();
