@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 /// In-memory overlay for speculative block execution.
 /// Reads check overlay first, falls back to storage. Writes stay in memory
 /// until explicitly committed via `commit_overlay()`.
+#[derive(Debug)]
 pub struct PendingOverlay {
     pub writes: HashMap<(String, Vec<u8>), Vec<u8>>,
     pub deletes: HashSet<(String, Vec<u8>)>,
@@ -232,7 +233,11 @@ impl Ledger {
         }
 
         // Incremental Merkle update — include state_root in the same batch
-        self.update_state_root_incremental(&sender_account, recipient_account.as_ref(), Some(&mut batch))?;
+        self.update_state_root_incremental(
+            &sender_account,
+            recipient_account.as_ref(),
+            Some(&mut batch),
+        )?;
 
         // Commit everything atomically in a single WriteBatch
         self.storage.write_batch(batch)?;
@@ -296,7 +301,11 @@ impl Ledger {
         // Persist the new root — either in the batch (atomic) or directly
         let root = self.merkle_tree.root();
         if let Some(batch) = batch {
-            batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+            batch.put(
+                CF_METADATA,
+                b"state_root".to_vec(),
+                root.as_bytes().to_vec(),
+            );
         } else {
             self.storage
                 .put(CF_METADATA, b"state_root", root.as_bytes())?;
@@ -327,7 +336,11 @@ impl Ledger {
         // Persist recomputed root atomically
         let root = self.merkle_tree.root();
         let mut batch = StorageBatch::new();
-        batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+        batch.put(
+            CF_METADATA,
+            b"state_root".to_vec(),
+            root.as_bytes().to_vec(),
+        );
         self.storage.write_batch(batch)?;
 
         Ok(())
@@ -671,7 +684,11 @@ impl Ledger {
 
         // Include state root in the same atomic batch
         let root = self.merkle_tree.root();
-        batch.put(CF_METADATA, b"state_root".to_vec(), root.as_bytes().to_vec());
+        batch.put(
+            CF_METADATA,
+            b"state_root".to_vec(),
+            root.as_bytes().to_vec(),
+        );
 
         // Single atomic write — all or nothing
         self.storage.write_batch(batch)?;

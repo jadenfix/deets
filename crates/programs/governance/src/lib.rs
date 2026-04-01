@@ -178,9 +178,15 @@ impl GovernanceState {
         // Record vote (1x conviction by default)
         proposal.voters.insert(voter, vote_for);
         if vote_for {
-            proposal.votes_for = proposal.votes_for.checked_add(power).ok_or("votes_for overflow")?;
+            proposal.votes_for = proposal
+                .votes_for
+                .checked_add(power)
+                .ok_or("votes_for overflow")?;
         } else {
-            proposal.votes_against = proposal.votes_against.checked_add(power).ok_or("votes_against overflow")?;
+            proposal.votes_against = proposal
+                .votes_against
+                .checked_add(power)
+                .ok_or("votes_against overflow")?;
         }
 
         Ok(())
@@ -392,9 +398,15 @@ impl GovernanceState {
 
         proposal.voters.insert(voter, vote_for);
         if vote_for {
-            proposal.votes_for = proposal.votes_for.checked_add(weighted_power).ok_or("votes_for overflow")?;
+            proposal.votes_for = proposal
+                .votes_for
+                .checked_add(weighted_power)
+                .ok_or("votes_for overflow")?;
         } else {
-            proposal.votes_against = proposal.votes_against.checked_add(weighted_power).ok_or("votes_against overflow")?;
+            proposal.votes_against = proposal
+                .votes_against
+                .checked_add(weighted_power)
+                .ok_or("votes_against overflow")?;
         }
 
         Ok(())
@@ -404,7 +416,10 @@ impl GovernanceState {
 
     /// Deposit funds into the governance treasury.
     pub fn deposit_treasury(&mut self, amount: u128) -> Result<(), String> {
-        self.treasury_balance = self.treasury_balance.checked_add(amount).ok_or("treasury overflow")?;
+        self.treasury_balance = self
+            .treasury_balance
+            .checked_add(amount)
+            .ok_or("treasury overflow")?;
         Ok(())
     }
 
@@ -423,7 +438,10 @@ impl GovernanceState {
                 self.treasury_balance, amount
             ));
         }
-        self.treasury_balance = self.treasury_balance.checked_sub(amount).ok_or("treasury underflow")?;
+        self.treasury_balance = self
+            .treasury_balance
+            .checked_sub(amount)
+            .ok_or("treasury underflow")?;
         // TODO: emit event/log for treasury allocation to `recipient`
         let _ = recipient; // used once ledger integration is complete
         Ok(())

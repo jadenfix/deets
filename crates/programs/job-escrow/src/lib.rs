@@ -120,7 +120,10 @@ impl JobEscrowState {
         *escrowed = escrowed
             .checked_add(payment)
             .ok_or("requester escrow overflow")?;
-        self.total_jobs = self.total_jobs.checked_add(1).ok_or("total_jobs overflow")?;
+        self.total_jobs = self
+            .total_jobs
+            .checked_add(1)
+            .ok_or("total_jobs overflow")?;
 
         Ok(())
     }
@@ -219,7 +222,10 @@ impl JobEscrowState {
         job.status = JobStatus::Completed;
         let rep = self.provider_reputation.entry(provider).or_insert(0);
         *rep = rep.checked_add(1).ok_or("reputation overflow")?;
-        self.completed_jobs = self.completed_jobs.checked_add(1).ok_or("completed_jobs overflow")?;
+        self.completed_jobs = self
+            .completed_jobs
+            .checked_add(1)
+            .ok_or("completed_jobs overflow")?;
 
         Ok(Some((provider, payment)))
     }
