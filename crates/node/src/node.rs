@@ -27,7 +27,7 @@ const MAX_CACHED_BLOCKS: usize = 10_000;
 const MAX_CACHED_RECEIPTS: usize = 50_000;
 
 type LoadedBlocks = (
-    HashMap<Slot, H256>,
+    BTreeMap<Slot, H256>,
     HashMap<H256, Block>,
     H256,
     Option<Slot>,
@@ -130,11 +130,8 @@ impl Node {
 
     /// Load persisted blocks from RocksDB on startup.
     fn load_blocks_from_storage(storage: &Storage) -> Result<LoadedBlocks> {
-        let mut by_slot = HashMap::new();
-        let mut by_hash = HashMap::new();
-        let mut latest_hash = H256::zero();
-        let mut latest_slot: Option<Slot> = None;
-
+        // Collect all blocks, then keep only the most recent MAX_CACHED_BLOCKS
+        let mut all: Vec<(Slot, H256, Block)> = Vec::new();
         for (_, value) in storage.iterator(CF_BLOCKS)? {
             if let Ok(block) = bincode::deserialize::<Block>(&value) {
                 let hash = block.hash();

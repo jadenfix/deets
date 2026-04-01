@@ -640,8 +640,7 @@ mod tests {
 
         let proposal = state.get_proposal(&pid).unwrap();
         assert_eq!(
-            proposal.votes_for,
-            2_000_000_000_000,
+            proposal.votes_for, 2_000_000_000_000,
             "conviction votes must use the proposal snapshot, not live delegated power"
         );
     }

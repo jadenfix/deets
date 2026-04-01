@@ -647,7 +647,10 @@ mod tests {
             .unwrap();
 
         let result = state.slash(test_address(1), 10_001);
-        assert!(matches!(result, Err(StakingError::InvalidSlashRate(10_001))));
+        assert!(matches!(
+            result,
+            Err(StakingError::InvalidSlashRate(10_001))
+        ));
         assert_eq!(
             state.get_validator(&test_address(1)).unwrap().staked_amount,
             1_000_000_000,

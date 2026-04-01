@@ -463,6 +463,8 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "num-bigint",
+ "num-traits",
  "serde",
 ]
 
