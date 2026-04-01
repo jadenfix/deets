@@ -120,6 +120,18 @@ impl Ledger {
     }
 
     fn apply_transaction_validated(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
+        // Reject duplicate UTxO inputs within a single transaction.
+        // Without this, an attacker lists the same input twice, counting its value
+        // double and effectively minting tokens out of thin air.
+        {
+            let mut seen_inputs = HashSet::new();
+            for input in &tx.inputs {
+                if !seen_inputs.insert(input) {
+                    bail!("duplicate UTxO input in transaction: {:?}", input);
+                }
+            }
+        }
+
         // Validate UTxO inputs: existence, ownership, and accumulate total in one pass
         let mut total_input = 0u128;
         for input in &tx.inputs {
@@ -604,6 +616,18 @@ impl Ledger {
 
             let recipient_hash = self.hash_account(recipient);
             spec_tree.update(recipient.address, recipient_hash);
+        }
+
+        // Reject duplicate UTxO inputs within a single transaction.
+        // Without this check, an attacker could list the same input twice,
+        // counting its value double and effectively minting tokens.
+        {
+            let mut seen_inputs = HashSet::new();
+            for input in &tx.inputs {
+                if !seen_inputs.insert(input) {
+                    bail!("duplicate UTxO input in transaction: {:?}", input);
+                }
+            }
         }
 
         // Validate UTxO inputs: existence, ownership, and accumulate total
@@ -1581,6 +1605,239 @@ mod tests {
             matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("cannot mix")),
             "transfer+UTxO mixing should be rejected in overlay path, got: {:?}",
             receipts[0].status
+        );
+    }
+
+    /// Regression test: a transaction that lists the same UTxO input twice
+    /// should be rejected, not count the input value double.
+    #[test]
+    fn test_duplicate_utxo_input_rejected_apply_transaction() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed account for nonce tracking
+        let account = Account::with_balance(address, 0);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+
+        // Create a UTxO worth 500
+        let utxo_id = UtxoId {
+            tx_hash: H256::zero(),
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 500,
+            owner: address,
+            script_hash: None,
+        };
+        batch.put(
+            CF_UTXOS,
+            bincode::serialize(&utxo_id).unwrap(),
+            bincode::serialize(&utxo).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Build a tx that lists the same UTxO input TWICE, trying to claim 1000
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone(), utxo_id.clone()],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let result = ledger.apply_transaction(&tx);
+        assert!(result.is_err(), "duplicate UTxO input must be rejected");
+        assert!(
+            result.unwrap_err().to_string().contains("duplicate UTxO input"),
+            "error should mention duplicate input"
+        );
+    }
+
+    /// Same duplicate-input check must work in the speculative (overlay) path.
+    #[test]
+    fn test_duplicate_utxo_input_rejected_speculative() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed account
+        let account = Account::with_balance(address, 0);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+
+        // Create a UTxO worth 500
+        let utxo_id = UtxoId {
+            tx_hash: H256::zero(),
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 500,
+            owner: address,
+            script_hash: None,
+        };
+        batch.put(
+            CF_UTXOS,
+            bincode::serialize(&utxo_id).unwrap(),
+            bincode::serialize(&utxo).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Build tx with duplicate input
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone(), utxo_id.clone()],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("duplicate UTxO input")),
+            "speculative path must reject duplicate UTxO inputs, got: {:?}",
+            receipts[0].status
+        );
+    }
+
+    /// Cross-tx double-spend within a single block: tx1 spends a UTxO,
+    /// tx2 tries to spend the same UTxO — tx2 must fail.
+    #[test]
+    fn test_cross_tx_double_spend_in_block_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed account
+        let account = Account::with_balance(address, 0);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+
+        // Create a single UTxO worth 1000
+        let utxo_id = UtxoId {
+            tx_hash: H256::zero(),
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 1000,
+            owner: address,
+            script_hash: None,
+        };
+        batch.put(
+            CF_UTXOS,
+            bincode::serialize(&utxo_id).unwrap(),
+            bincode::serialize(&utxo).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // tx1: spends the UTxO legitimately
+        let mut tx1 = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone()],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 800,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash1 = tx1.hash();
+        tx1.signature = Signature::from_bytes(keypair.sign(hash1.as_bytes()));
+
+        // tx2: tries to spend the same UTxO again
+        let mut tx2 = Transaction {
+            nonce: 1,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone()],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 800,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash2 = tx2.hash();
+        tx2.signature = Signature::from_bytes(keypair.sign(hash2.as_bytes()));
+
+        let (receipts, _overlay) =
+            ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Success),
+            "tx1 should succeed"
+        );
+        assert!(
+            matches!(&receipts[1].status, TransactionStatus::Failed { reason } if reason.contains("already spent")),
+            "tx2 must fail as double-spend, got: {:?}",
+            receipts[1].status
         );
     }
 }
