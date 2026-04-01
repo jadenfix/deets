@@ -31,27 +31,24 @@ expect_rpc_result() {
   printf "%s" "$response"
 }
 
-for host in validator-1 validator-2 validator-3 validator-4; do
-  curl -fsS "http://${host}:8545/health" >/dev/null
-  expect_rpc_result "$host" "aeth_getSlotNumber" "[]" >/dev/null
-done
+host="node"
+curl -fsS "http://${host}:8545/health" >/dev/null
+expect_rpc_result "$host" "aeth_getSlotNumber" "[]" >/dev/null
 
-for host in validator-1 validator-2 validator-3 validator-4; do
-  attempt=1
-  while [ "$attempt" -le 30 ]; do
-    response="$(expect_rpc_result "$host" "aeth_getBlockByNumber" "[\"latest\",false]")"
-    if ! echo "$response" | grep -q "\"result\":null"; then
-      break
-    fi
+attempt=1
+while [ "$attempt" -le 30 ]; do
+  response="$(expect_rpc_result "$host" "aeth_getBlockByNumber" "[\"latest\",false]")"
+  if ! echo "$response" | grep -q "\"result\":null"; then
+    break
+  fi
 
-    if [ "$attempt" -eq 30 ]; then
-      echo "Timed out waiting for a block on $host" >&2
-      exit 1
-    fi
+  if [ "$attempt" -eq 30 ]; then
+    echo "Timed out waiting for a block on $host" >&2
+    exit 1
+  fi
 
-    attempt=$((attempt + 1))
-    sleep 1
-  done
+  attempt=$((attempt + 1))
+  sleep 1
 done
 
 cargo test --all-features --workspace

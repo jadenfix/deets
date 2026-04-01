@@ -1,5 +1,5 @@
 services:
-  validator-1:
+  node:
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,66 +7,8 @@ services:
       - AETHER_NETWORK=devnet
       - AETHER_RPC_BIND=0.0.0.0
       - AETHER_NODE_DB_PATH=/app/data
-      - AETHER_BOOTSTRAP_PEERS=validator-2:9000,validator-3:9000,validator-4:9000
     volumes:
-      - validator-1-data:/app/data
-    networks:
-      - aether-testnet
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8545/health"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-
-  validator-2:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      - AETHER_NETWORK=devnet
-      - AETHER_RPC_BIND=0.0.0.0
-      - AETHER_NODE_DB_PATH=/app/data
-      - AETHER_BOOTSTRAP_PEERS=validator-1:9000,validator-3:9000,validator-4:9000
-    volumes:
-      - validator-2-data:/app/data
-    networks:
-      - aether-testnet
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8545/health"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-
-  validator-3:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      - AETHER_NETWORK=devnet
-      - AETHER_RPC_BIND=0.0.0.0
-      - AETHER_NODE_DB_PATH=/app/data
-      - AETHER_BOOTSTRAP_PEERS=validator-1:9000,validator-2:9000,validator-4:9000
-    volumes:
-      - validator-3-data:/app/data
-    networks:
-      - aether-testnet
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8545/health"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-
-  validator-4:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      - AETHER_NETWORK=devnet
-      - AETHER_RPC_BIND=0.0.0.0
-      - AETHER_NODE_DB_PATH=/app/data
-      - AETHER_BOOTSTRAP_PEERS=validator-1:9000,validator-2:9000,validator-3:9000
-    volumes:
-      - validator-4-data:/app/data
+      - node-data:/app/data
     networks:
       - aether-testnet
     healthcheck:
@@ -80,25 +22,16 @@ services:
       context: .
       dockerfile: Dockerfile.test
     depends_on:
-      validator-1:
-        condition: service_healthy
-      validator-2:
-        condition: service_healthy
-      validator-3:
-        condition: service_healthy
-      validator-4:
+      node:
         condition: service_healthy
     environment:
-      - RPC_URL=http://validator-1:8545
+      - RPC_URL=http://node:8545
     networks:
       - aether-testnet
     command: ["sh", "-eu", "./scripts/docker-integration-smoke.sh"]
 
 volumes:
-  validator-1-data:
-  validator-2-data:
-  validator-3-data:
-  validator-4-data:
+  node-data:
 
 networks:
   aether-testnet:

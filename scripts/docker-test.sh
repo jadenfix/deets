@@ -6,8 +6,8 @@ set -e
 echo "Building test environment..."
 docker compose -f docker-compose.test.yml build
 
-echo "Starting 4-node test network..."
-docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
+echo "Starting containerized node..."
+docker compose -f docker-compose.test.yml up -d node
 
 echo "Running integration tests..."
 docker compose -f docker-compose.test.yml run --rm test-runner

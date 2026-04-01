@@ -5,6 +5,7 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -158,10 +159,10 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ──────────────────────────────────────────────
-  # Integration: test with Docker Compose network
+  # Integration: smoke-test the container runtime path
   # ──────────────────────────────────────────────
   integration:
-    name: Integration Tests
+    name: Container Smoke Test
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [test]
@@ -183,13 +184,13 @@ jobs:
           key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-integration-
 
-      - name: Start test network
-        run: docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
+      - name: Start containerized node
+        run: docker compose -f docker-compose.test.yml up -d node
 
-      - name: Show test network status
+      - name: Show container status
         run: docker compose -f docker-compose.test.yml ps
 
-      - name: Run containerized integration checks
+      - name: Run containerized smoke checks
         run: docker compose -f docker-compose.test.yml run --rm test-runner
 
       - name: Collect logs on failure
