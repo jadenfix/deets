@@ -196,7 +196,7 @@ impl VrfPosConsensus {
     /// Add a validator to the set
     pub fn add_validator(&mut self, validator: ValidatorInfo) {
         let address = validator.pubkey.to_address();
-        self.total_stake += validator.stake;
+        self.total_stake = self.total_stake.saturating_add(validator.stake);
         self.validators.insert(address, validator);
     }
 
@@ -207,7 +207,7 @@ impl VrfPosConsensus {
             .get_mut(address)
             .ok_or_else(|| anyhow::anyhow!("validator not found"))?;
 
-        self.total_stake = self.total_stake - validator.stake + new_stake;
+        self.total_stake = self.total_stake.saturating_sub(validator.stake).saturating_add(new_stake);
         validator.stake = new_stake;
 
         Ok(())
