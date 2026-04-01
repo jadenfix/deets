@@ -701,14 +701,18 @@ impl Node {
             vote_msg.extend_from_slice(agg_vote.block_hash.as_bytes());
             vote_msg.extend_from_slice(&agg_vote.slot.to_le_bytes());
 
-            // Look up BLS public keys for each signer via their Ed25519 identity
+            // Look up BLS public keys and compute voted stake from our local
+            // validator set. NEVER trust agg_vote.total_stake from the block —
+            // an attacker could set it to any value to bypass quorum checks.
             let mut bls_pubkeys = Vec::with_capacity(agg_vote.signers.len());
+            let mut voted_stake: u128 = 0;
             for signer in &agg_vote.signers {
                 let addr = signer.to_address();
                 let bls_pk = self.consensus.get_bls_pubkey(&addr).ok_or_else(|| {
                     anyhow::anyhow!("no BLS pubkey registered for signer {:?}", addr)
                 })?;
                 bls_pubkeys.push(bls_pk);
+                voted_stake = voted_stake.saturating_add(self.consensus.validator_stake(&addr));
             }
             let agg_pk = aether_crypto_bls::aggregate_public_keys(&bls_pubkeys)
                 .map_err(|e| anyhow::anyhow!("failed to aggregate signer pubkeys: {e}"))?;
@@ -723,14 +727,14 @@ impl Node {
                 bail!("invalid BLS aggregate signature in block");
             }
 
-            // Verify quorum: aggregated stake must be >= 2/3 of total stake
+            // Verify quorum: locally-computed voted stake must be >= 2/3 of total
             let total_stake = self.consensus.total_stake();
             if total_stake > 0 {
                 let required = total_stake * 2 / 3 + 1;
-                if agg_vote.total_stake < required {
+                if voted_stake < required {
                     bail!(
-                        "insufficient quorum: aggregated stake {} < required {} (2/3 of {})",
-                        agg_vote.total_stake,
+                        "insufficient quorum: voted stake {} < required {} (2/3 of {})",
+                        voted_stake,
                         required,
                         total_stake
                     );
