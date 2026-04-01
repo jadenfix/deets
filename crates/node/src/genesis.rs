@@ -120,6 +120,7 @@ impl GenesisConfig {
             },
             transactions: vec![],
             aggregated_vote: None,
+            slash_evidence: Vec::new(),
         };
 
         let genesis_hash = genesis_block.hash();

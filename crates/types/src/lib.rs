@@ -24,7 +24,7 @@ pub mod primitives;
 pub mod transaction;
 
 pub use account::{Account, Utxo};
-pub use block::{AggregatedVote, Block, BlockHeader, VrfProof, PROTOCOL_VERSION};
+pub use block::{AggregatedVote, Block, BlockHeader, SlashEvidence, VrfProof, PROTOCOL_VERSION};
 pub use chain_config::{
     AiMeshParams, ChainConfig, ChainId, ChainParams, ConsensusParams, FeeParams, NetworkingParams,
     RentParams, RewardParams, TokenParams, WellKnownAddresses,

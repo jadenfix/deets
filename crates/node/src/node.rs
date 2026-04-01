@@ -4,6 +4,7 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
+use aether_program_staking::StakingState;
 use aether_state_storage::{database::pruning, Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
@@ -52,6 +53,8 @@ pub struct Node {
     blocks_by_slot: BTreeMap<Slot, H256>,
     blocks_by_hash: HashMap<H256, Block>,
     receipts: HashMap<H256, TransactionReceipt>,
+    /// In-memory staking state for tracking validator stakes and applying slashes.
+    staking_state: StakingState,
     /// Channel to send outbound messages (blocks, votes, txs) to P2P layer.
     broadcast_tx: Option<mpsc::Sender<OutboundMessage>>,
     /// Collected outbound messages when no broadcast channel is set (for testing).
@@ -124,6 +127,7 @@ impl Node {
             blocks_by_slot,
             blocks_by_hash,
             receipts: HashMap::new(),
+            staking_state: StakingState::new(),
             broadcast_tx: None,
             outbound_buffer: Vec::new(),
             consecutive_timeouts: 0,
@@ -772,6 +776,23 @@ impl Node {
         // State root matches — commit overlay to permanent storage
         self.ledger.commit_overlay(overlay)?;
 
+        // Apply slash evidence: reduce offending validator stake in staking state.
+        // Invalid slash rates are clamped to the maximum (10 000 bps) rather than
+        // aborting block acceptance so a malformed entry cannot stall the chain.
+        for evidence in &block.slash_evidence {
+            let rate = u128::from(evidence.slash_rate_bps.min(10_000));
+            match self.staking_state.slash(evidence.validator, rate) {
+                Ok(slashed) => println!(
+                    "  SLASH applied: validator={:?} rate={}bps slashed={} reason={}",
+                    evidence.validator, evidence.slash_rate_bps, slashed, evidence.reason
+                ),
+                Err(e) => println!(
+                    "  SLASH skipped: validator={:?} reason={} err={}",
+                    evidence.validator, evidence.reason, e
+                ),
+            }
+        }
+
         // Fork choice: track this block and check for competing forks
         let old_canonical = self.fork_choice.canonical_block(block.header.slot);
         let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
@@ -1015,6 +1036,19 @@ impl Node {
 
     pub fn base_fee(&self) -> u128 {
         self.fee_market.base_fee
+    }
+
+    /// Mutable access to the in-memory staking state.
+    ///
+    /// Used by tests and the genesis bootstrap path to register validators
+    /// before block production begins.
+    pub fn staking_state_mut(&mut self) -> &mut StakingState {
+        &mut self.staking_state
+    }
+
+    /// Read-only access to the in-memory staking state.
+    pub fn staking_state(&self) -> &StakingState {
+        &self.staking_state
     }
 }
 

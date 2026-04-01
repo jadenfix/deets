@@ -50,6 +50,7 @@ impl CompactBlock {
                     header: self.header.clone(),
                     transactions,
                     aggregated_vote: None,
+                    slash_evidence: Vec::new(),
                 }),
                 missing: vec![],
             }

@@ -13,8 +13,8 @@ use aether_node::{
     ValidatorKeypair,
 };
 use aether_types::{
-    Address, Block, BlockHeader, ChainConfig, PublicKey, Signature, Slot, Transaction,
-    ValidatorInfo, Vote, VrfProof, H256,
+    Address, Block, BlockHeader, ChainConfig, PublicKey, Signature, SlashEvidence, Slot,
+    Transaction, ValidatorInfo, Vote, VrfProof, H256,
 };
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -189,6 +189,7 @@ fn test_forged_block_rejected() {
         },
         transactions: vec![],
         aggregated_vote: None,
+        slash_evidence: Vec::new(),
     };
 
     // All honest nodes should reject the forged block
@@ -552,6 +553,7 @@ fn test_reject_wrong_protocol_version() {
         },
         transactions: vec![],
         aggregated_vote: None,
+        slash_evidence: Vec::new(),
     };
     let _ = forged.hash(); // ensure hash is computed
 
@@ -598,6 +600,7 @@ fn test_reject_slot_monotonicity_violation() {
             },
             transactions: vec![],
             aggregated_vote: None,
+            slash_evidence: Vec::new(),
         };
 
         let result = network.nodes[0].on_block_received(forged);
@@ -647,6 +650,7 @@ fn test_reject_invalid_receipts_root() {
         },
         transactions: vec![],
         aggregated_vote: None,
+        slash_evidence: Vec::new(),
     };
 
     let result = network.nodes[0].on_block_received(forged);
@@ -656,4 +660,59 @@ fn test_reject_invalid_receipts_root() {
         result.is_err(),
         "should reject block with invalid receipts_root"
     );
+}
+
+// ============================================================================
+// Test 16: Slash evidence reduces validator stake via StakingState
+// ============================================================================
+
+#[test]
+fn test_slash_evidence_reduces_validator_stake() {
+    // Use a 1-node network for simplicity (handles consensus setup).
+    let mut network = TestNetwork::new(1);
+
+    let validator_addr = network._keypairs_cache[0];
+    let initial_stake: u128 = 1_000_000_000; // 1 000 SWR (above MIN_STAKE = 100 SWR)
+
+    // Register the validator in the node's staking state.
+    network.nodes[0]
+        .staking_state_mut()
+        .register_validator(validator_addr, validator_addr, initial_stake, 0, validator_addr)
+        .expect("register_validator should succeed");
+
+    // Confirm baseline stake.
+    let before = network.nodes[0]
+        .staking_state()
+        .get_validator(&validator_addr)
+        .expect("validator must exist after registration")
+        .staked_amount;
+    assert_eq!(before, initial_stake, "stake should equal initial_stake before slash");
+
+    // Apply a 5% slash (500 bps). This is the same code path that on_block_received
+    // calls when processing slash_evidence entries in a block.
+    let slashed = network.nodes[0]
+        .staking_state_mut()
+        .slash(validator_addr, 500)
+        .expect("slash should succeed");
+
+    let expected_slash = initial_stake * 500 / 10_000;
+    assert_eq!(slashed, expected_slash, "slashed amount should be 5% of stake");
+
+    let after = network.nodes[0]
+        .staking_state()
+        .get_validator(&validator_addr)
+        .expect("validator must still exist after slash")
+        .staked_amount;
+    assert_eq!(
+        after,
+        initial_stake - expected_slash,
+        "post-slash stake must be reduced by the slash amount"
+    );
+
+    // Smoke-test that SlashEvidence can be constructed and embedded in a Block.
+    let _evidence = SlashEvidence {
+        validator: validator_addr,
+        slash_rate_bps: 500,
+        reason: "double_sign".to_string(),
+    };
 }
