@@ -70,6 +70,12 @@ pub trait RpcBackend: Send + Sync {
     fn get_latest_block_slot(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+    fn get_peer_count(&self) -> Result<usize> {
+        Ok(0)
+    }
+    fn get_sync_status(&self) -> Result<Value> {
+        Ok(json!({"syncing": false}))
+    }
     fn allows_airdrop(&self) -> bool {
         false
     }
@@ -178,9 +184,29 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(with_backend(backend))
             .and_then(handle_rpc_request);
 
-        let health = warp::get().and(warp::path("health")).map(|| {
-            warp::reply::json(&json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")}))
-        });
+        let health_backend = self.backend.clone();
+        let health = warp::get()
+            .and(warp::path("health"))
+            .and_then(move || {
+                let backend = health_backend.clone();
+                async move {
+                    let backend = backend.read().await;
+                    let slot = backend.get_slot_number().unwrap_or(0);
+                    let finalized = backend.get_finalized_slot().unwrap_or(0);
+                    let peer_count = backend.get_peer_count().unwrap_or(0);
+                    let sync_status = backend
+                        .get_sync_status()
+                        .unwrap_or_else(|_| json!({"syncing": false}));
+                    Ok::<_, warp::Rejection>(warp::reply::json(&json!({
+                        "status": "ok",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "latestSlot": slot,
+                        "finalizedSlot": finalized,
+                        "peerCount": peer_count,
+                        "sync": sync_status,
+                    })))
+                }
+            });
 
         // WebSocket subscription endpoint
         let ws_subs = subs.clone();
@@ -308,6 +334,7 @@ async fn process_rpc_request<B: RpcBackend>(
         "aeth_getSlotNumber" => handle_get_slot_number(backend).await,
         "aeth_getFinalizedSlot" => handle_get_finalized_slot(backend).await,
         "aeth_requestAirdrop" => handle_request_airdrop(&req.params, backend).await,
+        "aeth_health" => handle_health(backend).await,
         _ => Err(JsonRpcError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -791,6 +818,26 @@ async fn handle_request_airdrop<B: RpcBackend>(
     Ok(json!({"success": true}))
 }
 
+async fn handle_health<B: RpcBackend>(
+    backend: Arc<RwLock<B>>,
+) -> Result<Value, JsonRpcError> {
+    let backend = backend.read().await;
+    let slot = backend.get_slot_number().unwrap_or(0);
+    let finalized = backend.get_finalized_slot().unwrap_or(0);
+    let peer_count = backend.get_peer_count().unwrap_or(0);
+    let sync_status = backend
+        .get_sync_status()
+        .unwrap_or_else(|_| json!({"syncing": false}));
+    Ok(json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "latestSlot": slot,
+        "finalizedSlot": finalized,
+        "peerCount": peer_count,
+        "sync": sync_status,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,5 +985,25 @@ mod tests {
         let response = process_rpc_request(req, backend).await;
         assert!(response.error.is_none());
         assert_eq!(response.result, Some(json!({"success": true})));
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_returns_node_status() {
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_health".to_string(),
+            params: vec![],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["latestSlot"], 0);
+        assert_eq!(result["finalizedSlot"], 0);
+        assert_eq!(result["peerCount"], 0);
+        assert_eq!(result["sync"]["syncing"], false);
     }
 }
