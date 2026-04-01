@@ -150,10 +150,15 @@ impl StakingState {
     /// Delegate to a validator
     pub fn delegate(
         &mut self,
+        caller: Address,
         delegator: Address,
         validator: Address,
         amount: u128,
     ) -> Result<(), StakingError> {
+        if caller != delegator {
+            return Err(StakingError::Unauthorized);
+        }
+
         let validator_idx = self
             .validators
             .iter()
@@ -190,11 +195,16 @@ impl StakingState {
     /// Unbond stake (start unbonding period)
     pub fn unbond(
         &mut self,
+        caller: Address,
         delegator: Address,
         validator: Address,
         amount: u128,
         current_slot: u64,
     ) -> Result<(), StakingError> {
+        if caller != delegator {
+            return Err(StakingError::Unauthorized);
+        }
+
         let delegation = self
             .delegations
             .iter_mut()
@@ -273,14 +283,19 @@ impl StakingState {
         // Apply slash
         v.staked_amount -= slash_amount;
         v.slash_count += 1;
-        self.total_staked -= slash_amount;
+
+        // Also slash delegated amount proportionally
+        let delegated_slash = v.delegated_amount * slash_rate / 10000;
+        v.delegated_amount = v.delegated_amount.saturating_sub(delegated_slash);
+        let total_slash = slash_amount + delegated_slash;
+        self.total_staked = self.total_staked.saturating_sub(total_slash);
 
         // Jail validator if slashed too many times
         if v.slash_count >= 3 {
             v.is_active = false;
         }
 
-        Ok(slash_amount)
+        Ok(total_slash)
     }
 
     /// Distribute rewards proportionally to validators and their delegators.
@@ -388,10 +403,11 @@ mod tests {
         let mut state = StakingState::new();
 
         let result = state.register_validator(
-            test_address(1),
-            1_000_000_000, // 1000 SWR
-            1000,          // 10% commission
-            test_address(2),
+            test_address(1), // caller
+            test_address(1), // address
+            1_000_000_000,   // 1000 SWR
+            1000,            // 10% commission
+            test_address(2), // reward_address
         );
 
         assert!(result.is_ok());
@@ -404,10 +420,21 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
-        let result = state.delegate(test_address(3), test_address(1), 500_000_000);
+        let result = state.delegate(
+            test_address(3),
+            test_address(3),
+            test_address(1),
+            500_000_000,
+        );
 
         assert!(result.is_ok());
         assert_eq!(state.delegations.len(), 1);
@@ -419,14 +446,31 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         state
-            .delegate(test_address(3), test_address(1), 500_000_000)
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+            )
             .unwrap();
 
-        let result = state.unbond(test_address(3), test_address(1), 200_000_000, 1000);
+        let result = state.unbond(
+            test_address(3),
+            test_address(3),
+            test_address(1),
+            200_000_000,
+            1000,
+        );
 
         assert!(result.is_ok());
         assert_eq!(state.unbonding.len(), 1);
@@ -438,7 +482,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         // Slash 5%
@@ -478,7 +528,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         // Slash at 100% (rate = 10000 bps)

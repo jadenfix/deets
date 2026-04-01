@@ -621,7 +621,9 @@ impl ConsensusEngine for HybridConsensus {
     }
 
     fn check_finality(&mut self, slot: Slot) -> bool {
-        // Only report true when a slot NEWLY becomes finalized
+        // Return true for each slot in (last_reported, finalized_slot] so the
+        // caller (node.rs) can process every newly-finalized slot individually
+        // (e.g. epoch randomness updates keyed on specific slot numbers).
         if slot <= self.finalized_slot && slot > self.last_reported_finalized {
             self.last_reported_finalized = slot;
             true

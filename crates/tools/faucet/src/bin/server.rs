@@ -16,7 +16,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(parsed) => config.default_amount_limit = parsed,
             Err(e) => tracing::warn!(
                 "ignoring invalid AETHER_FAUCET_LIMIT={:?}: {}; using default {}",
-                limit, e, config.default_amount_limit
+                limit,
+                e,
+                config.default_amount_limit
             ),
         }
     }
@@ -25,7 +27,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(parsed) => config.cooldown = Duration::from_secs(parsed),
             Err(e) => tracing::warn!(
                 "ignoring invalid AETHER_FAUCET_COOLDOWN={:?}: {}; using default {}s",
-                cooldown, e, config.cooldown.as_secs()
+                cooldown,
+                e,
+                config.cooldown.as_secs()
             ),
         }
     }

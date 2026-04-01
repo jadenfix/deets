@@ -183,7 +183,8 @@ async fn main() -> Result<()> {
     let chain_config = Arc::new(chain_config);
     tracing::info!(
         "Chain: {} (numeric ID: {})",
-        chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
+        chain_config.chain.chain_id,
+        chain_config.chain.chain_id_numeric
     );
 
     let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
@@ -301,7 +302,8 @@ async fn main() -> Result<()> {
     tracing::info!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
     tracing::info!(
         "Slot duration: {}ms, Epoch: {} slots",
-        chain_config.chain.slot_ms, chain_config.chain.epoch_slots
+        chain_config.chain.slot_ms,
+        chain_config.chain.epoch_slots
     );
     tracing::info!("Press Ctrl-C to stop.\n");
 

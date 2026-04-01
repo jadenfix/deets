@@ -65,8 +65,12 @@ pub fn read_key_file(path: &Path) -> Result<KeyMaterial> {
     // Derive public/address to validate integrity
     let derived_public = keypair.public_key();
     let derived_address_bytes = keypair.to_address();
-    let derived_address = Address::from_slice(&derived_address_bytes)
-        .map_err(|_| anyhow!("failed to derive address from keypair in {}", path.display()))?;
+    let derived_address = Address::from_slice(&derived_address_bytes).map_err(|_| {
+        anyhow!(
+            "failed to derive address from keypair in {}",
+            path.display()
+        )
+    })?;
 
     if let Ok(expected_public) = decode_hex_vec(&parsed.public_key) {
         if expected_public != derived_public {
@@ -112,8 +116,9 @@ pub fn decode_hex_32(input: &str) -> Result<[u8; 32]> {
 
 pub fn parse_address(input: &str) -> Result<Address> {
     let bytes = decode_hex_vec(input)?;
-    Address::from_slice(&bytes)
-        .map_err(|_| anyhow!("address must be 20 bytes (40 hex chars plus 0x prefix), e.g. 0x1234...abcd"))
+    Address::from_slice(&bytes).map_err(|_| {
+        anyhow!("address must be 20 bytes (40 hex chars plus 0x prefix), e.g. 0x1234...abcd")
+    })
 }
 
 pub fn parse_h256(input: &str) -> Result<H256> {

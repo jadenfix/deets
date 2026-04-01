@@ -163,7 +163,11 @@ impl JobEscrowState {
     }
 
     /// Verify and complete job
-    pub fn verify_job(&mut self, job_id: H256, current_slot: u64) -> Result<(), String> {
+    pub fn verify_job(
+        &mut self,
+        job_id: H256,
+        current_slot: u64,
+    ) -> Result<Option<(Address, u128)>, String> {
         let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Submitted {
@@ -172,7 +176,7 @@ impl JobEscrowState {
 
         // Check challenge period ended
         if let Some(challenge_end) = job.challenge_end_slot {
-            if current_slot < challenge_end {
+            if current_slot <= challenge_end {
                 return Err("challenge period not ended".to_string());
             }
         }
@@ -180,7 +184,9 @@ impl JobEscrowState {
         // TODO(security): Implement actual VCR proof verification before mainnet.
         // Currently accepts all submitted results without cryptographic validation.
 
-        job.status = JobStatus::Verified;
+        job.status = JobStatus::Completed;
+
+        let payment_info = job.provider.map(|p| (p, job.payment));
 
         // Update provider reputation
         if let Some(provider) = job.provider {
@@ -189,7 +195,7 @@ impl JobEscrowState {
 
         self.completed_jobs += 1;
 
-        Ok(())
+        Ok(payment_info)
     }
 
     /// Challenge a result.
@@ -299,10 +305,14 @@ mod tests {
         assert_eq!(job.status, JobStatus::Submitted);
 
         // Verify after challenge period
-        state.verify_job(job_id, 200).unwrap();
+        let result = state.verify_job(job_id, 200).unwrap();
+        assert!(result.is_some());
+        let (provider, payment) = result.unwrap();
+        assert_eq!(provider, addr(2));
+        assert_eq!(payment, 1000);
 
         let job = state.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Verified);
+        assert_eq!(job.status, JobStatus::Completed);
         assert_eq!(state.get_provider_reputation(&addr(2)), 1);
     }
 }

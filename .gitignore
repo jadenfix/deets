@@ -60,3 +60,4 @@ venv/
 .terraform/
 *.tfstate
 *.tfstate.backup
+.claude/worktrees/
