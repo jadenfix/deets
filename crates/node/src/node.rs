@@ -22,10 +22,13 @@ use tokio::time;
 use crate::fork_choice::ForkChoice;
 use crate::network_handler::{decode_network_event, NodeMessage, OutboundMessage};
 use crate::poh::{PohMetrics, PohRecorder};
+use crate::sync::SyncManager;
 
 const MAX_OUTBOUND_BUFFER: usize = 10_000;
 const MAX_CACHED_BLOCKS: usize = 10_000;
 const MAX_CACHED_RECEIPTS: usize = 50_000;
+/// Maximum number of orphan blocks to buffer while waiting for parents.
+const MAX_ORPHAN_BLOCKS: usize = 256;
 
 type LoadedBlocks = (
     BTreeMap<Slot, H256>,
@@ -63,6 +66,12 @@ pub struct Node {
     consecutive_timeouts: u32,
     /// Detects double-signing and other slashable offenses from incoming votes.
     slashing_detector: SlashingDetector,
+    /// Tracks sync state (synced, syncing, stalled).
+    sync_manager: SyncManager,
+    /// Orphan blocks waiting for their parent to arrive, keyed by parent hash.
+    orphan_blocks: HashMap<H256, Vec<Block>>,
+    /// Total number of orphan blocks buffered (across all parent hashes).
+    orphan_count: usize,
 }
 
 impl Node {
@@ -132,6 +141,9 @@ impl Node {
             outbound_buffer: Vec::new(),
             consecutive_timeouts: 0,
             slashing_detector: SlashingDetector::new(),
+            sync_manager: SyncManager::new(10),
+            orphan_blocks: HashMap::new(),
+            orphan_count: 0,
         })
     }
 
@@ -656,6 +668,34 @@ impl Node {
             );
         }
 
+        // Buffer as orphan if parent is unknown (skip for genesis-like blocks).
+        // We check this before full consensus validation because consensus checks
+        // (e.g. future-slot rejection) may fail for blocks received out of order
+        // during sync. These blocks will be fully validated when their parent arrives.
+        if block.header.slot > 0
+            && block.header.parent_hash != H256::zero()
+            && !self.blocks_by_hash.contains_key(&block.header.parent_hash)
+        {
+            if self.orphan_count < MAX_ORPHAN_BLOCKS {
+                tracing::info!(
+                    slot = block.header.slot,
+                    parent = ?block.header.parent_hash,
+                    "Buffering orphan block (parent unknown)"
+                );
+                self.orphan_count += 1;
+                self.orphan_blocks
+                    .entry(block.header.parent_hash)
+                    .or_default()
+                    .push(block);
+            } else {
+                tracing::warn!(
+                    slot = block.header.slot,
+                    "Orphan buffer full ({MAX_ORPHAN_BLOCKS}), dropping block"
+                );
+            }
+            return Ok(());
+        }
+
         // Validate block via consensus (VRF proof, locked block check)
         self.consensus.validate_block(&block)?;
 
@@ -680,18 +720,6 @@ impl Node {
                 "transactions_root mismatch: computed={}, block={}",
                 computed_tx_root,
                 block.header.transactions_root
-            );
-        }
-
-        // Validate parent exists (skip for genesis-like blocks)
-        if block.header.slot > 0
-            && block.header.parent_hash != H256::zero()
-            && !self.blocks_by_hash.contains_key(&block.header.parent_hash)
-        {
-            bail!(
-                "unknown parent block: {:?} for slot {}",
-                block.header.parent_hash,
-                block.header.slot
             );
         }
 
@@ -893,7 +921,40 @@ impl Node {
         // Vote on this block (if we're a validator)
         self.vote_on_block(&block)?;
 
+        // Try to apply any orphan blocks that were waiting for this block as parent.
+        self.process_orphans(block_hash);
+
+        // Update sync state based on network tip vs local tip
+        if let Some(local_slot) = self.latest_block_slot {
+            self.sync_manager.check_sync_needed(local_slot, block.header.slot);
+        }
+
         Ok(())
+    }
+
+    /// Recursively process orphan blocks whose parent has just been applied.
+    fn process_orphans(&mut self, parent_hash: H256) {
+        if let Some(orphans) = self.orphan_blocks.remove(&parent_hash) {
+            let count = orphans.len();
+            self.orphan_count = self.orphan_count.saturating_sub(count);
+            for orphan in orphans {
+                let slot = orphan.header.slot;
+                match self.on_block_received(orphan) {
+                    Ok(()) => tracing::info!(slot, "Applied previously orphaned block"),
+                    Err(e) => tracing::warn!(slot, err = %e, "Orphaned block rejected"),
+                }
+            }
+        }
+    }
+
+    /// Returns whether the node is currently syncing.
+    pub fn is_syncing(&self) -> bool {
+        self.sync_manager.is_syncing()
+    }
+
+    /// Returns the number of buffered orphan blocks.
+    pub fn orphan_count(&self) -> usize {
+        self.orphan_count
     }
 
     // ========================================================================
@@ -1245,5 +1306,92 @@ mod tests {
     fn empty_root_is_zero() {
         assert_eq!(compute_transactions_root(&[]), H256::zero());
         assert_eq!(compute_receipts_root(&[]), H256::zero());
+    }
+
+    #[test]
+    fn orphan_block_is_buffered_when_parent_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let unknown_parent = H256::from_slice(&[0xAB; 32]).unwrap();
+        let orphan = Block::new(
+            5,
+            unknown_parent,
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+
+        // Should succeed (buffered, not rejected)
+        assert!(node.on_block_received(orphan).is_ok());
+        assert_eq!(node.orphan_count(), 1);
+        assert!(node.orphan_blocks.contains_key(&unknown_parent));
+    }
+
+    #[test]
+    fn orphan_buffer_respects_max_capacity() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Fill up the orphan buffer
+        for i in 0..MAX_ORPHAN_BLOCKS + 10 {
+            let parent = H256::from_slice(&[(i & 0xFF) as u8; 32]).unwrap();
+            let orphan = Block::new(
+                (i + 5) as u64,
+                parent,
+                Address::from_slice(&[1u8; 20]).unwrap(),
+                aether_types::VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
+                vec![],
+            );
+            let _ = node.on_block_received(orphan);
+        }
+
+        // Should be capped
+        assert!(node.orphan_count() <= MAX_ORPHAN_BLOCKS);
+    }
+
+    #[test]
+    fn sync_manager_tracks_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Node starts as synced
+        assert!(!node.is_syncing());
     }
 }
