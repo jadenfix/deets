@@ -82,7 +82,7 @@ pub struct Node {
 impl Node {
     pub fn new<P: AsRef<Path>>(
         db_path: P,
-        consensus: Box<dyn ConsensusEngine>,
+        mut consensus: Box<dyn ConsensusEngine>,
         validator_key: Option<Keypair>,
         bls_key: Option<BlsKeypair>,
         chain_config: Arc<ChainConfig>,
@@ -109,6 +109,16 @@ impl Node {
                 block_count = blocks_by_hash.len(),
                 tip_slot = ?latest_block_slot,
                 "Recovered blocks from disk"
+            );
+        }
+
+        // Fast-forward consensus slot to match the recovered chain tip so the
+        // node doesn't re-propose blocks at already-occupied slots after restart.
+        if let Some(tip_slot) = latest_block_slot {
+            consensus.skip_to_slot(tip_slot + 1);
+            tracing::info!(
+                consensus_slot = consensus.current_slot(),
+                "Consensus fast-forwarded to match recovered chain tip"
             );
         }
 
@@ -1561,6 +1571,64 @@ mod tests {
         node.handle_network_event(NetworkEvent::PeerDisconnected(PeerId::random()))
             .unwrap();
         assert_eq!(node.peer_count(), 0);
+    }
+
+    #[test]
+    fn blocks_persist_and_recover_on_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair1 = Keypair::generate();
+        let validators1 = vec![validator_info_from_key(&keypair1)];
+
+        // Create node, produce a block, then drop it
+        {
+            let consensus = Box::new(SimpleConsensus::new(validators1));
+            let mut node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair1),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            // Tick a few times until a block is produced
+            for _ in 0..5 {
+                node.tick().unwrap();
+                if node.latest_block_slot().is_some() {
+                    break;
+                }
+            }
+            assert!(
+                node.latest_block_slot().is_some(),
+                "expected at least one block produced within 5 slots"
+            );
+        }
+
+        // Re-open node from same path — blocks should be recovered
+        let keypair2 = Keypair::generate();
+        let validators2 = vec![validator_info_from_key(&keypair2)];
+        {
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair2),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            // Chain tip should be recovered
+            assert!(
+                node.latest_block_slot().is_some(),
+                "chain tip should survive restart"
+            );
+            // Consensus should be fast-forwarded past the recovered tip
+            assert!(
+                node.current_slot() > 0,
+                "consensus slot should be advanced after recovery"
+            );
+        }
     }
 
     #[test]

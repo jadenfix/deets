@@ -20,6 +20,14 @@ pub trait ConsensusEngine: Send + Sync {
     /// Advance to next slot
     fn advance_slot(&mut self);
 
+    /// Fast-forward to a specific slot (e.g. after restart recovery).
+    /// Only advances if `slot` is ahead of the current slot.
+    fn skip_to_slot(&mut self, slot: Slot) {
+        while self.current_slot() < slot {
+            self.advance_slot();
+        }
+    }
+
     /// Check if validator is leader for given slot
     fn is_leader(&self, slot: Slot, validator_pubkey: &PublicKey) -> bool;
 
