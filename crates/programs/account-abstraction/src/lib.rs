@@ -77,6 +77,8 @@ pub struct EntryPoint {
     accounts: std::collections::HashMap<Address, H256>,
     /// Registered paymasters: address → deposit balance.
     paymasters: std::collections::HashMap<Address, u128>,
+    /// Nonce tracking per account to prevent replay attacks.
+    nonces: std::collections::HashMap<Address, u64>,
 }
 
 impl EntryPoint {
@@ -84,6 +86,7 @@ impl EntryPoint {
         EntryPoint {
             accounts: std::collections::HashMap::new(),
             paymasters: std::collections::HashMap::new(),
+            nonces: std::collections::HashMap::new(),
         }
     }
 
@@ -133,6 +136,22 @@ impl EntryPoint {
         for op in ops {
             let result = match self.validate_user_op(op) {
                 Ok(()) => {
+                    // Validate and increment nonce to prevent replay
+                    let expected_nonce = self.nonces.get(&op.sender).copied().unwrap_or(0);
+                    if op.nonce != expected_nonce {
+                        results.push(UserOpResult {
+                            op_hash: op.hash(),
+                            success: false,
+                            gas_used: op.verification_gas_limit,
+                            error: Some(format!(
+                                "invalid nonce: expected {}, got {}",
+                                expected_nonce, op.nonce
+                            )),
+                        });
+                        continue;
+                    }
+                    self.nonces.insert(op.sender, expected_nonce + 1);
+
                     // Deduct paymaster deposit if applicable
                     if let Some(paymaster) = &op.paymaster {
                         let cost = op.total_gas() as u128 * op.max_fee_per_gas;

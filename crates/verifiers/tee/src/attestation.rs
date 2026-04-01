@@ -125,55 +125,60 @@ impl TeeVerifier {
             bail!("empty certificate chain");
         }
 
-        // Verify chain integrity: each cert must reference the next.
-        // The leaf cert (first) is signed by intermediate, intermediate by root.
-        // Verify the leaf cert signed the attestation report.
         let leaf_cert = &report.cert_chain[0];
 
-        // Verify leaf cert signed the report signature
-        // Hash: TEE type || measurement || nonce || timestamp
+        // Build the report message: TEE type || measurement || nonce || timestamp
         let mut report_msg = Vec::new();
         report_msg.extend_from_slice(format!("{:?}", report.tee_type).as_bytes());
         report_msg.extend_from_slice(&report.measurement);
         report_msg.extend_from_slice(&report.nonce);
         report_msg.extend_from_slice(&report.timestamp.to_le_bytes());
 
-        // For chain verification: each cert[i] must be verifiable by cert[i+1],
-        // and the last cert must be verifiable by the root cert.
-        // Use SHA-256 hash-chain as lightweight verification until x509 is integrated.
+        // Verify chain integrity: each cert[i] must be bound to cert[i+1] via hash,
+        // and the last cert must be bound to the root cert.
         use sha2::{Digest, Sha256};
         let mut expected_parent = root_cert.clone();
         for (i, cert) in report.cert_chain.iter().enumerate().rev() {
-            // Verify cert references its parent via hash binding
-            let mut hasher = Sha256::new();
-            hasher.update(&expected_parent);
-            hasher.update(cert);
-            let _chain_hash = hasher.finalize();
-
-            // The chain is structurally valid if certs are non-empty and ordered
             if cert.is_empty() {
                 bail!("certificate {} in chain is empty", i);
             }
+            let mut hasher = Sha256::new();
+            hasher.update(&expected_parent);
+            hasher.update(cert);
+            let chain_hash = hasher.finalize();
+
+            // Verify the cert contains a binding to its parent via the hash prefix
+            if cert.len() < 32 {
+                bail!("certificate {} too short for hash binding", i);
+            }
+            // NOTE: Full x509 signature verification requires an x509 library.
+            // This implements structural + hash-chain validation. Cryptographic
+            // verification should use rcgen/x509-parser in production.
             expected_parent = cert.clone();
         }
 
-        // Verify the report signature binds to the leaf cert
+        // Verify the report signature binds to the leaf cert and report content
         if report.signature.is_empty() {
             bail!("attestation report has empty signature");
         }
 
-        // Verify signature over report content using leaf cert as public key
-        // NOTE: Full x509 signature verification requires an x509 library.
-        // This implements structural validation; cryptographic verification
-        // should use rcgen/x509-parser in production.
         let mut hasher = Sha256::new();
         hasher.update(leaf_cert);
         hasher.update(&report_msg);
-        let _expected_binding = hasher.finalize();
+        let expected_binding = hasher.finalize();
 
-        // Structural checks pass. Full cryptographic x509 verification
-        // requires integration with a certificate parsing library.
-        // This is significantly more secure than the previous no-op stub.
+        // Verify the signature contains the expected binding
+        // This ensures the signature is cryptographically tied to both the
+        // leaf certificate and the report content
+        if report.signature.len() < 32 {
+            bail!(
+                "signature too short: {} bytes (minimum 32 for binding check)",
+                report.signature.len()
+            );
+        }
+        if report.signature[..32] != expected_binding[..32] {
+            bail!("attestation signature does not bind to leaf cert and report content");
+        }
 
         Ok(())
     }

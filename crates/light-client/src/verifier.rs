@@ -122,6 +122,7 @@ impl LightClientVerifier {
         hasher.update(header.parent_hash.as_bytes());
         hasher.update(header.state_root.as_bytes());
         hasher.update(header.transactions_root.as_bytes());
+        hasher.update(header.receipts_root.as_bytes());
         let header_msg = hasher.finalize().to_vec();
 
         // Aggregate public keys and verify
@@ -202,6 +203,7 @@ mod tests {
         hasher.update(header.parent_hash.as_bytes());
         hasher.update(header.state_root.as_bytes());
         hasher.update(header.transactions_root.as_bytes());
+        hasher.update(header.receipts_root.as_bytes());
         hasher.finalize().to_vec()
     }
 

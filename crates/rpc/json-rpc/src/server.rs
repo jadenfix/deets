@@ -736,6 +736,9 @@ async fn handle_request_airdrop<B: RpcBackend>(
         });
     }
 
+    // Airdrop is only available on devnet/testnet to prevent abuse
+    let max_airdrop: u128 = 1_000_000_000_000; // 1M tokens max per request
+
     let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
         message: format!("Invalid address: expected 0x-prefixed 40-char hex string, got {}", params[0]),
@@ -743,6 +746,13 @@ async fn handle_request_airdrop<B: RpcBackend>(
     })?;
     let address = parse_address(addr_hex, "address")?;
     let amount = parse_u128_value(&params[1], "amount")?;
+    if amount > max_airdrop {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!("airdrop amount {} exceeds maximum {}", amount, max_airdrop),
+            data: None,
+        });
+    }
 
     let backend = backend.read().await;
     backend

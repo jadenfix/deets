@@ -5,6 +5,9 @@ use aether_da_shreds::Shred;
 use aether_types::H256;
 use anyhow::{bail, Result};
 
+/// Maximum number of in-flight blocks to prevent memory exhaustion DoS.
+const MAX_PENDING_BLOCKS: usize = 64;
+
 pub struct TurbineReceiver {
     decoder: ReedSolomonDecoder,
     pending: HashMap<H256, Vec<Option<Vec<u8>>>>,
@@ -27,6 +30,15 @@ impl TurbineReceiver {
                 "shred index {} exceeds shard count {}",
                 shred.index,
                 total_shards
+            );
+        }
+
+        // Reject new blocks if we already have too many in-flight to prevent DoS
+        if !self.pending.contains_key(&shred.block_id) && self.pending.len() >= MAX_PENDING_BLOCKS {
+            bail!(
+                "too many pending blocks ({} >= {}), dropping shred",
+                self.pending.len(),
+                MAX_PENDING_BLOCKS
             );
         }
 
