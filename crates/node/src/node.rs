@@ -859,106 +859,108 @@ impl Node {
             })
             .collect();
 
-        // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
-        // Previously these were two separate write_batch calls; a crash between
-        // them could leave ledger state committed without the block record,
-        // corrupting the chain on restart.
-        let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
-        let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
-        batch.extend(block_batch);
-        self.ledger.write_batch(batch)?;
-
-        // Apply slash evidence: verify cryptographic proof before reducing stake.
-        // Each SlashEvidence MUST carry two BLS-signed conflicting votes.
-        // Evidence without valid proof is silently skipped (no block rejection)
-        // so a single malformed entry cannot stall the chain.
-        for evidence in &block.slash_evidence {
-            // Require both votes and evidence type
-            let (v1, v2, etype) = match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type)
-            {
-                (Some(v1), Some(v2), Some(etype)) => (v1, v2, etype),
-                _ => {
-                    tracing::warn!(
-                        validator = ?evidence.validator,
-                        reason = %evidence.reason,
-                        "Slash skipped — missing proof votes/type"
-                    );
-                    continue;
-                }
-            };
-
-            // Build a SlashProof from the wire-format evidence
-            let proof_type = match etype {
-                aether_types::SlashEvidenceType::DoubleSign => SlashType::DoubleSign,
-                aether_types::SlashEvidenceType::SurroundVote => SlashType::SurroundVote,
-            };
-            let proof = SlashProof {
-                vote1: SlashVote {
-                    slot: v1.slot,
-                    block_hash: v1.block_hash,
-                    validator: v1.validator,
-                    validator_pubkey: v1.validator_pubkey.clone(),
-                    signature: v1.signature.clone(),
-                },
-                vote2: SlashVote {
-                    slot: v2.slot,
-                    block_hash: v2.block_hash,
-                    validator: v2.validator,
-                    validator_pubkey: v2.validator_pubkey.clone(),
-                    signature: v2.signature.clone(),
-                },
-                validator: evidence.validator,
-                proof_type: proof_type.clone(),
-            };
-
-            // Cryptographically verify the proof (BLS signatures + structural checks)
-            if let Err(e) = slash_verify::verify_slash_proof(&proof) {
-                tracing::warn!(
-                    validator = ?evidence.validator,
-                    reason = %evidence.reason,
-                    err = %e,
-                    "Slash rejected — proof verification failed"
-                );
-                continue;
-            }
-
-            // Compute slash rate from the verified proof type — never trust
-            // the untrusted slash_rate_bps field from the block.
-            let validator_stake = self
-                .staking_state
-                .get_validator(&evidence.validator)
-                .map(|v| v.staked_amount)
-                .unwrap_or(0);
-            let slash_amount =
-                slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
-            // Convert to basis points: slash_amount / validator_stake * 10_000
-            let rate_bps = if validator_stake > 0 {
-                (slash_amount.saturating_mul(10_000) / validator_stake) as u32
-            } else {
-                0
-            };
-
-            match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
-                Ok(slashed) => tracing::warn!(
-                    validator = ?evidence.validator,
-                    rate_bps,
-                    slashed,
-                    reason = %evidence.reason,
-                    "Slash applied"
-                ),
-                Err(e) => tracing::warn!(
-                    validator = ?evidence.validator,
-                    reason = %evidence.reason,
-                    err = %e,
-                    "Slash skipped"
-                ),
-            }
-        }
-
-        // Fork choice: track this block and check for competing forks
+        // Fork choice BEFORE commit: only persist state for canonical blocks.
+        // This prevents orphaned state from non-canonical forks being committed.
         let old_canonical = self.fork_choice.canonical_block(block.header.slot);
         let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
         let new_canonical = self.fork_choice.canonical_block(block.header.slot);
+
+        let is_canonical = new_canonical == Some(block_hash);
+
+        if is_canonical {
+            // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
+            let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
+            let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
+            batch.extend(block_batch);
+            self.ledger.write_batch(batch)?;
+
+            // Apply slash evidence: verify cryptographic proof before reducing stake.
+            // Only applied for canonical blocks to prevent non-canonical forks from
+            // double-slashing.
+            for evidence in &block.slash_evidence {
+                let (v1, v2, etype) =
+                    match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type) {
+                        (Some(v1), Some(v2), Some(etype)) => (v1, v2, etype),
+                        _ => {
+                            tracing::warn!(
+                                validator = ?evidence.validator,
+                                reason = %evidence.reason,
+                                "Slash skipped — missing proof votes/type"
+                            );
+                            continue;
+                        }
+                    };
+
+                let proof_type = match etype {
+                    aether_types::SlashEvidenceType::DoubleSign => SlashType::DoubleSign,
+                    aether_types::SlashEvidenceType::SurroundVote => SlashType::SurroundVote,
+                };
+                let proof = SlashProof {
+                    vote1: SlashVote {
+                        slot: v1.slot,
+                        block_hash: v1.block_hash,
+                        validator: v1.validator,
+                        validator_pubkey: v1.validator_pubkey.clone(),
+                        signature: v1.signature.clone(),
+                    },
+                    vote2: SlashVote {
+                        slot: v2.slot,
+                        block_hash: v2.block_hash,
+                        validator: v2.validator,
+                        validator_pubkey: v2.validator_pubkey.clone(),
+                        signature: v2.signature.clone(),
+                    },
+                    validator: evidence.validator,
+                    proof_type: proof_type.clone(),
+                };
+
+                if let Err(e) = slash_verify::verify_slash_proof(&proof) {
+                    tracing::warn!(
+                        validator = ?evidence.validator,
+                        reason = %evidence.reason,
+                        err = %e,
+                        "Slash rejected — proof verification failed"
+                    );
+                    continue;
+                }
+
+                let validator_stake = self
+                    .staking_state
+                    .get_validator(&evidence.validator)
+                    .map(|v| v.staked_amount)
+                    .unwrap_or(0);
+                let slash_amount =
+                    slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
+                let rate_bps = if validator_stake > 0 {
+                    (slash_amount.saturating_mul(10_000) / validator_stake) as u32
+                } else {
+                    0
+                };
+
+                match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
+                    Ok(slashed) => tracing::warn!(
+                        validator = ?evidence.validator,
+                        rate_bps,
+                        slashed,
+                        reason = %evidence.reason,
+                        "Slash applied"
+                    ),
+                    Err(e) => tracing::warn!(
+                        validator = ?evidence.validator,
+                        reason = %evidence.reason,
+                        err = %e,
+                        "Slash skipped"
+                    ),
+                }
+            }
+        } else {
+            tracing::info!(
+                block_hash = %block_hash,
+                slot = block.header.slot,
+                canonical = ?new_canonical,
+                "Non-canonical fork block — state NOT committed"
+            );
+        }
 
         if is_fork {
             tracing::warn!(
@@ -984,12 +986,12 @@ impl Node {
             }
         }
 
-        // Store block in memory
-        self.blocks_by_slot.insert(block.header.slot, block_hash);
+        // Store block in hash map (all blocks, including non-canonical)
         self.blocks_by_hash.insert(block_hash, block.clone());
 
-        // Only update tip if this is the canonical choice
-        if new_canonical == Some(block_hash) {
+        // Only update slot->hash map and tip for canonical blocks
+        if is_canonical {
+            self.blocks_by_slot.insert(block.header.slot, block_hash);
             self.latest_block_hash = block_hash;
             self.latest_block_slot = Some(block.header.slot);
         }
