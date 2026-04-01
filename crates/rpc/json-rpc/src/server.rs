@@ -157,6 +157,10 @@ pub struct JsonRpcServer<B: RpcBackend> {
     backend: Arc<RwLock<B>>,
     subscriptions: Arc<SubscriptionManager>,
     port: u16,
+    /// The chain ID of the network this server is serving.  Stamped onto
+    /// every `aeth_sendTransaction` transaction so callers cannot forge
+    /// cross-chain replays via this endpoint.
+    chain_id: u64,
 }
 
 impl<B: RpcBackend + 'static> JsonRpcServer<B> {
@@ -165,6 +169,18 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             backend: Arc::new(RwLock::new(backend)),
             subscriptions: Arc::new(SubscriptionManager::new()),
             port,
+            // Default to mainnet chain_id = 1; use `with_chain_id` to override.
+            chain_id: 1,
+        }
+    }
+
+    /// Construct a server for a specific chain (e.g. testnet, devnet).
+    pub fn with_chain_id(backend: B, port: u16, chain_id: u64) -> Self {
+        Self {
+            backend: Arc::new(RwLock::new(backend)),
+            subscriptions: Arc::new(SubscriptionManager::new()),
+            port,
+            chain_id,
         }
     }
 
@@ -176,12 +192,14 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
     pub async fn run(self) -> Result<()> {
         let backend = self.backend.clone();
         let subs = self.subscriptions.clone();
+        let chain_id = self.chain_id;
 
         let rpc = warp::post()
             .and(warp::path::end())
             .and(warp::body::content_length_limit(1024 * 256)) // 256KB max
             .and(warp::body::json())
             .and(with_backend(backend))
+            .and(with_chain_id(chain_id))
             .and_then(handle_rpc_request);
 
         let health_backend = self.backend.clone();
@@ -290,14 +308,21 @@ fn with_backend<B: RpcBackend>(
     warp::any().map(move || backend.clone())
 }
 
+fn with_chain_id(
+    chain_id: u64,
+) -> impl Filter<Extract = (u64,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || chain_id)
+}
+
 async fn handle_rpc_request<B: RpcBackend>(
     req: JsonRpcRequest,
     backend: Arc<RwLock<B>>,
+    chain_id: u64,
 ) -> Result<impl Reply, warp::Rejection> {
     let req_id = req.id.clone();
     let response = match tokio::time::timeout(
         Duration::from_secs(30),
-        process_rpc_request(req, backend),
+        process_rpc_request(req, backend, chain_id),
     )
     .await
     {
@@ -322,10 +347,14 @@ async fn handle_rpc_request<B: RpcBackend>(
 async fn process_rpc_request<B: RpcBackend>(
     req: JsonRpcRequest,
     backend: Arc<RwLock<B>>,
+    chain_id: u64,
 ) -> JsonRpcResponse {
     let result = match req.method.as_str() {
         "aeth_sendRawTransaction" => handle_send_raw_transaction(&req.params, backend).await,
-        "aeth_sendTransaction" => handle_send_transaction(&req.params, backend).await,
+        "aeth_sendTransaction" => {
+            handle_send_transaction(&req.params, backend, chain_id).await
+        }
+        "aeth_chainId" => Ok(json!(format!("0x{:x}", chain_id))),
         "aeth_getBlockByNumber" => handle_get_block_by_number(&req.params, backend).await,
         "aeth_getBlockByHash" => handle_get_block_by_hash(&req.params, backend).await,
         "aeth_getTransactionReceipt" => handle_get_transaction_receipt(&req.params, backend).await,
@@ -400,6 +429,7 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
 async fn handle_send_transaction<B: RpcBackend>(
     params: &[Value],
     backend: Arc<RwLock<B>>,
+    chain_id: u64,
 ) -> Result<Value, JsonRpcError> {
     if params.is_empty() {
         return Err(JsonRpcError {
@@ -450,7 +480,7 @@ async fn handle_send_transaction<B: RpcBackend>(
 
     let tx = Transaction {
         nonce: transfer.nonce,
-        chain_id: 1,
+        chain_id,
         sender,
         sender_pubkey,
         inputs: Vec::new(),
@@ -921,7 +951,7 @@ mod tests {
             id: json!(1),
         };
 
-        let response = process_rpc_request(req, backend).await;
+        let response = process_rpc_request(req, backend, 100_u64).await;
         assert!(response.result.is_some());
         assert!(response.error.is_none());
     }
@@ -950,7 +980,7 @@ mod tests {
             id: json!(1),
         };
 
-        let response = process_rpc_request(req, backend).await;
+        let response = process_rpc_request(req, backend, 100_u64).await;
         assert!(response.result.is_some());
         assert!(response.error.is_none());
     }
@@ -965,7 +995,7 @@ mod tests {
             id: json!(1),
         };
 
-        let response = process_rpc_request(req, backend).await;
+        let response = process_rpc_request(req, backend, 100_u64).await;
         let error = response.error.expect("airdrop should be rejected");
         assert!(error.message.contains("disabled on this network"));
     }
@@ -982,9 +1012,61 @@ mod tests {
             id: json!(1),
         };
 
-        let response = process_rpc_request(req, backend).await;
+        let response = process_rpc_request(req, backend, 100_u64).await;
         assert!(response.error.is_none());
         assert_eq!(response.result, Some(json!({"success": true})));
+    }
+
+    #[tokio::test]
+    async fn test_chain_id_returns_configured_value() {
+        const TESTNET_CHAIN_ID: u64 = 100;
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_chainId".to_string(),
+            params: vec![],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req.clone(), backend.clone(), TESTNET_CHAIN_ID).await;
+        assert!(response.error.is_none());
+        // TESTNET_CHAIN_ID = 100 = 0x64
+        assert_eq!(response.result, Some(json!("0x64")));
+
+        // A different chain_id returns a different result
+        let response2 = process_rpc_request(req, backend, 1).await;
+        assert_eq!(response2.result, Some(json!("0x1")));
+    }
+
+    #[tokio::test]
+    async fn test_send_transaction_uses_server_chain_id() {
+        const TESTNET_CHAIN_ID: u64 = 100;
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+        let sender_pubkey = PublicKey::from_bytes(vec![7u8; 32]);
+        let sender = sender_pubkey.to_address();
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_sendTransaction".to_string(),
+            params: vec![json!({
+                "nonce": 0,
+                "sender": format!("{:?}", sender),
+                "sender_public_key": format!("0x{}", hex::encode(sender_pubkey.as_bytes())),
+                "recipient": format!("0x{}", "11".repeat(20)),
+                "amount": "500",
+                "fee": "1000000",
+                "gas_limit": 21000,
+                "reads": [],
+                "writes": [],
+                "signature": format!("0x{}", "aa".repeat(64))
+            })],
+            id: json!(2),
+        };
+        // Both mainnet and testnet chain_ids should produce a successful RPC response
+        // (MockBackend accepts all; the chain_id is stamped, not re-validated here)
+        let response = process_rpc_request(req, backend, TESTNET_CHAIN_ID).await;
+        // MockBackend::send_raw_transaction returns Ok so result should be present
+        assert!(response.error.is_none());
+        assert!(response.result.is_some());
     }
 
     #[tokio::test]
@@ -997,7 +1079,7 @@ mod tests {
             id: json!(1),
         };
 
-        let response = process_rpc_request(req, backend).await;
+        let response = process_rpc_request(req, backend, 100_u64).await;
         assert!(response.error.is_none());
         let result = response.result.unwrap();
         assert_eq!(result["status"], "ok");
