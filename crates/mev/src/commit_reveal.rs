@@ -119,9 +119,25 @@ impl CommitRevealPool {
     }
 
     /// Get all revealed transactions ready for execution.
-    /// Returns them in commitment order (insertion order).
+    /// Returns them in deterministic order: sorted by commitment slot,
+    /// then by commitment hash for tie-breaking. This ensures all validators
+    /// produce identical transaction ordering (HashMap iteration is undefined).
     pub fn get_revealed_transactions(&self) -> Vec<&RevealedTransaction> {
-        self.reveals.values().collect()
+        let mut revealed: Vec<&RevealedTransaction> = self.reveals.values().collect();
+        revealed.sort_by(|a, b| {
+            let slot_a = self
+                .commitments
+                .get(&a.commitment_hash)
+                .map_or(0, |c| c.commit_slot);
+            let slot_b = self
+                .commitments
+                .get(&b.commitment_hash)
+                .map_or(0, |c| c.commit_slot);
+            slot_a
+                .cmp(&slot_b)
+                .then_with(|| a.commitment_hash.0.cmp(&b.commitment_hash.0))
+        });
+        revealed
     }
 
     /// Clean up expired commitments.
@@ -319,5 +335,84 @@ mod tests {
         let h1 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
         let h2 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_revealed_transactions_deterministic_order() {
+        // Insert multiple reveals and verify ordering is deterministic
+        // (sorted by commit_slot, then commitment_hash), not HashMap-random.
+        let mut pool = CommitRevealPool::new(1, 100);
+
+        // Create 5 transactions committed at different slots
+        let salts: [[u8; 32]; 5] = [
+            [10u8; 32],
+            [20u8; 32],
+            [30u8; 32],
+            [40u8; 32],
+            [50u8; 32],
+        ];
+        let commit_slots = [15u64, 10, 20, 10, 12]; // intentionally unordered, with ties
+
+        let mut hashes = Vec::new();
+        for i in 0..5 {
+            let tx = make_tx((i + 1) as u8, i as u64);
+            let hash = CommitRevealPool::create_commitment(&tx, &salts[i]).unwrap();
+            hashes.push(hash);
+
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot: commit_slots[i],
+                commit_fee: 1000,
+            })
+            .unwrap();
+
+            // Reveal after delay
+            pool.reveal(tx, salts[i], commit_slots[i] + 1).unwrap();
+        }
+
+        // Get revealed transactions multiple times — must be identical each time
+        let first_order: Vec<H256> = pool
+            .get_revealed_transactions()
+            .iter()
+            .map(|r| r.commitment_hash)
+            .collect();
+
+        for _ in 0..10 {
+            let order: Vec<H256> = pool
+                .get_revealed_transactions()
+                .iter()
+                .map(|r| r.commitment_hash)
+                .collect();
+            assert_eq!(first_order, order, "ordering must be deterministic");
+        }
+
+        // Verify slot ordering: each commit_slot must be <= the next
+        let revealed = pool.get_revealed_transactions();
+        for i in 1..revealed.len() {
+            let slot_prev = pool
+                .commitments
+                .get(&revealed[i - 1].commitment_hash)
+                .unwrap()
+                .commit_slot;
+            let slot_curr = pool
+                .commitments
+                .get(&revealed[i].commitment_hash)
+                .unwrap()
+                .commit_slot;
+            assert!(
+                slot_prev <= slot_curr,
+                "revealed txs must be sorted by commit_slot: {} > {}",
+                slot_prev,
+                slot_curr
+            );
+            // Within same slot, sorted by hash
+            if slot_prev == slot_curr {
+                assert!(
+                    revealed[i - 1].commitment_hash.0 <= revealed[i].commitment_hash.0,
+                    "same-slot txs must be sorted by commitment_hash"
+                );
+            }
+        }
     }
 }
