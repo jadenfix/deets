@@ -310,7 +310,7 @@ impl P2PNetwork {
     pub fn is_banned(&self, peer_id: &PeerId) -> bool {
         self.banned_peers
             .get(peer_id)
-            .map_or(false, |&expiry| current_timestamp() < expiry)
+            .is_some_and(|&expiry| current_timestamp() < expiry)
     }
 
     /// Get count of currently banned peers.

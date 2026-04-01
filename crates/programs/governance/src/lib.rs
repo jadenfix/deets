@@ -366,13 +366,7 @@ impl GovernanceState {
         lock_slots: u64,
         current_slot: u64,
     ) -> Result<(), String> {
-        // Read effective power and compute multiplier before mutable borrow
-        let base_power = self.effective_power.get(&voter).copied().unwrap_or(0);
-        if base_power == 0 {
-            return Err("no voting power".into());
-        }
         let multiplier = self.conviction_multiplier(lock_slots);
-        let weighted_power = base_power.saturating_mul(multiplier);
 
         let proposal = self
             .proposals
@@ -388,6 +382,12 @@ impl GovernanceState {
         if proposal.voters.contains_key(&voter) {
             return Err("already voted".into());
         }
+
+        let base_power = proposal.power_snapshot.get(&voter).copied().unwrap_or(0);
+        if base_power == 0 {
+            return Err("no voting power (at proposal creation time)".into());
+        }
+        let weighted_power = base_power.saturating_mul(multiplier);
 
         proposal.voters.insert(voter, vote_for);
         if vote_for {
@@ -606,6 +606,43 @@ mod tests {
         let proposal = state.get_proposal(&pid).unwrap();
         // 5000 SWR * 3x conviction = 15000 effective votes
         assert_eq!(proposal.votes_for, 15_000_000_000_000);
+    }
+
+    #[test]
+    fn test_conviction_voting_uses_proposal_snapshot() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), 5_000_000_000_000);
+        state.update_voting_power(addr(2), 1_000_000_000_000);
+        state.update_voting_power(addr(3), 3_000_000_000_000);
+
+        let pid = H256::zero();
+        state
+            .propose(
+                pid,
+                addr(1),
+                ProposalType::ParameterChange {
+                    parameter: "test".into(),
+                    value: 1,
+                },
+                "Test conviction snapshot".into(),
+                1000,
+            )
+            .unwrap();
+
+        // Delegation after proposal creation must not change the vote snapshot.
+        state.delegate(addr(3), addr(2)).unwrap();
+        assert_eq!(state.effective_voting_power(&addr(2)), 4_000_000_000_000);
+
+        let lock_slots = state.voting_period_slots;
+        state
+            .vote_with_conviction(pid, addr(2), true, lock_slots, 1500)
+            .unwrap();
+
+        let proposal = state.get_proposal(&pid).unwrap();
+        assert_eq!(
+            proposal.votes_for, 2_000_000_000_000,
+            "conviction votes must use the proposal snapshot, not live delegated power"
+        );
     }
 
     #[test]

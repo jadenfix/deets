@@ -6,7 +6,7 @@ use aether_consensus::SimpleConsensus;
 use aether_crypto_bls::aggregate::{aggregate_public_keys, aggregate_signatures};
 use aether_crypto_bls::{verify_aggregated, BlsKeypair};
 use aether_crypto_primitives::Keypair;
-use aether_crypto_vrf::{check_leader_eligibility, verify_proof, VrfKeypair};
+use aether_crypto_vrf::{check_leader_eligibility_integer, verify_proof, VrfKeypair};
 use aether_quic_transport::{connection::QuicConnection, QuicEndpoint};
 use aether_runtime::{ExecutionContext, ParallelScheduler, WasmVm};
 use aether_types::{
@@ -30,12 +30,12 @@ fn test_phase1_ecvrf_leader_election() {
     let total_stake = 10_000u128;
     let validator_stake = total_stake;
     assert!(
-        check_leader_eligibility(&proof.output, validator_stake, total_stake, 1.0),
+        check_leader_eligibility_integer(&proof.output, validator_stake, total_stake, 1, 1),
         "full-stake validator with tau=1.0 must always be eligible"
     );
 
     assert!(
-        !check_leader_eligibility(&proof.output, 0, total_stake, 0.0),
+        !check_leader_eligibility_integer(&proof.output, 0, total_stake, 0, 1),
         "zero stake validator should never win the lottery"
     );
 }

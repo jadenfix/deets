@@ -215,7 +215,7 @@ impl VerifiableComputeReceipt {
         hasher.update(&self.trace_evaluation);
         hasher.update(&self.trace_point);
         hasher.update(&self.tee_attestation);
-        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(self.timestamp.to_le_bytes());
         Ok(hasher.finalize().to_vec())
     }
 }
