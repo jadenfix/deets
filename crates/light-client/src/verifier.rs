@@ -129,14 +129,24 @@ impl LightClientVerifier {
             let agg_pk = aether_crypto_bls::aggregate_public_keys(&signer_pk_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to aggregate signer public keys: {e}"))?;
 
-            let valid = aether_crypto_bls::verify_aggregated(&agg_pk, &header_msg, &finalized.aggregate_signature)
-                .map_err(|e| anyhow::anyhow!("BLS verification error: {e}"))?;
+            let valid = aether_crypto_bls::verify_aggregated(
+                &agg_pk,
+                &header_msg,
+                &finalized.aggregate_signature,
+            )
+            .map_err(|e| anyhow::anyhow!("BLS verification error: {e}"))?;
 
             if !valid {
-                bail!("invalid BLS aggregate signature on finalized header at slot {}", header.slot);
+                bail!(
+                    "invalid BLS aggregate signature on finalized header at slot {}",
+                    header.slot
+                );
             }
         } else if finalized.aggregate_signature.is_empty() {
-            bail!("finalized header at slot {} has empty aggregate signature", header.slot);
+            bail!(
+                "finalized header at slot {} has empty aggregate signature",
+                header.slot
+            );
         }
 
         // Accept the header
@@ -225,7 +235,10 @@ mod tests {
         FinalizedHeader {
             header,
             aggregate_signature: agg_sig,
-            signer_pubkeys: test_validators.iter().map(|tv| tv.entry.pubkey.clone()).collect(),
+            signer_pubkeys: test_validators
+                .iter()
+                .map(|tv| tv.entry.pubkey.clone())
+                .collect(),
             total_signing_stake: total_stake,
         }
     }

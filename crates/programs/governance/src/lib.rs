@@ -276,7 +276,8 @@ impl GovernanceState {
     /// Update voting power (called from staking module).
     pub fn update_voting_power(&mut self, account: Address, power: u128) {
         let old_power = self.voting_power.get(&account).copied().unwrap_or(0);
-        self.total_voting_power = self.total_voting_power
+        self.total_voting_power = self
+            .total_voting_power
             .saturating_sub(old_power)
             .saturating_add(power);
         self.voting_power.insert(account, power);
@@ -534,10 +535,7 @@ mod tests {
 
         // addr(1) should have 0 effective power, addr(2) should have 4000
         assert_eq!(state.effective_voting_power(&addr(1)), 0);
-        assert_eq!(
-            state.effective_voting_power(&addr(2)),
-            4_000_000_000_000
-        );
+        assert_eq!(state.effective_voting_power(&addr(2)), 4_000_000_000_000);
     }
 
     #[test]
@@ -550,14 +548,8 @@ mod tests {
         state.undelegate(addr(1)).unwrap();
 
         // Power returns to original
-        assert_eq!(
-            state.effective_voting_power(&addr(1)),
-            3_000_000_000_000
-        );
-        assert_eq!(
-            state.effective_voting_power(&addr(2)),
-            1_000_000_000_000
-        );
+        assert_eq!(state.effective_voting_power(&addr(1)), 3_000_000_000_000);
+        assert_eq!(state.effective_voting_power(&addr(2)), 1_000_000_000_000);
     }
 
     #[test]

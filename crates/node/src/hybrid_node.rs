@@ -67,15 +67,15 @@ impl ValidatorKeypair {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let json = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read key file: {}", path.display()))?;
-        let keyfile: KeyFile = serde_json::from_str(&json)
-            .with_context(|| "failed to parse key file JSON")?;
+        let keyfile: KeyFile =
+            serde_json::from_str(&json).with_context(|| "failed to parse key file JSON")?;
 
-        let ed25519_bytes = from_hex(&keyfile.ed25519_secret)
-            .with_context(|| "invalid hex in ed25519_secret")?;
-        let bls_bytes = from_hex(&keyfile.bls_secret)
-            .with_context(|| "invalid hex in bls_secret")?;
-        let vrf_bytes = from_hex(&keyfile.vrf_secret)
-            .with_context(|| "invalid hex in vrf_secret")?;
+        let ed25519_bytes =
+            from_hex(&keyfile.ed25519_secret).with_context(|| "invalid hex in ed25519_secret")?;
+        let bls_bytes =
+            from_hex(&keyfile.bls_secret).with_context(|| "invalid hex in bls_secret")?;
+        let vrf_bytes =
+            from_hex(&keyfile.vrf_secret).with_context(|| "invalid hex in vrf_secret")?;
 
         let ed25519 = Keypair::from_bytes(&ed25519_bytes)
             .map_err(|e| anyhow::anyhow!("invalid ed25519 key: {:?}", e))?;
@@ -128,14 +128,8 @@ pub fn create_hybrid_consensus(
         (None, None, None)
     };
 
-    let mut consensus = HybridConsensus::new(
-        validators,
-        tau,
-        epoch_length,
-        my_vrf,
-        my_bls,
-        my_addr,
-    );
+    let mut consensus =
+        HybridConsensus::new(validators, tau, epoch_length, my_vrf, my_bls, my_addr);
 
     // Register the local validator's BLS key so its own votes are accepted
     if let Some(kp) = my_keypair {
@@ -168,14 +162,8 @@ pub fn create_hybrid_consensus_with_vrf_keys(
         (None, None, None)
     };
 
-    let mut consensus = HybridConsensus::new(
-        validators,
-        tau,
-        epoch_length,
-        my_vrf,
-        my_bls,
-        my_addr,
-    );
+    let mut consensus =
+        HybridConsensus::new(validators, tau, epoch_length, my_vrf, my_bls, my_addr);
 
     // Register all VRF public keys for cross-validation
     for (addr, vrf_pk) in vrf_pubkeys {

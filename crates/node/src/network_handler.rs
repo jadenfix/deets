@@ -41,16 +41,13 @@ fn deserialize_bounded<T: serde::de::DeserializeOwned>(data: &[u8], max_size: us
 pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
     match event {
         NetworkEvent::BlockReceived(data) if data.len() <= MAX_BLOCK_SIZE => {
-            deserialize_bounded(&data, MAX_BLOCK_SIZE)
-                .map(NodeMessage::BlockReceived)
+            deserialize_bounded(&data, MAX_BLOCK_SIZE).map(NodeMessage::BlockReceived)
         }
         NetworkEvent::VoteReceived(data) if data.len() <= MAX_VOTE_SIZE => {
-            deserialize_bounded(&data, MAX_VOTE_SIZE)
-                .map(NodeMessage::VoteReceived)
+            deserialize_bounded(&data, MAX_VOTE_SIZE).map(NodeMessage::VoteReceived)
         }
         NetworkEvent::TransactionReceived(data) if data.len() <= MAX_TX_SIZE => {
-            deserialize_bounded(&data, MAX_TX_SIZE)
-                .map(NodeMessage::TransactionReceived)
+            deserialize_bounded(&data, MAX_TX_SIZE).map(NodeMessage::TransactionReceived)
         }
         _ => None, // Silently drop oversized or unknown messages
     }

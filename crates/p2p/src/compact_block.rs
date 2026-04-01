@@ -215,7 +215,10 @@ mod tests {
     fn test_small_message_not_compressed() {
         let data = vec![42u8; 100]; // Small message
         let compressed = compress_message(&data);
-        assert_eq!(compressed[0], 0x00, "small messages should not be compressed");
+        assert_eq!(
+            compressed[0], 0x00,
+            "small messages should not be compressed"
+        );
         let decompressed = decompress_message(&compressed).unwrap();
         assert_eq!(decompressed, data);
     }

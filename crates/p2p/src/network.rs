@@ -5,8 +5,7 @@ use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode},
     identify,
     identity::Keypair,
-    kad,
-    noise,
+    kad, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
@@ -317,7 +316,10 @@ impl P2PNetwork {
     /// Get count of currently banned peers.
     pub fn banned_count(&self) -> usize {
         let now = current_timestamp();
-        self.banned_peers.values().filter(|&&expiry| now < expiry).count()
+        self.banned_peers
+            .values()
+            .filter(|&&expiry| now < expiry)
+            .count()
     }
 }
 
@@ -366,7 +368,9 @@ mod tests {
         let mut node1_addr = None;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(200), node1.swarm.select_next_some()).await {
+            match tokio::time::timeout(Duration::from_millis(200), node1.swarm.select_next_some())
+                .await
+            {
                 Ok(SwarmEvent::NewListenAddr { address, .. }) => {
                     node1_addr = Some(address);
                     break;

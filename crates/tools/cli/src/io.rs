@@ -34,8 +34,8 @@ pub fn write_key_file(path: &Path, keypair: &Keypair) -> Result<()> {
     let public_key = keypair.public_key();
     let secret_key = keypair.secret_key();
     let address_bytes = keypair.to_address();
-    let address =
-        Address::from_slice(&address_bytes).map_err(|e| anyhow::anyhow!("failed to derive address: {e}"))?;
+    let address = Address::from_slice(&address_bytes)
+        .map_err(|e| anyhow::anyhow!("failed to derive address: {e}"))?;
     let payload = KeyFile {
         secret_key: format!("0x{}", hex::encode(secret_key)),
         public_key: format!("0x{}", hex::encode(public_key)),

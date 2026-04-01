@@ -128,7 +128,8 @@ impl WasmVm {
                             false
                         } else {
                             // Try simpler entry point with no args
-                            let simple_func = instance.get_typed_func::<(), i32>(&mut store, "main");
+                            let simple_func =
+                                instance.get_typed_func::<(), i32>(&mut store, "main");
                             match simple_func {
                                 Ok(f) => f.call(&mut store, ()).map(|r| r == 0).unwrap_or(false),
                                 Err(_) => false,
@@ -159,7 +160,9 @@ impl WasmVm {
         let gas_used = context.gas_limit.saturating_sub(remaining_fuel);
 
         // Collect results from host state
-        let state = host_state.lock().map_err(|_| anyhow::anyhow!("host state mutex poisoned"))?;
+        let state = host_state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("host state mutex poisoned"))?;
 
         Ok(ExecutionResult {
             success,
@@ -192,7 +195,7 @@ impl WasmVm {
                             return -1; // Fuel deduction failed
                         }
                     }
-                    Ok(_) => return -1, // Insufficient fuel
+                    Ok(_) => return -1,  // Insufficient fuel
                     Err(_) => return -1, // Fuel system unavailable
                 }
 
@@ -292,10 +295,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "emit_log",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-             data_ptr: i32,
-             data_len: i32|
-             -> i32 {
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, data_ptr: i32, data_len: i32| -> i32 {
                 // Charge fuel for host function call
                 let log_byte_cost = (data_len as u64).checked_mul(8).unwrap_or(u64::MAX);
                 let fuel_cost = 375u64.saturating_add(log_byte_cost);

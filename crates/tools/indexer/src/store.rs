@@ -66,14 +66,12 @@ impl PersistentStore {
             .context("missing tx_index CF")?;
         for tx in &block.transactions {
             let tx_hash = tx.hash();
-            self.db
-                .put_cf(tx_cf, tx_hash.as_bytes(), key)?;
+            self.db.put_cf(tx_cf, tx_hash.as_bytes(), key)?;
         }
 
         // Update latest slot
         let meta_cf = self.db.cf_handle(CF_META).context("missing meta CF")?;
-        self.db
-            .put_cf(meta_cf, b"latest_slot", key)?;
+        self.db.put_cf(meta_cf, b"latest_slot", key)?;
 
         Ok(())
     }
@@ -96,10 +94,8 @@ impl PersistentStore {
             .context("missing tx_index CF")?;
         match self.db.get_cf(cf, tx_hash.as_bytes())? {
             Some(bytes) => {
-                let slot_bytes: [u8; 8] = bytes
-                    .as_slice()
-                    .try_into()
-                    .context("invalid slot bytes")?;
+                let slot_bytes: [u8; 8] =
+                    bytes.as_slice().try_into().context("invalid slot bytes")?;
                 Ok(Some(u64::from_be_bytes(slot_bytes)))
             }
             None => Ok(None),
@@ -111,10 +107,8 @@ impl PersistentStore {
         let cf = self.db.cf_handle(CF_META).context("missing meta CF")?;
         match self.db.get_cf(cf, b"latest_slot")? {
             Some(bytes) => {
-                let slot_bytes: [u8; 8] = bytes
-                    .as_slice()
-                    .try_into()
-                    .context("invalid slot bytes")?;
+                let slot_bytes: [u8; 8] =
+                    bytes.as_slice().try_into().context("invalid slot bytes")?;
                 Ok(u64::from_be_bytes(slot_bytes))
             }
             None => Ok(0),

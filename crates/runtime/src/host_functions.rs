@@ -106,7 +106,8 @@ impl HostFunctions {
         let to_balance = self.balances.get(to).copied().unwrap_or(0);
 
         self.balances.insert(*from, from_balance - amount);
-        let new_to_balance = to_balance.checked_add(amount)
+        let new_to_balance = to_balance
+            .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("balance overflow"))?;
         self.balances.insert(*to, new_to_balance);
 
@@ -263,7 +264,10 @@ mod tests {
         host.balances.insert(addr1, 100);
         host.balances.insert(addr2, u128::MAX);
         let result = host.transfer(&addr1, &addr2, 100);
-        assert!(result.is_err(), "transfer to account at max balance should fail");
+        assert!(
+            result.is_err(),
+            "transfer to account at max balance should fail"
+        );
     }
 
     #[test]

@@ -45,7 +45,13 @@ impl TestNetwork {
         // Collect BLS public keys + PoP signatures for all validators
         let bls_pubkeys: Vec<(Address, Vec<u8>, Vec<u8>)> = keypairs
             .iter()
-            .map(|kp| (kp.address(), kp.bls.public_key(), kp.bls.proof_of_possession()))
+            .map(|kp| {
+                (
+                    kp.address(),
+                    kp.bls.public_key(),
+                    kp.bls.proof_of_possession(),
+                )
+            })
             .collect();
 
         // Collect all validator addresses for consistent genesis seeding
@@ -219,10 +225,7 @@ fn test_e2e_block_propagation() {
     // validation, some blocks may be legitimately rejected when nodes diverge.
     // Check that at least SOME cross-node block sharing occurs.
     let all_blocks: HashSet<H256> = node_block_sets.iter().flatten().cloned().collect();
-    println!(
-        "Total unique blocks across all nodes: {}",
-        all_blocks.len()
-    );
+    println!("Total unique blocks across all nodes: {}", all_blocks.len());
 
     let node0_blocks = &node_block_sets[0];
     for (i, blocks) in node_block_sets.iter().enumerate().skip(1) {
@@ -280,7 +283,11 @@ fn test_e2e_state_consistency() {
     // All nodes that processed the same blocks should agree on state root
     let first_root = state_roots[0];
     let agreeing = state_roots.iter().filter(|r| **r == first_root).count();
-    println!("{}/{} nodes agree on state root", agreeing, state_roots.len());
+    println!(
+        "{}/{} nodes agree on state root",
+        agreeing,
+        state_roots.len()
+    );
     assert_eq!(
         agreeing,
         state_roots.len(),
@@ -354,7 +361,10 @@ fn test_e2e_transaction_submission() {
     let root1 = network.nodes[1].get_state_root();
     assert_ne!(root0, H256::zero());
     assert_ne!(root1, H256::zero());
-    assert_eq!(root0, root1, "Nodes must have consistent state after tx flow");
+    assert_eq!(
+        root0, root1,
+        "Nodes must have consistent state after tx flow"
+    );
 }
 
 // ============================================================================
@@ -444,7 +454,10 @@ fn test_e2e_block_header_roots() {
         }
     }
 
-    assert!(found_block, "At least one block should be produced in 10 slots");
+    assert!(
+        found_block,
+        "At least one block should be produced in 10 slots"
+    );
 }
 
 // ============================================================================
@@ -473,7 +486,10 @@ fn test_e2e_fee_market_no_double_count() {
         "Fee: {} -> {} (single-block adjustment expected)",
         initial_fee, fee_after
     );
-    assert!(fee_after <= initial_fee, "Fee should decrease with empty blocks");
+    assert!(
+        fee_after <= initial_fee,
+        "Fee should decrease with empty blocks"
+    );
 }
 
 // ============================================================================

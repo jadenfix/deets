@@ -227,7 +227,9 @@ impl HotStuffConsensus {
 
         // Create prevote and return it as an action (NOT recursive)
         let mut actions = Vec::new();
-        if let Some(vote) = self.create_vote(block.hash(), block.header.parent_hash, Phase::Prevote)? {
+        if let Some(vote) =
+            self.create_vote(block.hash(), block.header.parent_hash, Phase::Prevote)?
+        {
             actions.push(ConsensusAction::BroadcastVote(vote));
         }
         Ok(actions)
@@ -454,13 +456,23 @@ impl HotStuffConsensus {
             .get(&vote.validator)
             .ok_or_else(|| anyhow::anyhow!("unknown validator {:?}", vote.validator))?;
 
-        let bls_pk = self.bls_pubkeys.get(&vote.validator)
+        let bls_pk = self
+            .bls_pubkeys
+            .get(&vote.validator)
             .ok_or_else(|| anyhow::anyhow!("no BLS pubkey registered for {:?}", vote.validator))?;
         if bls_pk.len() != 48 {
-            bail!("BLS pubkey invalid length {} for {:?}", bls_pk.len(), vote.validator);
+            bail!(
+                "BLS pubkey invalid length {} for {:?}",
+                bls_pk.len(),
+                vote.validator
+            );
         }
         if vote.signature.len() != 96 {
-            bail!("vote signature invalid length {} from {:?}", vote.signature.len(), vote.validator);
+            bail!(
+                "vote signature invalid length {} from {:?}",
+                vote.signature.len(),
+                vote.validator
+            );
         }
 
         let mut msg = Vec::new();
@@ -481,7 +493,8 @@ impl HotStuffConsensus {
         let pubkeys: Vec<Vec<u8>> = votes
             .iter()
             .map(|v| {
-                self.bls_pubkeys.get(&v.validator)
+                self.bls_pubkeys
+                    .get(&v.validator)
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("no BLS pubkey for {:?}", v.validator))
             })
@@ -730,7 +743,10 @@ mod tests {
             signature: vec![0u8; 96],
         };
         let result = consensus.on_vote(vote);
-        assert!(result.is_err(), "Vote without registered BLS key must be rejected");
+        assert!(
+            result.is_err(),
+            "Vote without registered BLS key must be rejected"
+        );
     }
 
     #[test]
@@ -740,7 +756,9 @@ mod tests {
         let mut consensus = HotStuffConsensus::new(validators.clone(), None, None);
         let addr = validators[0].pubkey.to_address();
         let pop = bls_kp.proof_of_possession();
-        consensus.register_bls_pubkey(addr, bls_kp.public_key(), &pop).unwrap();
+        consensus
+            .register_bls_pubkey(addr, bls_kp.public_key(), &pop)
+            .unwrap();
 
         // Sign wrong message
         let wrong_sig = bls_kp.sign(b"wrong message");
@@ -755,6 +773,9 @@ mod tests {
             signature: wrong_sig,
         };
         let result = consensus.on_vote(vote);
-        assert!(result.is_err(), "Vote with invalid BLS signature must be rejected");
+        assert!(
+            result.is_err(),
+            "Vote with invalid BLS signature must be rejected"
+        );
     }
 }

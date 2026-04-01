@@ -93,7 +93,11 @@ pub fn verify_aggregated_with_pop(
     }
 
     // Verify each PoP first — reject if any signer hasn't proven key ownership
-    for (i, (pk, pop)) in individual_pubkeys.iter().zip(pop_signatures.iter()).enumerate() {
+    for (i, (pk, pop)) in individual_pubkeys
+        .iter()
+        .zip(pop_signatures.iter())
+        .enumerate()
+    {
         match crate::keypair::verify_pop(pk, pop)? {
             true => {}
             false => anyhow::bail!("invalid proof-of-possession for signer {}", i),
@@ -245,7 +249,8 @@ mod tests {
             &[pop1.clone(), pop2.clone()],
             message,
             &agg_sig,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(result, "Valid PoPs + valid aggregate should verify");
 
         // Invalid: swap PoPs (kp1's PoP for kp2's key)

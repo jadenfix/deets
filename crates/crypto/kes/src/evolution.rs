@@ -411,10 +411,7 @@ mod tests {
         let key2 = KesKey::from_seed(seed, 8);
 
         assert_eq!(key1.root, key2.root);
-        assert_eq!(
-            key1.verification_key(),
-            key2.verification_key()
-        );
+        assert_eq!(key1.verification_key(), key2.verification_key());
     }
 
     #[test]

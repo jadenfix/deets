@@ -56,9 +56,7 @@ impl ParallelScheduler {
                     }
                 }
 
-                if !conflicts
-                    && !Self::has_pending_dependencies(tx, i, &remaining, &used_indices)
-                {
+                if !conflicts && !Self::has_pending_dependencies(tx, i, &remaining, &used_indices) {
                     current_batch.push(tx.clone());
                     used_indices.insert(i);
 
@@ -136,9 +134,7 @@ impl ParallelScheduler {
                 executor(&batch[0])?;
             } else {
                 // Parallel execution within batch
-                batch
-                    .par_iter()
-                    .try_for_each(|tx| executor(tx))?;
+                batch.par_iter().try_for_each(|tx| executor(tx))?;
             }
         }
 
@@ -177,10 +173,7 @@ impl ParallelScheduler {
         let mut all_results = Vec::with_capacity(batches.len());
 
         for batch in batches {
-            let results: Result<Vec<R>> = batch
-                .par_iter()
-                .map(|tx| executor(tx))
-                .collect();
+            let results: Result<Vec<R>> = batch.par_iter().map(|tx| executor(tx)).collect();
             all_results.push(results?);
         }
 
@@ -209,8 +202,8 @@ mod tests {
     use super::*;
     use aether_types::{Address, PublicKey, Signature};
     use std::collections::HashSet;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
     use std::time::Instant;
 
     fn create_test_tx(reads: Vec<u8>, writes: Vec<u8>) -> Transaction {
@@ -413,9 +406,7 @@ mod tests {
     fn test_parallel_collect_results() {
         let scheduler = ParallelScheduler::new();
 
-        let txs: Vec<Transaction> = (0..10u8)
-            .map(|i| create_test_tx(vec![], vec![i]))
-            .collect();
+        let txs: Vec<Transaction> = (0..10u8).map(|i| create_test_tx(vec![], vec![i])).collect();
         let batches = scheduler.schedule(&txs);
 
         let results = scheduler

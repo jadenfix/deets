@@ -17,6 +17,4 @@
 
 pub mod commit_reveal;
 
-pub use commit_reveal::{
-    CommitRevealPool, RevealedTransaction, TransactionCommitment,
-};
+pub use commit_reveal::{CommitRevealPool, RevealedTransaction, TransactionCommitment};

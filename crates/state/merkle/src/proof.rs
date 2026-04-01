@@ -49,7 +49,7 @@ impl MerkleProof {
                 let mut h = Sha256::new();
                 h.update([0x00]); // Leaf domain separator with no key/value
                 H256::from_slice(&h.finalize()).unwrap()
-            },
+            }
         };
 
         // Walk up: siblings[0] pairs with key_bits[depth-1] (deepest bit),

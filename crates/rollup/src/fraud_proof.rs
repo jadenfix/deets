@@ -100,8 +100,7 @@ impl FraudProofVerifier {
         // and verify that the result matches correct_post_state_root.
         // For now, we trust the challenger's computation.
 
-        let reward =
-            sequencer_bond * self.challenger_reward_pct as u128 / 100;
+        let reward = sequencer_bond * self.challenger_reward_pct as u128 / 100;
 
         FraudProofResult::Valid {
             slashed_sequencer: *sequencer,

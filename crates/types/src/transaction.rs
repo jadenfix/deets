@@ -253,7 +253,11 @@ mod tests {
         let mut tx2 = tx1.clone();
         tx2.chain_id = 2;
 
-        assert_ne!(tx1.hash(), tx2.hash(), "Different chain_id must produce different hash");
+        assert_ne!(
+            tx1.hash(),
+            tx2.hash(),
+            "Different chain_id must produce different hash"
+        );
     }
 
     #[test]
@@ -275,8 +279,14 @@ mod tests {
             fee: 100,
             signature: TxSignature::from_bytes(vec![]),
         };
-        assert!(tx.validate_chain_id(100).is_ok(), "Matching chain_id should pass");
-        assert!(tx.validate_chain_id(1).is_err(), "Mismatched chain_id should fail");
+        assert!(
+            tx.validate_chain_id(100).is_ok(),
+            "Matching chain_id should pass"
+        );
+        assert!(
+            tx.validate_chain_id(1).is_err(),
+            "Mismatched chain_id should fail"
+        );
     }
 
     #[test]
@@ -457,4 +467,3 @@ mod blob_tests {
         assert_eq!(tx.hash(), tx.hash());
     }
 }
-

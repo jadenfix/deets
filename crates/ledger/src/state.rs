@@ -68,11 +68,7 @@ impl Ledger {
         // This handles both normal restart (metadata exists) and recovery
         // (metadata missing but accounts exist in storage).
         let has_metadata = self.storage.get(CF_METADATA, b"state_root")?.is_some();
-        let has_accounts = self
-            .storage
-            .iterator(CF_ACCOUNTS)?
-            .next()
-            .is_some();
+        let has_accounts = self.storage.iterator(CF_ACCOUNTS)?.next().is_some();
 
         if has_metadata || has_accounts {
             self.recompute_state_root()?;
@@ -482,7 +478,11 @@ impl Ledger {
         // Read sender account from overlay first, then storage
         let mut sender_account = self.get_account_from_overlay(overlay, &tx.sender)?;
         if sender_account.nonce != tx.nonce {
-            bail!("invalid nonce: expected {}, got {}", sender_account.nonce, tx.nonce);
+            bail!(
+                "invalid nonce: expected {}, got {}",
+                sender_account.nonce,
+                tx.nonce
+            );
         }
 
         let transfer_payload = self.decode_transfer_payload(tx)?;
@@ -527,7 +527,11 @@ impl Ledger {
 
         if let Some(ref recipient) = recipient_account {
             let recipient_bytes = bincode::serialize(recipient)?;
-            overlay.put(CF_ACCOUNTS, recipient.address.as_bytes().to_vec(), recipient_bytes);
+            overlay.put(
+                CF_ACCOUNTS,
+                recipient.address.as_bytes().to_vec(),
+                recipient_bytes,
+            );
             overlay.changed_accounts.push(recipient.address);
 
             let recipient_hash = self.hash_account(recipient);
@@ -541,7 +545,10 @@ impl Ledger {
         }
         let tx_hash = tx.hash();
         for (idx, output) in tx.outputs.iter().enumerate() {
-            let utxo_id = UtxoId { tx_hash, output_index: idx as u32 };
+            let utxo_id = UtxoId {
+                tx_hash,
+                output_index: idx as u32,
+            };
             let utxo = Utxo {
                 amount: output.amount,
                 owner: output.owner.to_address(),
@@ -608,7 +615,8 @@ impl Ledger {
 
         // Persist state root
         let root = self.merkle_tree.root();
-        self.storage.put(CF_METADATA, b"state_root", root.as_bytes())?;
+        self.storage
+            .put(CF_METADATA, b"state_root", root.as_bytes())?;
         Ok(())
     }
 

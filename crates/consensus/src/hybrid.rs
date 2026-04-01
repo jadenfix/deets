@@ -53,7 +53,7 @@ pub struct HybridConsensus {
     // === VRF-PoS Parameters ===
     #[allow(dead_code)]
     tau: f64, // Leader rate (0 < tau <= 1) — kept for API compatibility
-    tau_numerator: u128,   // Integer numerator for deterministic eligibility check
+    tau_numerator: u128, // Integer numerator for deterministic eligibility check
     tau_denominator: u128, // Integer denominator for deterministic eligibility check
     my_vrf_keypair: Option<VrfKeypair>,
     my_bls_keypair: Option<BlsKeypair>,
@@ -190,10 +190,12 @@ impl HybridConsensus {
             proof: block.header.vrf_proof.proof.clone(),
         };
 
-        let vrf_pubkey: [u8; 32] = *self.vrf_pubkeys.get(&proposer_addr)
-            .ok_or_else(|| anyhow::anyhow!(
-                "no VRF public key registered for proposer {:?}", proposer_addr
-            ))?;
+        let vrf_pubkey: [u8; 32] = *self.vrf_pubkeys.get(&proposer_addr).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no VRF public key registered for proposer {:?}",
+                proposer_addr
+            )
+        })?;
 
         if !verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
@@ -292,7 +294,11 @@ impl HybridConsensus {
     pub fn process_vote(&mut self, vote: Vote) -> Result<Option<QuorumCertificate>> {
         // Verify vote is for current slot
         if vote.slot != self.current_slot {
-            bail!("vote for wrong slot: got {}, expected {}", vote.slot, self.current_slot);
+            bail!(
+                "vote for wrong slot: got {}, expected {}",
+                vote.slot,
+                self.current_slot
+            );
         }
 
         let voter_addr = vote.validator.to_address();
@@ -317,10 +323,18 @@ impl HybridConsensus {
         // an attacker from poisoning the equivocation record with invalid-sig votes).
         // Mandatory: every validator MUST have a registered BLS key, and every vote
         // MUST carry a valid 96-byte BLS signature.
-        let bls_pk = self.bls_pubkeys.get(&voter_addr)
-            .ok_or_else(|| anyhow::anyhow!("no BLS public key registered for validator {:?}", voter_addr))?;
+        let bls_pk = self.bls_pubkeys.get(&voter_addr).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no BLS public key registered for validator {:?}",
+                voter_addr
+            )
+        })?;
         if bls_pk.len() != 48 {
-            bail!("registered BLS pubkey has invalid length {} for {:?}", bls_pk.len(), voter_addr);
+            bail!(
+                "registered BLS pubkey has invalid length {} for {:?}",
+                bls_pk.len(),
+                voter_addr
+            );
         }
         let vote_msg = {
             let mut msg = Vec::new();
@@ -330,7 +344,11 @@ impl HybridConsensus {
         };
         let sig_bytes = vote.signature.as_bytes();
         if sig_bytes.len() != 96 {
-            bail!("vote signature has invalid length {} from {:?}", sig_bytes.len(), voter_addr);
+            bail!(
+                "vote signature has invalid length {} from {:?}",
+                sig_bytes.len(),
+                voter_addr
+            );
         }
         match aether_crypto_bls::keypair::verify(bls_pk, &vote_msg, sig_bytes) {
             Ok(true) => {} // Valid signature
@@ -348,7 +366,10 @@ impl HybridConsensus {
                 if *e.get() != vote.block_hash {
                     println!(
                         "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
-                        voter_addr, e.get(), vote.block_hash, vote.slot
+                        voter_addr,
+                        e.get(),
+                        vote.block_hash,
+                        vote.slot
                     );
                     bail!(
                         "equivocation detected: validator {:?} double-voted at slot {}",
@@ -373,7 +394,11 @@ impl HybridConsensus {
             .count();
         let key = (vote.slot, self.current_phase.clone(), vote.block_hash);
         if !self.votes.contains_key(&key) && existing_hashes >= max_block_hashes_per_phase {
-            bail!("too many block candidates for slot {} (limit: {})", vote.slot, max_block_hashes_per_phase);
+            bail!(
+                "too many block candidates for slot {} (limit: {})",
+                vote.slot,
+                max_block_hashes_per_phase
+            );
         }
 
         // Deduplicate: one vote per validator per (slot, phase, block)
@@ -521,12 +546,12 @@ impl ConsensusEngine for HybridConsensus {
         // Prune old consensus state to bound memory growth.
         // Keep only data from the last 200 slots.
         let prune_before = self.current_slot.saturating_sub(200);
-        self.vote_record.retain(|(slot, _), _| *slot >= prune_before);
+        self.vote_record
+            .retain(|(slot, _), _| *slot >= prune_before);
         self.qcs.retain(|(slot, _, _), _| *slot >= prune_before);
         // Prune block parent tracking for very old blocks
         self.block_slots.retain(|_, slot| *slot >= prune_before);
-        let slots_to_keep: std::collections::HashSet<&H256> =
-            self.block_slots.keys().collect();
+        let slots_to_keep: std::collections::HashSet<&H256> = self.block_slots.keys().collect();
         self.block_parents.retain(|k, _| slots_to_keep.contains(k));
 
         // Check for epoch transition
@@ -758,7 +783,11 @@ mod tests {
         let (v4, _bls4) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
-            0.8, 100, None, None, None,
+            0.8,
+            100,
+            None,
+            None,
+            None,
         );
 
         let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
@@ -766,11 +795,18 @@ mod tests {
 
         // First vote: accepted (no quorum yet)
         let result1 = consensus.process_vote(vote.clone());
-        assert!(result1.is_ok(), "First vote should be accepted: {:?}", result1.err());
+        assert!(
+            result1.is_ok(),
+            "First vote should be accepted: {:?}",
+            result1.err()
+        );
 
         // Second identical vote from same validator: silently ignored (dedup)
         let result2 = consensus.process_vote(vote.clone()).unwrap();
-        assert!(result2.is_none(), "Duplicate vote should return None (ignored)");
+        assert!(
+            result2.is_none(),
+            "Duplicate vote should return None (ignored)"
+        );
 
         // Verify only 1 vote counted
         let key = (0, Phase::Propose, block_hash);
@@ -784,7 +820,13 @@ mod tests {
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
 
         // Register BLS key, create a signed vote, then tamper with stake
-        let mut vote = make_signed_vote(&mut consensus, &v1, &bls1, H256::from_slice(&[1u8; 32]).unwrap(), 0);
+        let mut vote = make_signed_vote(
+            &mut consensus,
+            &v1,
+            &bls1,
+            H256::from_slice(&[1u8; 32]).unwrap(),
+            0,
+        );
         vote.stake = 999_999; // Inflated stake (registered = 1000)
 
         let result = consensus.process_vote(vote);
@@ -815,8 +857,14 @@ mod tests {
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let (v2, _bls2) = create_test_validator_with_bls(1000);
         let (v3, _bls3) = create_test_validator_with_bls(1000);
-        let mut consensus =
-            HybridConsensus::new(vec![v1.clone(), v2.clone(), v3.clone()], 0.8, 100, None, None, None);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone()],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
 
         let block_hash = H256::from_slice(&[1u8; 32]).unwrap();
         let vote = make_signed_vote(&mut consensus, &v1, &bls1, block_hash, 0);
@@ -829,10 +877,17 @@ mod tests {
         // Only 1 vote should be counted (1000 stake, not 1,000,000)
         let key = (0, Phase::Propose, block_hash);
         let votes = consensus.votes.get(&key).unwrap();
-        assert_eq!(votes.len(), 1, "Dedup should prevent duplicate accumulation");
+        assert_eq!(
+            votes.len(),
+            1,
+            "Dedup should prevent duplicate accumulation"
+        );
 
         let voted_stake: u128 = votes.values().map(|v| v.stake).sum();
-        assert_eq!(voted_stake, 1000, "Total stake should be 1000, not 1,000,000");
+        assert_eq!(
+            voted_stake, 1000,
+            "Total stake should be 1000, not 1,000,000"
+        );
         // Quorum not reached (1000 < 2000)
     }
 
@@ -867,7 +922,14 @@ mod tests {
         );
 
         // Different VRF output → different randomness
-        let mut consensus2 = HybridConsensus::new(vec![create_test_validator(1000)], 0.8, 100, None, None, None);
+        let mut consensus2 = HybridConsensus::new(
+            vec![create_test_validator(1000)],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
         consensus2.update_epoch_randomness(&[99u8; 32]);
 
         assert_ne!(
@@ -884,7 +946,11 @@ mod tests {
         let (v4, _bls4) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
-            0.8, 100, None, None, None,
+            0.8,
+            100,
+            None,
+            None,
+            None,
         );
 
         let block_a = H256::from_slice(&[1u8; 32]).unwrap();
@@ -939,9 +1005,8 @@ mod tests {
     fn test_vote_rejected_without_bls_key() {
         let v1 = create_test_validator(1000);
         let v2 = create_test_validator(1000);
-        let mut consensus = HybridConsensus::new(
-            vec![v1.clone(), v2.clone()], 0.8, 100, None, None, None,
-        );
+        let mut consensus =
+            HybridConsensus::new(vec![v1.clone(), v2.clone()], 0.8, 100, None, None, None);
         // Do NOT register BLS key for v1
         let vote = Vote {
             slot: 0,
@@ -952,7 +1017,10 @@ mod tests {
         };
         let result = consensus.process_vote(vote);
         assert!(result.is_err(), "Vote without BLS key should be rejected");
-        assert!(result.unwrap_err().to_string().contains("no BLS public key"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no BLS public key"));
     }
 
     #[test]
@@ -960,7 +1028,9 @@ mod tests {
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
         let pop = bls1.proof_of_possession();
-        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop).unwrap();
+        consensus
+            .register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop)
+            .unwrap();
 
         let vote = Vote {
             slot: 0,
@@ -970,7 +1040,10 @@ mod tests {
             stake: v1.stake,
         };
         let result = consensus.process_vote(vote);
-        assert!(result.is_err(), "Vote with wrong sig length should be rejected");
+        assert!(
+            result.is_err(),
+            "Vote with wrong sig length should be rejected"
+        );
         assert!(result.unwrap_err().to_string().contains("invalid length"));
     }
 
@@ -979,7 +1052,9 @@ mod tests {
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
         let pop = bls1.proof_of_possession();
-        consensus.register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop).unwrap();
+        consensus
+            .register_bls_pubkey(v1.pubkey.to_address(), bls1.public_key(), &pop)
+            .unwrap();
 
         // Sign a DIFFERENT message than what process_vote expects
         let wrong_sig = bls1.sign(b"completely wrong message");
@@ -991,7 +1066,10 @@ mod tests {
             stake: v1.stake,
         };
         let result = consensus.process_vote(vote);
-        assert!(result.is_err(), "Vote with invalid BLS sig should be rejected");
+        assert!(
+            result.is_err(),
+            "Vote with invalid BLS sig should be rejected"
+        );
     }
 
     #[test]
@@ -1003,7 +1081,11 @@ mod tests {
         let (v4, _bls4) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
-            0.8, 100, None, None, None,
+            0.8,
+            100,
+            None,
+            None,
+            None,
         );
 
         let block_a = H256::from_slice(&[0xAAu8; 32]).unwrap();
@@ -1014,12 +1096,18 @@ mod tests {
             consensus.advance_slot();
         }
         let vote_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 5);
-        assert!(consensus.process_vote(vote_a).is_ok(), "first vote should succeed");
+        assert!(
+            consensus.process_vote(vote_a).is_ok(),
+            "first vote should succeed"
+        );
 
         // v1 tries to vote for block_b at the same slot 5 -- equivocation
         let vote_b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 5);
         let result = consensus.process_vote(vote_b);
-        assert!(result.is_err(), "second vote for different block at same slot must be rejected");
+        assert!(
+            result.is_err(),
+            "second vote for different block at same slot must be rejected"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("equivocation"),
@@ -1032,10 +1120,7 @@ mod tests {
     fn test_finality_not_reported_twice() {
         // Single-validator setup: quorum is immediate
         let (v1, bls1) = create_test_validator_with_bls(1000);
-        let mut consensus = HybridConsensus::new(
-            vec![v1.clone()],
-            0.8, 100, None, None, None,
-        );
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
 
         // Advance to slot 1 so finalized_slot (1) > last_reported_finalized (0)
         consensus.advance_slot();
@@ -1045,15 +1130,24 @@ mod tests {
 
         // Process vote -- single validator reaches quorum immediately, finalizing slot 1
         let qc = consensus.process_vote(vote).unwrap();
-        assert!(qc.is_some(), "single-validator quorum should form immediately");
+        assert!(
+            qc.is_some(),
+            "single-validator quorum should form immediately"
+        );
 
         // First check_finality for slot 1 should return true
         let first = consensus.check_finality(1);
-        assert!(first, "first check_finality should return true for newly finalized slot");
+        assert!(
+            first,
+            "first check_finality should return true for newly finalized slot"
+        );
 
         // Second check_finality for the same slot should return false (already reported)
         let second = consensus.check_finality(1);
-        assert!(!second, "second check_finality should return false -- finality already reported");
+        assert!(
+            !second,
+            "second check_finality should return false -- finality already reported"
+        );
     }
 
     #[test]
@@ -1064,7 +1158,11 @@ mod tests {
         let (v3, _bls3) = create_test_validator_with_bls(1000);
         let mut consensus = HybridConsensus::new(
             vec![v1.clone(), v2.clone(), v3.clone()],
-            0.8, 100, None, None, None,
+            0.8,
+            100,
+            None,
+            None,
+            None,
         );
 
         // Advance to slot 1
@@ -1075,12 +1173,18 @@ mod tests {
 
         // Vote for block A at slot 1
         let vote_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 1);
-        assert!(consensus.process_vote(vote_a).is_ok(), "first vote should succeed");
+        assert!(
+            consensus.process_vote(vote_a).is_ok(),
+            "first vote should succeed"
+        );
 
         // Vote for block B at slot 1 from the same validator -- equivocation
         let vote_b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 1);
         let result = consensus.process_vote(vote_b);
-        assert!(result.is_err(), "second vote for different block should be rejected");
+        assert!(
+            result.is_err(),
+            "second vote for different block should be rejected"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("equivocation"),
@@ -1093,10 +1197,7 @@ mod tests {
     fn test_finality_not_double_reported() {
         // check_finality should return true only once per slot
         let (v1, bls1) = create_test_validator_with_bls(1000);
-        let mut consensus = HybridConsensus::new(
-            vec![v1.clone()],
-            0.8, 100, None, None, None,
-        );
+        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
 
         // Advance to slot 1 and finalize via single-validator quorum
         consensus.advance_slot();

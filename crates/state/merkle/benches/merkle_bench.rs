@@ -66,5 +66,11 @@ fn bench_smt_verify(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_smt_insert_1, bench_smt_insert_100, bench_smt_prove, bench_smt_verify);
+criterion_group!(
+    benches,
+    bench_smt_insert_1,
+    bench_smt_insert_100,
+    bench_smt_prove,
+    bench_smt_verify
+);
 criterion_main!(benches);

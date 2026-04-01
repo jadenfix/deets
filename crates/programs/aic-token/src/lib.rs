@@ -241,7 +241,10 @@ mod tests {
         state.approve(addr(2), addr(3), 50).unwrap();
 
         let result = state.transfer_from(addr(3), addr(2), addr(4), 100);
-        assert!(result.is_err(), "transfer_from exceeding allowance should fail");
+        assert!(
+            result.is_err(),
+            "transfer_from exceeding allowance should fail"
+        );
 
         // Nothing changed
         assert_eq!(state.balance_of(&addr(2)), 1000);

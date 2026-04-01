@@ -6,10 +6,7 @@ pub enum SyncState {
     /// Fully synced with the network.
     Synced,
     /// Currently syncing from `from_slot` to `target_slot`.
-    Syncing {
-        from_slot: Slot,
-        target_slot: Slot,
-    },
+    Syncing { from_slot: Slot, target_slot: Slot },
     /// Sync stalled (no progress for too long).
     Stalled,
 }

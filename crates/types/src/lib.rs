@@ -26,8 +26,8 @@ pub mod transaction;
 pub use account::{Account, Utxo};
 pub use block::{AggregatedVote, Block, BlockHeader, VrfProof, PROTOCOL_VERSION};
 pub use chain_config::{
-    AiMeshParams, ChainConfig, ChainId, ChainParams, ConsensusParams, FeeParams,
-    NetworkingParams, RentParams, RewardParams, TokenParams, WellKnownAddresses,
+    AiMeshParams, ChainConfig, ChainId, ChainParams, ConsensusParams, FeeParams, NetworkingParams,
+    RentParams, RewardParams, TokenParams, WellKnownAddresses,
 };
 pub use consensus::{EpochInfo, ValidatorInfo, Vote};
 pub use primitives::{Address, Epoch, PublicKey, Signature, Slot, H160, H256};

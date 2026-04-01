@@ -306,7 +306,9 @@ fn proof_to_hash(gamma: &EdwardsPoint) -> [u8; 32] {
     output
 }
 
-#[deprecated(note = "Use check_leader_eligibility_integer for deterministic consensus; f64 loses precision")]
+#[deprecated(
+    note = "Use check_leader_eligibility_integer for deterministic consensus; f64 loses precision"
+)]
 /// Convert VRF output to a value in [0, 1) for threshold comparison.
 pub fn output_to_value(output: &[u8; 32]) -> f64 {
     let mut bytes = [0u8; 8];
@@ -637,11 +639,23 @@ mod tests {
     fn test_integer_leader_eligibility_basic() {
         // Low VRF output should be eligible with reasonable stake
         let low_output = [0u8; 32];
-        assert!(check_leader_eligibility_integer(&low_output, 5000, 10_000, 4, 5));
+        assert!(check_leader_eligibility_integer(
+            &low_output,
+            5000,
+            10_000,
+            4,
+            5
+        ));
 
         // High VRF output should not be eligible with small stake
         let high_output = [255u8; 32];
-        assert!(!check_leader_eligibility_integer(&high_output, 100, 10_000, 4, 5));
+        assert!(!check_leader_eligibility_integer(
+            &high_output,
+            100,
+            10_000,
+            4,
+            5
+        ));
     }
 
     #[test]
@@ -650,10 +664,14 @@ mod tests {
         assert!(!check_leader_eligibility_integer(&[0u8; 32], 100, 0, 4, 5));
 
         // Zero tau_denominator should return false
-        assert!(!check_leader_eligibility_integer(&[0u8; 32], 100, 1000, 4, 0));
+        assert!(!check_leader_eligibility_integer(
+            &[0u8; 32], 100, 1000, 4, 0
+        ));
 
         // Full stake (stake == total_stake) with tau=1 (1/1) should always be eligible for low output
-        assert!(check_leader_eligibility_integer(&[0u8; 32], 1000, 1000, 1, 1));
+        assert!(check_leader_eligibility_integer(
+            &[0u8; 32], 1000, 1000, 1, 1
+        ));
 
         // Zero stake should never be eligible
         assert!(!check_leader_eligibility_integer(&[0u8; 32], 0, 1000, 4, 5));
@@ -676,7 +694,10 @@ mod tests {
         let proof = kp.prove(b"test-slot-1");
         let result1 = check_leader_eligibility_integer(&proof.output, 500, 1000, 8000, 10000);
         let result2 = check_leader_eligibility_integer(&proof.output, 500, 1000, 8000, 10000);
-        assert_eq!(result1, result2, "integer eligibility must be deterministic");
+        assert_eq!(
+            result1, result2,
+            "integer eligibility must be deterministic"
+        );
     }
 
     #[test]

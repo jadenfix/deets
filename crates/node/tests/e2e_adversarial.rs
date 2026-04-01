@@ -49,7 +49,13 @@ impl TestNetwork {
 
         let bls_pubkeys: Vec<(Address, Vec<u8>, Vec<u8>)> = keypairs
             .iter()
-            .map(|kp| (kp.address(), kp.bls.public_key(), kp.bls.proof_of_possession()))
+            .map(|kp| {
+                (
+                    kp.address(),
+                    kp.bls.public_key(),
+                    kp.bls.proof_of_possession(),
+                )
+            })
             .collect();
 
         let validator_addrs: Vec<Address> = keypairs.iter().map(|kp| kp.address()).collect();
@@ -266,11 +272,7 @@ fn test_finality_advances() {
     let finalized = network.nodes[0].finalized_slot();
     // Finality may or may not have advanced depending on VRF lottery.
     // Just verify it doesn't regress and nodes agree.
-    let finalized_slots: Vec<Slot> = network
-        .nodes
-        .iter()
-        .map(|n| n.finalized_slot())
-        .collect();
+    let finalized_slots: Vec<Slot> = network.nodes.iter().map(|n| n.finalized_slot()).collect();
 
     // All nodes should agree on finalized slot (or be very close)
     let max_f = *finalized_slots.iter().max().unwrap();
@@ -278,7 +280,8 @@ fn test_finality_advances() {
     assert!(
         max_f - min_f <= 2,
         "Finality divergence too large: min={}, max={}",
-        min_f, max_f
+        min_f,
+        max_f
     );
 }
 

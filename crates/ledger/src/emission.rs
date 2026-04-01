@@ -89,9 +89,7 @@ impl EmissionSchedule {
 
         // annual_emission = total_supply * rate_bps / 10_000
         // epoch_emission = annual_emission / epochs_per_year
-        total_supply
-            .saturating_mul(rate_bps)
-            / (10_000 * self.epochs_per_year as u128)
+        total_supply.saturating_mul(rate_bps) / (10_000 * self.epochs_per_year as u128)
     }
 
     /// Fee distribution: split priority fees between proposer and treasury.

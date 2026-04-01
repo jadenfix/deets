@@ -4,7 +4,7 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
-use aether_state_storage::{Storage, CF_BLOCKS, CF_RECEIPTS, CF_METADATA};
+use aether_state_storage::{Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
     H256,
@@ -79,7 +79,11 @@ impl Node {
             Self::load_blocks_from_storage(ledger.storage())?;
 
         if !blocks_by_hash.is_empty() {
-            println!("Recovered {} blocks from disk (tip: slot {:?})", blocks_by_hash.len(), latest_block_slot);
+            println!(
+                "Recovered {} blocks from disk (tip: slot {:?})",
+                blocks_by_hash.len(),
+                latest_block_slot
+            );
         }
 
         let fee_market = FeeMarket::new(
@@ -120,7 +124,12 @@ impl Node {
     /// Load persisted blocks from RocksDB on startup.
     fn load_blocks_from_storage(
         storage: &Storage,
-    ) -> Result<(HashMap<Slot, H256>, HashMap<H256, Block>, H256, Option<Slot>)> {
+    ) -> Result<(
+        HashMap<Slot, H256>,
+        HashMap<H256, Block>,
+        H256,
+        Option<Slot>,
+    )> {
         let mut by_slot = HashMap::new();
         let mut by_hash = HashMap::new();
         let mut latest_hash = H256::zero();
@@ -198,7 +207,9 @@ impl Node {
                 if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
                     self.outbound_buffer.push(e.0);
                 } else {
-                    eprintln!("CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
+                    eprintln!(
+                        "CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message"
+                    );
                 }
             }
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
@@ -260,7 +271,10 @@ impl Node {
                     self.consecutive_timeouts, slot
                 );
             }
-            println!("Slot {}: TIMEOUT ({} consecutive) — advancing via pacemaker", slot, self.consecutive_timeouts);
+            println!(
+                "Slot {}: TIMEOUT ({} consecutive) — advancing via pacemaker",
+                slot, self.consecutive_timeouts
+            );
             self.consensus.on_timeout();
         } else {
             self.consecutive_timeouts = 0;
@@ -364,7 +378,9 @@ impl Node {
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
         // Forced inclusion: include txs that have been waiting too long (anti-censorship)
-        let forced = self.mempool.must_include_transactions(slot, self.fee_market.base_fee);
+        let forced = self
+            .mempool
+            .must_include_transactions(slot, self.fee_market.base_fee);
         let forced_count = forced.len();
         let remaining_capacity = 1000usize.saturating_sub(forced_count);
         let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
@@ -398,11 +414,10 @@ impl Node {
         };
 
         // Apply transactions speculatively (NOT committed to disk yet)
-        let (receipts, overlay) =
-            self.ledger.apply_block_speculatively_with_chain_id(
-                &transactions,
-                Some(self.chain_config.chain.chain_id_numeric),
-            )?;
+        let (receipts, overlay) = self.ledger.apply_block_speculatively_with_chain_id(
+            &transactions,
+            Some(self.chain_config.chain.chain_id_numeric),
+        )?;
         let successful = receipts
             .iter()
             .filter(|r| matches!(r.status, aether_types::TransactionStatus::Success))
@@ -458,7 +473,10 @@ impl Node {
 
         // Credit proposer with their share (priority fees / tips)
         if fee_result.proposer_reward > 0 {
-            if let Err(e) = self.ledger.credit_account(&block.header.proposer, fee_result.proposer_reward) {
+            if let Err(e) = self
+                .ledger
+                .credit_account(&block.header.proposer, fee_result.proposer_reward)
+            {
                 eprintln!("WARNING: failed to credit proposer fee reward: {e}");
             }
         }
@@ -485,16 +503,20 @@ impl Node {
         self.blocks_by_hash.insert(block_hash, block.clone());
 
         // Persist block to disk
-        let stored_receipts: Vec<TransactionReceipt> = receipts.iter().map(|r| {
-            let mut sr = r.clone();
-            sr.block_hash = block_hash;
-            sr.slot = slot;
-            sr
-        }).collect();
+        let stored_receipts: Vec<TransactionReceipt> = receipts
+            .iter()
+            .map(|r| {
+                let mut sr = r.clone();
+                sr.block_hash = block_hash;
+                sr.slot = slot;
+                sr
+            })
+            .collect();
         self.persist_block(&block, block_hash, &stored_receipts)?;
 
         // Record block parent for 2-chain finality tracking
-        self.consensus.record_block(block_hash, block.header.parent_hash, slot);
+        self.consensus
+            .record_block(block_hash, block.header.parent_hash, slot);
 
         // Remove transactions from mempool
         let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
@@ -601,8 +623,7 @@ impl Node {
         }
 
         // Execute transactions SPECULATIVELY (not committed to disk yet)
-        let (receipts, overlay) =
-            self.ledger.apply_block_speculatively(&block.transactions)?;
+        let (receipts, overlay) = self.ledger.apply_block_speculatively(&block.transactions)?;
 
         // Validate state root matches before committing (unconditional)
         if overlay.state_root != block.header.state_root {
@@ -665,8 +686,7 @@ impl Node {
             let mut stored_receipt = receipt.clone();
             stored_receipt.block_hash = block_hash;
             stored_receipt.slot = block.header.slot;
-            self.receipts
-                .insert(stored_receipt.tx_hash, stored_receipt);
+            self.receipts.insert(stored_receipt.tx_hash, stored_receipt);
         }
 
         // Persist block and receipts to disk
@@ -691,7 +711,9 @@ impl Node {
         let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
         if fee_result.proposer_reward > 0 {
-            let _ = self.ledger.credit_account(&block.header.proposer, fee_result.proposer_reward);
+            let _ = self
+                .ledger
+                .credit_account(&block.header.proposer, fee_result.proposer_reward);
         }
         if fee_result.burned > 0 {
             let _ = self.ledger.record_burned_fees(fee_result.burned);
@@ -867,13 +889,9 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(
-            &bincode::serialize(&receipt.status).unwrap_or_default(),
-        );
+        receipt_hasher.update(&bincode::serialize(&receipt.status).unwrap_or_default());
         receipt_hasher.update(&receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(
-            &bincode::serialize(&receipt.logs).unwrap_or_default(),
-        );
+        receipt_hasher.update(&bincode::serialize(&receipt.logs).unwrap_or_default());
         receipt_hasher.update(receipt.state_root.as_bytes());
         hasher.update(&receipt_hasher.finalize());
     }
@@ -903,7 +921,14 @@ mod tests {
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
 
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
 
         node.process_slot().unwrap();
         let first_metrics = node.poh_metrics().cloned().unwrap();
@@ -921,7 +946,14 @@ mod tests {
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
 
         // Push more than MAX_OUTBOUND_BUFFER messages
         for _ in 0..MAX_OUTBOUND_BUFFER + 100 {
@@ -943,7 +975,14 @@ mod tests {
         let keypair = Keypair::generate();
         let validators = vec![validator_info_from_key(&keypair)];
         let consensus = Box::new(SimpleConsensus::new(validators));
-        let mut node = Node::new(temp_dir.path(), consensus, Some(keypair), None, Arc::new(ChainConfig::devnet())).unwrap();
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
 
         let block = Block::new(
             0,

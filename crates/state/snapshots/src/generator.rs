@@ -88,9 +88,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
         // Seed a non-zero state root so generate_snapshot succeeds
-        storage
-            .put(CF_METADATA, b"state_root", &[1u8; 32])
-            .unwrap();
+        storage.put(CF_METADATA, b"state_root", &[1u8; 32]).unwrap();
         let bytes = generate_snapshot(&storage, 10).unwrap();
         let snapshot = decode_snapshot(&bytes).unwrap();
         assert_eq!(snapshot.metadata.height, 10);

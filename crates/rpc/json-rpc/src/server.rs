@@ -704,11 +704,13 @@ async fn handle_request_airdrop<B: RpcBackend>(
     let amount = parse_u128_value(&params[1], "amount")?;
 
     let backend = backend.read().await;
-    backend.request_airdrop(address, amount).map_err(|e| JsonRpcError {
-        code: -32000,
-        message: format!("Airdrop failed: {}", e),
-        data: None,
-    })?;
+    backend
+        .request_airdrop(address, amount)
+        .map_err(|e| JsonRpcError {
+            code: -32000,
+            message: format!("Airdrop failed: {}", e),
+            data: None,
+        })?;
 
     Ok(json!({"success": true}))
 }
