@@ -682,6 +682,17 @@ impl ConsensusEngine for HybridConsensus {
     ) -> Result<()> {
         self.register_bls_pubkey(address, bls_pubkey, pop_signature)
     }
+
+    fn slash_validator(&mut self, address: &Address, slash_bps: u128) -> u128 {
+        if let Some(validator) = self.validators.get_mut(address) {
+            let slash_amount = validator.stake.saturating_mul(slash_bps) / 10000;
+            validator.stake = validator.stake.saturating_sub(slash_amount);
+            self.total_stake = self.total_stake.saturating_sub(slash_amount);
+            slash_amount
+        } else {
+            0
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1219,5 +1230,46 @@ mod tests {
         // Second call: false (already reported)
         let second = consensus.check_finality(1);
         assert!(!second, "second check_finality should return false");
+    }
+
+    #[test]
+    fn test_slash_validator_reduces_stake() {
+        let v1 = create_test_validator(1_000_000);
+        let addr = v1.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        assert_eq!(consensus.validator_stake(&addr), 1_000_000);
+        let initial_total = consensus.total_stake();
+
+        // Slash 5% (500 bps)
+        let slashed = consensus.slash_validator(&addr, 500);
+        assert_eq!(slashed, 50_000);
+        assert_eq!(consensus.validator_stake(&addr), 950_000);
+        assert_eq!(consensus.total_stake(), initial_total - 50_000);
+    }
+
+    #[test]
+    fn test_slash_unknown_validator_returns_zero() {
+        let v1 = create_test_validator(1_000_000);
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        let unknown = Address::from_slice(&[0xFFu8; 20]).unwrap();
+        assert_eq!(consensus.slash_validator(&unknown, 500), 0);
+    }
+
+    #[test]
+    fn test_slash_validator_saturates_at_zero() {
+        let v1 = create_test_validator(100);
+        let addr = v1.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 100, None, None, None);
+
+        // Slash 100% (10000 bps)
+        let slashed = consensus.slash_validator(&addr, 10000);
+        assert_eq!(slashed, 100);
+        assert_eq!(consensus.validator_stake(&addr), 0);
+
+        // Slash again — nothing left
+        let slashed2 = consensus.slash_validator(&addr, 500);
+        assert_eq!(slashed2, 0);
     }
 }

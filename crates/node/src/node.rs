@@ -1,4 +1,4 @@
-use aether_consensus::ConsensusEngine;
+use aether_consensus::{ConsensusEngine, SlashingDetector};
 use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
 use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
@@ -58,6 +58,8 @@ pub struct Node {
     outbound_buffer: Vec<OutboundMessage>,
     /// Consecutive timeout counter for circuit breaker.
     consecutive_timeouts: u32,
+    /// Detects double-signing and other slashable offenses from incoming votes.
+    slashing_detector: SlashingDetector,
 }
 
 impl Node {
@@ -125,6 +127,7 @@ impl Node {
             broadcast_tx: None,
             outbound_buffer: Vec::new(),
             consecutive_timeouts: 0,
+            slashing_detector: SlashingDetector::new(),
         })
     }
 
@@ -395,9 +398,10 @@ impl Node {
             }
         }
 
-        // Prune fork choice for finalized slots (no longer need candidates)
+        // Prune fork choice and slashing detector for finalized slots
         let finalized = self.consensus.finalized_slot();
         self.fork_choice.prune_before(finalized);
+        self.slashing_detector.prune_before(finalized);
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
@@ -830,7 +834,27 @@ impl Node {
     // ========================================================================
 
     /// Handle a vote received from the P2P network.
+    /// Checks for double-signing before processing. If a validator votes for two
+    /// different blocks in the same slot, they are slashed (5% of stake).
     pub fn on_vote_received(&mut self, vote: Vote) -> Result<()> {
+        let validator_address = vote.validator.to_address();
+
+        // Check for double-signing before accepting the vote
+        if let Some(proof) = self.slashing_detector.record_vote(
+            validator_address,
+            vote.validator.clone(),
+            vote.slot,
+            vote.block_hash,
+            vote.signature.clone(),
+        ) {
+            // Double-sign detected! Slash 5% (500 basis points)
+            let slashed = self.consensus.slash_validator(&proof.validator, 500);
+            println!(
+                "SLASHING: validator {:?} double-signed at slot {}. Slashed {} (5% of stake)",
+                proof.validator, vote.slot, slashed
+            );
+        }
+
         self.consensus.add_vote(vote)?;
         self.check_finality();
         Ok(())

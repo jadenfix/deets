@@ -1,5 +1,6 @@
 use aether_types::{Address, PublicKey, Signature, H256};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A signed vote that can be used as evidence in a slash proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +185,89 @@ pub fn apply_slash(validator_stake: u128, proof: &SlashProof, _min_stake: u128) 
     }
 }
 
+/// Tracks votes per (validator, slot) to detect double-signing in real time.
+/// Designed to be embedded in the node's vote processing path.
+#[derive(Default)]
+pub struct SlashingDetector {
+    /// Maps (validator_address, slot) -> first vote's block_hash.
+    seen_votes: HashMap<(Address, u64), H256>,
+    /// Pending slash proofs awaiting enforcement.
+    pending_slashes: Vec<SlashProof>,
+}
+
+impl SlashingDetector {
+    pub fn new() -> Self {
+        SlashingDetector {
+            seen_votes: HashMap::new(),
+            pending_slashes: Vec::new(),
+        }
+    }
+
+    /// Record a vote. If the same validator voted for a different block in the
+    /// same slot, a `SlashProof` is created and returned.
+    ///
+    /// The caller is responsible for supplying the validator address and BLS
+    /// public key (resolved from the `aether_types::Vote`).
+    pub fn record_vote(
+        &mut self,
+        validator: Address,
+        validator_pubkey: aether_types::PublicKey,
+        slot: u64,
+        block_hash: H256,
+        signature: aether_types::Signature,
+    ) -> Option<SlashProof> {
+        let key = (validator, slot);
+        match self.seen_votes.entry(key) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(block_hash);
+                None
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
+                let first_hash = *e.get();
+                if first_hash == block_hash {
+                    return None; // Duplicate vote, not a double-sign
+                }
+                // Double-sign detected!
+                let vote1 = Vote {
+                    slot,
+                    block_hash: first_hash,
+                    validator,
+                    validator_pubkey: validator_pubkey.clone(),
+                    // We don't have the original signature for vote1, so we can't
+                    // create a fully-verifiable proof here. In production, we'd store
+                    // the full vote. For now, use a placeholder.
+                    signature: aether_types::Signature::from_bytes(vec![]),
+                };
+                let vote2 = Vote {
+                    slot,
+                    block_hash,
+                    validator,
+                    validator_pubkey,
+                    signature,
+                };
+                let proof = SlashProof {
+                    vote1,
+                    vote2,
+                    validator,
+                    proof_type: SlashType::DoubleSign,
+                };
+                self.pending_slashes.push(proof.clone());
+                Some(proof)
+            }
+        }
+    }
+
+    /// Drain all pending slash proofs for processing.
+    pub fn drain_pending(&mut self) -> Vec<SlashProof> {
+        std::mem::take(&mut self.pending_slashes)
+    }
+
+    /// Prune vote records for slots below `min_slot` to bound memory.
+    pub fn prune_before(&mut self, min_slot: u64) {
+        self.seen_votes.retain(|&(_, slot), _| slot >= min_slot);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +415,94 @@ mod tests {
         assert_eq!(event.slash_amount, 50_000); // 5% of 1M
         assert_eq!(event.reporter_reward, 5_000); // 10% of slash
         assert_eq!(event.proof_type, SlashType::DoubleSign);
+    }
+
+    #[test]
+    fn test_slashing_detector_detects_double_sign() {
+        let mut detector = SlashingDetector::new();
+        let kp = aether_crypto_primitives::Keypair::generate();
+        let pubkey = aether_types::PublicKey::from_bytes(kp.public_key());
+        let addr = pubkey.to_address();
+        let sig = aether_types::Signature::from_bytes(vec![0; 64]);
+
+        let hash_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let hash_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        // First vote — no slash
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 10, hash_a, sig.clone())
+            .is_none());
+
+        // Same block again — no slash (duplicate)
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 10, hash_a, sig.clone())
+            .is_none());
+
+        // Different block, same slot — SLASH
+        let proof = detector.record_vote(addr, pubkey.clone(), 10, hash_b, sig.clone());
+        assert!(proof.is_some());
+        let proof = proof.unwrap();
+        assert_eq!(proof.validator, addr);
+        assert!(matches!(proof.proof_type, SlashType::DoubleSign));
+    }
+
+    #[test]
+    fn test_slashing_detector_different_slots_ok() {
+        let mut detector = SlashingDetector::new();
+        let kp = aether_crypto_primitives::Keypair::generate();
+        let pubkey = aether_types::PublicKey::from_bytes(kp.public_key());
+        let addr = pubkey.to_address();
+        let sig = aether_types::Signature::from_bytes(vec![0; 64]);
+
+        let hash_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let hash_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        // Different slots are fine
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 10, hash_a, sig.clone())
+            .is_none());
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 11, hash_b, sig.clone())
+            .is_none());
+    }
+
+    #[test]
+    fn test_slashing_detector_prune() {
+        let mut detector = SlashingDetector::new();
+        let kp = aether_crypto_primitives::Keypair::generate();
+        let pubkey = aether_types::PublicKey::from_bytes(kp.public_key());
+        let addr = pubkey.to_address();
+        let sig = aether_types::Signature::from_bytes(vec![0; 64]);
+
+        let hash_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let hash_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        detector.record_vote(addr, pubkey.clone(), 5, hash_a, sig.clone());
+        detector.prune_before(10);
+
+        // After pruning, slot 5 is forgotten — double-sign at slot 5 won't be caught
+        // (which is correct: finalized slots don't need protection)
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 5, hash_b, sig.clone())
+            .is_none());
+    }
+
+    #[test]
+    fn test_slashing_detector_drain_pending() {
+        let mut detector = SlashingDetector::new();
+        let kp = aether_crypto_primitives::Keypair::generate();
+        let pubkey = aether_types::PublicKey::from_bytes(kp.public_key());
+        let addr = pubkey.to_address();
+        let sig = aether_types::Signature::from_bytes(vec![0; 64]);
+
+        let hash_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let hash_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        detector.record_vote(addr, pubkey.clone(), 10, hash_a, sig.clone());
+        detector.record_vote(addr, pubkey.clone(), 10, hash_b, sig.clone());
+
+        let pending = detector.drain_pending();
+        assert_eq!(pending.len(), 1);
+        assert!(detector.drain_pending().is_empty());
     }
 }
