@@ -21,7 +21,8 @@ impl TurbineReceiver {
     pub fn ingest_shred(&mut self, shred: Shred) -> Result<Option<Vec<u8>>> {
         let (data_shards, parity_shards) = self.decoder.shard_config();
         let total_shards = data_shards + parity_shards;
-        if shred.index as usize >= total_shards {
+        let shred_idx = shred.index as usize;
+        if shred_idx >= total_shards {
             bail!(
                 "shred index {} exceeds shard count {}",
                 shred.index,
@@ -34,7 +35,7 @@ impl TurbineReceiver {
             .entry(shred.block_id)
             .or_insert_with(|| vec![None; total_shards]);
 
-        entry[shred.index as usize] = Some(shred.payload.clone());
+        entry[shred_idx] = Some(shred.payload.clone());
 
         if entry.iter().filter(|chunk| chunk.is_some()).count() < data_shards {
             return Ok(None);

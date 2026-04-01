@@ -43,7 +43,7 @@ impl PohRecorder {
     pub fn tick(&mut self, now: Instant) -> PohMetrics {
         let duration = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        self.tick_count += 1;
+        self.tick_count = self.tick_count.wrapping_add(1);
 
         if self.durations.len() == MAX_SAMPLES {
             self.durations.pop_front();
