@@ -616,8 +616,30 @@ impl Node {
             return Ok(());
         }
 
+        // Reject blocks with unsupported protocol version
+        if block.header.version != aether_types::PROTOCOL_VERSION {
+            bail!(
+                "unsupported protocol version: got {}, expected {}",
+                block.header.version,
+                aether_types::PROTOCOL_VERSION
+            );
+        }
+
         // Validate block via consensus (VRF proof, locked block check)
         self.consensus.validate_block(&block)?;
+
+        // Validate slot monotonicity: block slot must be strictly greater than parent's slot
+        if block.header.slot > 0 && block.header.parent_hash != H256::zero() {
+            if let Some(parent_block) = self.blocks_by_hash.get(&block.header.parent_hash) {
+                if block.header.slot <= parent_block.header.slot {
+                    bail!(
+                        "slot monotonicity violation: block slot {} <= parent slot {}",
+                        block.header.slot,
+                        parent_block.header.slot
+                    );
+                }
+            }
+        }
 
         // Validate transactions_root matches actual transactions (unconditional —
         // empty blocks naturally produce H256::zero() so zero roots still pass)
@@ -642,8 +664,65 @@ impl Node {
             );
         }
 
+        // Verify BLS aggregate signature when present (proves quorum voted for parent)
+        if let Some(ref agg_vote) = block.aggregated_vote {
+            if agg_vote.signers.is_empty() {
+                bail!("aggregated vote has no signers");
+            }
+            // Reconstruct the vote message: block_hash || slot (same as vote_on_block)
+            let mut vote_msg = Vec::new();
+            vote_msg.extend_from_slice(agg_vote.block_hash.as_bytes());
+            vote_msg.extend_from_slice(&agg_vote.slot.to_le_bytes());
+
+            // Look up BLS public keys for each signer via their Ed25519 identity
+            let mut bls_pubkeys = Vec::with_capacity(agg_vote.signers.len());
+            for signer in &agg_vote.signers {
+                let addr = signer.to_address();
+                let bls_pk = self.consensus.get_bls_pubkey(&addr).ok_or_else(|| {
+                    anyhow::anyhow!("no BLS pubkey registered for signer {:?}", addr)
+                })?;
+                bls_pubkeys.push(bls_pk);
+            }
+            let agg_pk = aether_crypto_bls::aggregate_public_keys(&bls_pubkeys)
+                .map_err(|e| anyhow::anyhow!("failed to aggregate signer pubkeys: {e}"))?;
+
+            let valid = aether_crypto_bls::verify_aggregated(
+                &agg_pk,
+                &vote_msg,
+                &agg_vote.aggregated_signature,
+            )
+            .map_err(|e| anyhow::anyhow!("BLS aggregate verification error: {e}"))?;
+            if !valid {
+                bail!("invalid BLS aggregate signature in block");
+            }
+
+            // Verify quorum: aggregated stake must be >= 2/3 of total stake
+            let total_stake = self.consensus.total_stake();
+            if total_stake > 0 {
+                let required = total_stake * 2 / 3 + 1;
+                if agg_vote.total_stake < required {
+                    bail!(
+                        "insufficient quorum: aggregated stake {} < required {} (2/3 of {})",
+                        agg_vote.total_stake,
+                        required,
+                        total_stake
+                    );
+                }
+            }
+        }
+
         // Execute transactions SPECULATIVELY (not committed to disk yet)
         let (receipts, overlay) = self.ledger.apply_block_speculatively(&block.transactions)?;
+
+        // Validate receipts_root matches recomputed receipts
+        let computed_receipts_root = compute_receipts_root(&receipts);
+        if computed_receipts_root != block.header.receipts_root {
+            bail!(
+                "receipts_root mismatch: computed={}, block={}",
+                computed_receipts_root,
+                block.header.receipts_root
+            );
+        }
 
         // Validate state root matches before committing (unconditional)
         if overlay.state_root != block.header.state_root {

@@ -670,6 +670,10 @@ impl ConsensusEngine for HybridConsensus {
         self.votes.clear();
     }
 
+    fn get_bls_pubkey(&self, address: &aether_types::Address) -> Option<Vec<u8>> {
+        self.bls_pubkeys.get(address).cloned()
+    }
+
     fn register_bls_pubkey(
         &mut self,
         address: aether_types::Address,
