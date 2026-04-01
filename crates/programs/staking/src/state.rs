@@ -16,6 +16,8 @@ pub enum StakingError {
     ValidatorInactive(Address),
     #[error("invalid commission rate: {0} (max 10000 bps)")]
     InvalidCommission(u16),
+    #[error("invalid slash rate: {0} (max 10000 bps)")]
+    InvalidSlashRate(u128),
     #[error("delegation not found")]
     DelegationNotFound,
     #[error("insufficient delegation: have {have}, requested {requested}")]
@@ -271,6 +273,10 @@ impl StakingState {
         validator: Address,
         slash_rate: u128, // Basis points (e.g., 500 = 5%)
     ) -> Result<u128, StakingError> {
+        if slash_rate > 10000 {
+            return Err(StakingError::InvalidSlashRate(slash_rate));
+        }
+
         let v = self
             .validators
             .iter_mut()
@@ -553,6 +559,23 @@ mod tests {
             state.get_validator(&test_address(1)).unwrap().staked_amount,
             0,
             "staked_amount should remain 0 after second slash"
+        );
+    }
+
+    #[test]
+    fn test_slash_rejects_rate_above_100_percent() {
+        let mut state = StakingState::new();
+
+        state
+            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .unwrap();
+
+        let result = state.slash(test_address(1), 10_001);
+        assert!(matches!(result, Err(StakingError::InvalidSlashRate(10_001))));
+        assert_eq!(
+            state.get_validator(&test_address(1)).unwrap().staked_amount,
+            1_000_000_000,
+            "invalid slash rates must leave stake untouched"
         );
     }
 }
