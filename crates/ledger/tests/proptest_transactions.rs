@@ -291,4 +291,99 @@ proptest! {
         let result = ledger.apply_transaction(&tx);
         prop_assert!(result.is_err());
     }
+
+    /// Speculative execution produces the same state root as sequential apply.
+    #[test]
+    fn speculative_matches_sequential(
+        count in 1usize..6,
+        fee in 1u128..500,
+    ) {
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let balance = fee * (count as u128) + 1_000_000;
+
+        // Path A: speculative
+        let dir_a = TempDir::new().unwrap();
+        let storage_a = Storage::open(dir_a.path()).unwrap();
+        let mut ledger_a = Ledger::new(storage_a).unwrap();
+        ledger_a.seed_account(&address, balance).unwrap();
+
+        let txs: Vec<_> = (0..count)
+            .map(|n| build_signed_tx(&keypair, n as u64, fee, 21_000))
+            .collect();
+        let (_receipts, overlay) = ledger_a.apply_block_speculatively(&txs).unwrap();
+        ledger_a.commit_overlay(overlay).unwrap();
+        let root_a = ledger_a.state_root();
+
+        // Path B: sequential
+        let dir_b = TempDir::new().unwrap();
+        let storage_b = Storage::open(dir_b.path()).unwrap();
+        let mut ledger_b = Ledger::new(storage_b).unwrap();
+        ledger_b.seed_account(&address, balance).unwrap();
+
+        for tx in &txs {
+            ledger_b.apply_transaction(tx).unwrap();
+        }
+        let root_b = ledger_b.state_root();
+
+        prop_assert_eq!(root_a, root_b);
+    }
+
+    /// Self-transfers preserve total balance (only fee is deducted).
+    #[test]
+    fn self_transfer_only_deducts_fee(
+        transfer_amount in 1u128..10_000,
+        fee in 1u128..1_000,
+    ) {
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let balance = transfer_amount + fee + 10_000;
+
+        let (_dir, mut ledger) = setup_ledger(&address, balance);
+        let tx = build_transfer_tx(&keypair, address, transfer_amount, 0, fee);
+        let receipt = ledger.apply_transaction(&tx).unwrap();
+        prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+
+        let after = ledger.get_account(&address).unwrap().unwrap();
+        // Self-transfer: amount goes back to sender, only fee is lost
+        prop_assert_eq!(after.balance, balance - fee);
+    }
+
+    /// Cross-chain transactions are rejected in speculative execution.
+    #[test]
+    fn cross_chain_id_rejected_speculatively(
+        wrong_chain_id in 2u64..1000,
+        fee in 1u128..1_000,
+    ) {
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let (_dir, mut ledger) = setup_ledger(&address, 1_000_000);
+
+        let tx = build_signed_tx(&keypair, 0, fee, 21_000);
+        let (receipts, _overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&[tx], Some(wrong_chain_id))
+            .unwrap();
+
+        prop_assert_eq!(receipts.len(), 1);
+        match &receipts[0].status {
+            TransactionStatus::Failed { reason } => {
+                prop_assert!(reason.contains("wrong chain_id"));
+            }
+            other => prop_assert!(false, "expected Failed, got {:?}", other),
+        }
+    }
+
+    /// Empty signature is always rejected.
+    #[test]
+    fn empty_signature_rejected(fee in 1u128..1_000) {
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        let (_dir, mut ledger) = setup_ledger(&address, 1_000_000);
+
+        let mut tx = build_signed_tx(&keypair, 0, fee, 21_000);
+        tx.signature = Signature::from_bytes(vec![]);
+
+        let result = ledger.apply_transaction(&tx);
+        prop_assert!(result.is_err());
+    }
 }
