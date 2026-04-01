@@ -141,7 +141,7 @@ impl HotStuffConsensus {
         my_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
-        let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))
@@ -277,7 +277,7 @@ impl HotStuffConsensus {
         block_votes.push(vote.clone());
 
         // Check for quorum
-        let stake: u128 = block_votes.iter().map(|v| v.stake).sum();
+        let stake: u128 = block_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let has_quorum = crate::has_quorum(stake, self.total_stake);
 
         if !has_quorum {
@@ -421,7 +421,7 @@ impl HotStuffConsensus {
 
         round_votes.push(tv.clone());
 
-        let stake: u128 = round_votes.iter().map(|v| v.stake).sum();
+        let stake: u128 = round_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         if !crate::has_quorum(stake, self.total_stake) {
             return Ok(None);
         }
@@ -623,7 +623,7 @@ impl HotStuffConsensus {
             slot: votes[0].slot,
             block_hash: votes[0].block_hash,
             phase: votes[0].phase.clone(),
-            total_stake: votes.iter().map(|v| v.stake).sum(),
+            total_stake: votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add),
             signers: votes.iter().map(|v| v.validator).collect(),
             aggregated_signature: agg_sig,
             aggregated_pubkey: agg_pk,
@@ -769,8 +769,8 @@ mod tests {
             block_votes.push(vote.clone());
 
             // Check quorum manually
-            let stake: u128 = block_votes.iter().map(|v| v.stake).sum();
-            if stake * 3 >= consensus.total_stake * 2 {
+            let stake: u128 = block_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+            if stake.saturating_mul(3) >= consensus.total_stake.saturating_mul(2) {
                 // Quorum reached — the old code would recurse here.
                 // New code: create_vote returns an action instead.
                 if let Ok(Some(my_vote)) =
