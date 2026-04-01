@@ -120,6 +120,16 @@ impl Ledger {
     }
 
     fn apply_transaction_validated(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
+        // Reject duplicate UTxO inputs — duplicates would multiply value
+        {
+            let mut seen = HashSet::with_capacity(tx.inputs.len());
+            for input in &tx.inputs {
+                if !seen.insert(input) {
+                    bail!("duplicate UTxO input: {:?}", input);
+                }
+            }
+        }
+
         // Validate UTxO inputs: existence, ownership, and accumulate total in one pass
         let mut total_input = 0u128;
         for input in &tx.inputs {
@@ -604,6 +614,16 @@ impl Ledger {
 
             let recipient_hash = self.hash_account(recipient);
             spec_tree.update(recipient.address, recipient_hash);
+        }
+
+        // Reject duplicate UTxO inputs — duplicates would multiply value
+        {
+            let mut seen = HashSet::with_capacity(tx.inputs.len());
+            for input in &tx.inputs {
+                if !seen.insert(input) {
+                    bail!("duplicate UTxO input: {:?}", input);
+                }
+            }
         }
 
         // Validate UTxO inputs: existence, ownership, and accumulate total
@@ -1580,6 +1600,127 @@ mod tests {
         assert!(
             matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("cannot mix")),
             "transfer+UTxO mixing should be rejected in overlay path, got: {:?}",
+            receipts[0].status
+        );
+    }
+
+    #[test]
+    fn test_duplicate_utxo_input_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 0).unwrap();
+
+        // Create a UTxO worth 500
+        let fake_tx_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        let utxo_id = UtxoId {
+            tx_hash: fake_tx_hash,
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 500,
+            owner: address,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_UTXOS,
+            bincode::serialize(&utxo_id).unwrap(),
+            bincode::serialize(&utxo).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        // Try to spend the same UTxO twice — should be rejected
+        let recipient_kp = Keypair::generate();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone(), utxo_id], // duplicate!
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900, // more than single UTxO — only works if dup counted twice
+                owner: PublicKey::from_bytes(recipient_kp.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let err = ledger.apply_transaction(&tx).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate UTxO input"),
+            "expected duplicate UTxO rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_duplicate_utxo_input_rejected_in_overlay() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 0).unwrap();
+
+        let fake_tx_hash = H256::from_slice(&[0xCC; 32]).unwrap();
+        let utxo_id = UtxoId {
+            tx_hash: fake_tx_hash,
+            output_index: 0,
+        };
+        let utxo = Utxo {
+            amount: 500,
+            owner: address,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_UTXOS,
+            bincode::serialize(&utxo_id).unwrap(),
+            bincode::serialize(&utxo).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        let recipient_kp = Keypair::generate();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![utxo_id.clone(), utxo_id],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 900,
+                owner: PublicKey::from_bytes(recipient_kp.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("duplicate UTxO input")),
+            "expected duplicate UTxO rejection in overlay, got: {:?}",
             receipts[0].status
         );
     }
