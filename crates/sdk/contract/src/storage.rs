@@ -14,7 +14,9 @@ thread_local! {
 /// In tests: uses mock in-memory storage.
 pub fn storage_read(key: &[u8]) -> ContractResult<Option<Vec<u8>>> {
     MOCK_STORAGE.with(|s| {
-        let store = s.lock().map_err(|e| ContractError::StorageError(e.to_string()))?;
+        let store = s
+            .lock()
+            .map_err(|e| ContractError::StorageError(e.to_string()))?;
         Ok(store.get(key).cloned())
     })
 }
@@ -25,7 +27,9 @@ pub fn storage_read(key: &[u8]) -> ContractResult<Option<Vec<u8>>> {
 /// In tests: uses mock in-memory storage.
 pub fn storage_write(key: &[u8], value: &[u8]) -> ContractResult<()> {
     MOCK_STORAGE.with(|s| {
-        let mut store = s.lock().map_err(|e| ContractError::StorageError(e.to_string()))?;
+        let mut store = s
+            .lock()
+            .map_err(|e| ContractError::StorageError(e.to_string()))?;
         store.insert(key.to_vec(), value.to_vec());
         Ok(())
     })
@@ -34,7 +38,9 @@ pub fn storage_write(key: &[u8], value: &[u8]) -> ContractResult<()> {
 /// Delete a value from contract storage.
 pub fn storage_delete(key: &[u8]) -> ContractResult<()> {
     MOCK_STORAGE.with(|s| {
-        let mut store = s.lock().map_err(|e| ContractError::StorageError(e.to_string()))?;
+        let mut store = s
+            .lock()
+            .map_err(|e| ContractError::StorageError(e.to_string()))?;
         store.remove(key);
         Ok(())
     })

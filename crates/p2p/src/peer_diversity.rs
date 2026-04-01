@@ -172,7 +172,10 @@ mod tests {
 
         // 11th from same /16 should be blocked
         let ip = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 11));
-        assert!(!guard.allow_inbound(ip), "should block 11th peer from same /16");
+        assert!(
+            !guard.allow_inbound(ip),
+            "should block 11th peer from same /16"
+        );
 
         // Different /16 should still be allowed
         let ip = IpAddr::V4(Ipv4Addr::new(10, 2, 0, 1));
@@ -235,7 +238,10 @@ mod tests {
 
         // 26th from same /8 should be blocked
         let ip = IpAddr::V4(Ipv4Addr::new(10, 100, 0, 1));
-        assert!(!guard.allow_inbound(ip), "should block when /8 limit reached");
+        assert!(
+            !guard.allow_inbound(ip),
+            "should block when /8 limit reached"
+        );
 
         // Different /8 should work
         let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));

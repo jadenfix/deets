@@ -110,10 +110,17 @@ impl ConsensusParams {
     pub fn quorum_fraction(&self) -> Result<(u32, u32)> {
         let parts: Vec<&str> = self.quorum.split('/').collect();
         if parts.len() != 2 {
-            bail!("invalid quorum format: expected 'N/D', got '{}'", self.quorum);
+            bail!(
+                "invalid quorum format: expected 'N/D', got '{}'",
+                self.quorum
+            );
         }
-        let n: u32 = parts[0].parse().map_err(|_| anyhow::anyhow!("invalid quorum numerator"))?;
-        let d: u32 = parts[1].parse().map_err(|_| anyhow::anyhow!("invalid quorum denominator"))?;
+        let n: u32 = parts[0]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid quorum numerator"))?;
+        let d: u32 = parts[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid quorum denominator"))?;
         if d == 0 {
             bail!("quorum denominator cannot be zero");
         }

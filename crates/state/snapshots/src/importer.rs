@@ -149,9 +149,7 @@ mod tests {
             );
         }
         source.write_batch(batch).unwrap();
-        source
-            .put(CF_METADATA, b"state_root", &[1u8; 32])
-            .unwrap();
+        source.put(CF_METADATA, b"state_root", &[1u8; 32]).unwrap();
 
         // Generate snapshot from populated storage
         let snapshot_bytes = crate::generator::generate_snapshot(&source, 100).unwrap();

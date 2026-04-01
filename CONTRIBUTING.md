@@ -1,53 +1,102 @@
 # Contributing to Aether
 
-## Development Setup
+This document describes the current contribution expectations for the repository as it exists today. The goal is to keep changes reviewable, verifiable, and aligned with the code paths that are actually exercised in CI.
 
-1. Clone and enter repo:
-   ```bash
-   git clone https://github.com/jadenfix/deets.git
-   cd deets
-   ```
-2. Run baseline checks:
-   ```bash
-   cargo fmt --all -- --check
-   cargo clippy --all-targets --all-features -- -D warnings
-   cargo check --workspace
-   ```
+## Development Environment
 
-## Test Commands
+Core requirements:
 
-- Phase acceptance suites:
-  - `./scripts/run_phase1_acceptance.sh`
-  - `./scripts/run_phase2_acceptance.sh`
-  - `./scripts/run_phase3_acceptance.sh`
-  - `./scripts/run_phase4_acceptance.sh`
-  - `./scripts/run_phase5_acceptance.sh`
-  - `./scripts/run_phase6_acceptance.sh`
-  - `./scripts/run_phase7_acceptance.sh`
-- Targeted Rust crate tests:
-  ```bash
-  cargo test -p <crate-name>
-  ```
+- Rust stable toolchain. The workspace minimum supported version is `1.75`.
+- Git.
+- Docker and Docker Compose for Compose-based validation and local network flows.
 
-## Branching and Commits
+Optional requirements:
 
-- Prefer topic branches: `phaseX/<feature-name>` or `feat/<scope>-<name>`.
-- Commit format:
-  - `feat(scope): description`
-  - `fix(scope): description`
-  - `docs(scope): description`
-  - `test(scope): description`
+- Node.js 20+ and `npm` if you touch `sdks/typescript`, `packages/ui`, `apps/explorer`, or `apps/wallet`.
 
-## Pull Request Expectations
+## Branching
 
-1. Describe behavior changes and affected crates/apps.
-2. Include validation steps and command output summary.
-3. Add/adjust tests for new behavior.
-4. Update docs when interfaces, scripts, or status claims change.
-5. Keep PRs scoped; split unrelated refactors into separate PRs.
+- Prefer a short-lived topic branch or a separate git worktree for each unit of work.
+- Keep one pull request focused on one change set. Do not mix protocol changes, frontend work, and documentation rewrites unless they are tightly coupled.
+- Avoid force-pushing rebased history during active review unless the PR explicitly needs it.
 
-## Code Quality Notes
+## Validation Matrix
 
-- Avoid introducing placeholder production paths (`TODO`/`stub`) without explicit feature flags.
-- Prefer deterministic behavior in consensus/runtime/crypto code paths.
-- Keep SDK and CLI behavior aligned with live RPC contracts.
+Match the validation to the surface you change.
+
+For most Rust changes:
+
+```bash
+./scripts/lint.sh
+./scripts/test.sh
+```
+
+For Compose-based integration work:
+
+```bash
+./scripts/docker-test.sh
+```
+
+For phase-specific changes:
+
+```bash
+./scripts/run_phase1_acceptance.sh
+./scripts/run_phase2_acceptance.sh
+./scripts/run_phase3_acceptance.sh
+./scripts/run_phase4_acceptance.sh
+./scripts/run_phase5_acceptance.sh
+./scripts/run_phase6_acceptance.sh
+./scripts/run_phase7_acceptance.sh
+```
+
+For TypeScript SDK or frontend changes:
+
+```bash
+npm run test:ts
+```
+
+If you touch deployment or operations assets, verify the relevant files directly:
+
+- `.github/workflows/ci.yml`
+- `docker-compose.test.yml`
+- `deploy/docker/docker-compose.yml`
+- `deploy/helm/`
+- `deploy/k8s/`
+- `deploy/terraform/`
+
+## Change Expectations
+
+- Add or update tests when behavior changes.
+- Update docs when commands, architecture, interfaces, or operational guidance change.
+- Keep README and getting-started material factual. Do not add aspirational claims as current capability.
+- Prefer targeted edits over broad refactors that are unrelated to the task.
+- Preserve deterministic behavior and explicit error handling in consensus, runtime, cryptography, and state-transition code.
+
+## Pull Request Checklist
+
+1. Describe the user-visible or operator-visible impact.
+2. List the commands you ran to validate the change.
+3. Call out any follow-up work or intentionally deferred items.
+4. Update documentation if the change affects setup, operation, APIs, or project status.
+5. Note any risk areas, especially for consensus, runtime, RPC, storage, or key-management paths.
+
+## Commit Style
+
+Use a concise conventional-style subject when possible:
+
+- `feat(scope): description`
+- `fix(scope): description`
+- `docs(scope): description`
+- `test(scope): description`
+- `refactor(scope): description`
+
+Useful scopes in this repository include `consensus`, `runtime`, `ledger`, `rpc`, `programs`, `ai-mesh`, `ops`, `sdk`, `ui`, and `docs`.
+
+## Documentation Standard
+
+Project documentation should:
+
+- describe the repository as it is, not as it might become;
+- cite real commands, scripts, files, and workflows from the repo;
+- distinguish between CI-validated paths and operator-driven deployment assets; and
+- stay readable for external contributors who are new to the codebase.

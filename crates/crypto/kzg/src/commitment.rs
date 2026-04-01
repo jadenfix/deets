@@ -123,11 +123,7 @@ impl KzgVerifier {
     ///
     /// Computes the quotient polynomial Q(x) = (P(x) - y) / (x - z)
     /// and returns π = [Q(τ)]_1 along with y = P(z).
-    pub fn create_proof(
-        &self,
-        coefficients: &[ScalarBytes],
-        z: &ScalarBytes,
-    ) -> Result<KzgProof> {
+    pub fn create_proof(&self, coefficients: &[ScalarBytes], z: &ScalarBytes) -> Result<KzgProof> {
         if coefficients.is_empty() {
             bail!("empty coefficients");
         }
@@ -173,9 +169,13 @@ impl KzgVerifier {
         let pi_point = decompress_g1(&proof.proof)?;
 
         // y as scalar
-        let y = scalar_from_bytes(proof.evaluation.as_slice().try_into().map_err(|_| {
-            anyhow::anyhow!("evaluation must be 32 bytes")
-        })?);
+        let y = scalar_from_bytes(
+            proof
+                .evaluation
+                .as_slice()
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("evaluation must be 32 bytes"))?,
+        );
 
         // z as scalar
         let z_scalar = scalar_from_bytes(z);
@@ -234,10 +234,7 @@ fn scalar_from_bytes(bytes: &[u8; 32]) -> blst_fr {
     let mut scalar = blst_fr::default();
     // blst expects little-endian scalar bytes
     unsafe {
-        blst::blst_fr_from_uint64(
-            &mut scalar,
-            bytes_to_u64_array(bytes).as_ptr(),
-        );
+        blst::blst_fr_from_uint64(&mut scalar, bytes_to_u64_array(bytes).as_ptr());
     }
     scalar
 }

@@ -182,8 +182,8 @@ async fn main() -> Result<()> {
     let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
 
     // Load or generate validator keypair
-    let key_path = env::var("AETHER_VALIDATOR_KEY")
-        .unwrap_or_else(|_| format!("{}/validator.key", db_path));
+    let key_path =
+        env::var("AETHER_VALIDATOR_KEY").unwrap_or_else(|_| format!("{}/validator.key", db_path));
     let key_path = std::path::Path::new(&key_path);
 
     let validator_keypair = if key_path.exists() {

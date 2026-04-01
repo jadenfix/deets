@@ -1,121 +1,157 @@
-# Aether Incident Runbooks
+# Aether Operations Runbooks
 
-## 1. Incident Triage
+This document covers the environments that are clearly represented in the repository today: local node execution, the process-based devnet, the Compose-based test network, and the larger Compose development stack under `deploy/docker/`.
 
-### Symptoms
-- Alert fires from Prometheus (Slack / PagerDuty)
-- User reports of stuck transactions or delayed finality
+## Environment Inventory
 
-### Steps
-1. Check Grafana dashboard: `Aether Overview > Finality Latency` panel.
-2. Identify affected component from alert labels (`consensus`, `da`, `networking`, `runtime`).
-3. SSH into affected validator or check pod logs:
+### Single Node
+
+- Start with `cargo run -p aether-node`
+- Default RPC endpoint: `http://127.0.0.1:8545`
+- Default health endpoint: `http://127.0.0.1:8545/health`
+- Default data path: `./data/node1`
+
+### Local Multi-Node Devnet
+
+- Start with `./scripts/devnet.sh`
+- Logs: `./data/devnet/node*.log`
+- Data: `./data/devnet/node*/`
+
+### Compose-Based CI/Test Network
+
+- Defined in `docker-compose.test.yml`
+- Helper script: `./scripts/docker-test.sh`
+
+### Compose Development Stack
+
+- Defined in `deploy/docker/docker-compose.yml`
+- Includes validators, RPC, PostgreSQL, indexer, Prometheus, Grafana, and MinIO services
+
+## Common Health Checks
+
+Node health:
+
+```bash
+curl -s http://127.0.0.1:8545/health
+```
+
+Slot progress:
+
+```bash
+curl -s http://127.0.0.1:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"aeth_getSlotNumber","params":[],"id":1}'
+```
+
+Compose service status:
+
+```bash
+docker compose -f docker-compose.test.yml ps
+docker compose -f deploy/docker/docker-compose.yml ps
+```
+
+## Scenario 1: Node Fails to Start
+
+Checks:
+
+1. Confirm the workspace builds:
    ```bash
-   kubectl logs -l app=aether-validator --tail=200
+   cargo build --workspace
    ```
-4. Check peer connectivity:
+2. Confirm the configured data directory is writable.
+3. Check whether `AETHER_CONFIG_PATH`, `AETHER_NODE_DB_PATH`, `AETHER_RPC_PORT`, or `AETHER_P2P_PORT` are set to unexpected values.
+4. Review stderr and recent logs.
+
+Likely local causes:
+
+- a stale or invalid config override;
+- a port collision on `8545` or `9000`;
+- a corrupted local data directory; or
+- an out-of-date build artifact after switching branches.
+
+## Scenario 2: RPC Is Up but Slots Do Not Advance
+
+Checks:
+
+1. Query `/health`.
+2. Query `aeth_getSlotNumber` repeatedly.
+3. Review node logs for consensus, storage, or lock-poisoning errors.
+4. If using the multi-node devnet, verify that the peer ports are not already in use.
+
+Useful log locations:
+
+- single node: terminal output
+- script-based devnet: `./data/devnet/node*.log`
+- Compose environments: `docker compose ... logs`
+
+## Scenario 3: Local Devnet Is Unhealthy
+
+Checks:
+
+1. Stop the existing devnet:
    ```bash
-   curl http://<validator>:8545 -X POST -H 'Content-Type: application/json' \
-     -d '{"jsonrpc":"2.0","method":"aeth_getSlotNumber","params":[],"id":1}'
+   ./scripts/devnet.sh stop
    ```
-5. Classify severity:
-   - **P1**: Consensus halted, no finality for > 2 minutes
-   - **P2**: Degraded throughput (< 1k TPS) or high latency (> 5s finality)
-   - **P3**: Single node issue, network healthy
-
-### Escalation
-- P1: All hands, notify validators via broadcast channel
-- P2: On-call engineer, 30-minute response
-- P3: Next business day
-
----
-
-## 2. Rollback / Roll-Forward
-
-### When to Rollback
-- Bad state committed due to consensus bug
-- Validator running corrupted binary
-
-### Rollback Steps
-1. Stop affected validators:
+2. If necessary, clean it:
    ```bash
-   kubectl scale statefulset aether-validator --replicas=0
+   ./scripts/devnet.sh clean
    ```
-2. Identify last known good snapshot:
+3. Restart it and inspect `./data/devnet/node*.log`.
+4. Query each RPC port from `8545` through `8548`.
+
+If the issue persists, confirm that no old `aether-node` processes are still running and that the expected ports are available.
+
+## Scenario 4: Docker Test Network Fails
+
+Checks:
+
+1. Build and start the network manually:
    ```bash
-   ls -la /data/aether/snapshots/
+   docker compose -f docker-compose.test.yml build
+   docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
    ```
-3. Restore from snapshot:
+2. Inspect container logs:
    ```bash
-   cp /data/aether/snapshots/<epoch>/state.db /data/aether/state.db
+   docker compose -f docker-compose.test.yml logs --tail=200
    ```
-4. Restart with correct binary version:
+3. Re-run the test runner:
    ```bash
-   kubectl set image statefulset/aether-validator validator=aether/validator:<good-tag>
-   kubectl scale statefulset aether-validator --replicas=4
+   docker compose -f docker-compose.test.yml run test-runner
    ```
-
-### Roll-Forward
-- If fix is available, deploy new version directly without snapshot restore
-- Use `kubectl rollout restart statefulset/aether-validator`
-
----
-
-## 3. Key Loss Response
-
-### Validator Key Compromise
-1. Trigger emergency unbond/slash through governance operations tooling.
-2. Generate new Ed25519 identity key:
+4. Clean up:
    ```bash
-   aetherctl keys generate --out new-validator.key
-   aetherctl keys show --path new-validator.key
+   docker compose -f docker-compose.test.yml down
    ```
-3. Re-register validator with the new identity through node operator workflow.
-4. Investigate compromise vector and document in post-mortem.
 
-### KES Expiry
-- KES keys auto-evolve each epoch (90-day lifecycle)
-- If KES expires without rotation, validator cannot sign
-- KES rotation commands are not yet exposed in `aetherctl`; use validator ops tooling.
+## Scenario 5: Reset Local State
 
----
+Single-node reset:
 
-## 4. Equivocation Response
+```bash
+rm -rf ./data/node1
+```
 
-### Detection
-- Slashing proof submitted on-chain (double-sign detected)
-- Alert: `AetherEquivocationDetected`
+Devnet reset:
 
-### Steps
-1. Confirm equivocation evidence from chain telemetry/indexer output.
-2. Identify root cause:
-   - **Duplicate validator process**: Kill duplicate, check process management
-   - **Network partition**: Validator saw two chain tips, both signed
-   - **Malicious**: Ban validator permanently
-3. Slashing is automatic (5% of stake for double-sign).
-4. If accidental: validator can re-register after unbond period.
-5. Document in incident report.
+```bash
+./scripts/devnet.sh clean
+```
 
----
+Compose test-network reset:
 
-## 5. Degraded Network Handling
+```bash
+docker compose -f docker-compose.test.yml down -v
+```
 
-### Low Peer Count (< 3 peers)
-1. Check node networking:
-   ```bash
-   curl http://<node>:8545 -X POST -H 'Content-Type: application/json' \
-     -d '{"jsonrpc":"2.0","method":"aeth_getSlotNumber","params":[],"id":1}'
-   ```
-2. Check firewall rules (ports 9000 TCP/UDP for P2P, 8545 for RPC).
-3. If autodiscovery fails, reconfigure seed peers through node deployment config.
+Use destructive cleanup carefully. Do not remove data you intend to preserve.
 
-### High Packet Loss (> 20%)
-1. Check DA metrics: `aether_da_packet_loss_ratio`
-2. If localized to one region, check cloud provider status page.
-3. If systemic, consider reducing block size or increasing RS parity shards.
+## Deployment Notes
 
-### Finality Stalling
-1. Check quorum: need 2/3 of stake voting.
-2. Identify offline validators from `aether_consensus_votes_received` metric.
-3. Contact offline validator operators.
-4. If < 2/3 online, consensus halts by design (safety over liveness).
+The repository contains deployment assets beyond local development:
+
+- `deploy/docker/`
+- `deploy/helm/`
+- `deploy/k8s/`
+- `deploy/terraform/`
+
+Those assets should be treated as operator-reviewed infrastructure material. The current GitHub Actions workflow validates build and test paths, but it does not perform automated rollouts or production health checks for those environments.

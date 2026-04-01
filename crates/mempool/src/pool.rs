@@ -205,7 +205,11 @@ impl Mempool {
         let tx_size = bincode::serialize(&tx)
             .map(|b| b.len() as u128)
             .unwrap_or(1); // Fallback to 1 to avoid divide-by-zero
-        let fee_rate = if tx_size > 0 { tx.fee / tx_size } else { tx.fee };
+        let fee_rate = if tx_size > 0 {
+            tx.fee / tx_size
+        } else {
+            tx.fee
+        };
 
         // Advance expected nonce
         let sender = tx.sender;
@@ -225,11 +229,7 @@ impl Mempool {
     }
 
     /// Handle a chain reorg: re-add reverted txs, remove invalid ones.
-    pub fn reorg(
-        &mut self,
-        reverted_txs: Vec<Transaction>,
-        new_tip_nonces: HashMap<Address, u64>,
-    ) {
+    pub fn reorg(&mut self, reverted_txs: Vec<Transaction>, new_tip_nonces: HashMap<Address, u64>) {
         // Reset nonces to the new chain tip
         for (sender, nonce) in &new_tip_nonces {
             self.next_nonce.insert(*sender, *nonce);
@@ -317,11 +317,7 @@ impl Mempool {
     /// Return transactions that MUST be included (anti-censorship).
     /// A tx must be included if it has waited > FORCED_INCLUSION_SLOTS
     /// and pays >= 2x the base_fee (clearly willing to pay market rate).
-    pub fn must_include_transactions(
-        &self,
-        current_slot: u64,
-        base_fee: u128,
-    ) -> Vec<Transaction> {
+    pub fn must_include_transactions(&self, current_slot: u64, base_fee: u128) -> Vec<Transaction> {
         let min_fee = base_fee.saturating_mul(2);
         let mut forced = Vec::new();
 

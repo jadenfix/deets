@@ -1,215 +1,126 @@
-# Aether: The Open-Source AI Credits Superchain
+# Aether
 
-> **Turn verifiable AI compute into programmable money.**  
-> Aether is a community-driven, open-source blockchain project that fuses Solana-class performance with Cardano-grade security so builders can monetize intelligence at L1 speed. We are building the foundational infrastructure for a decentralized AI economy.
+Aether is a Rust-first monorepo for an L1 blockchain and related AI-compute infrastructure. The repository includes the validator/node, consensus and runtime crates, system programs, verifiers, SDKs, web clients, and deployment assets used for local development and infrastructure experiments.
 
----
+## Repository Scope
 
-## Why Aether
+- Core protocol: node, consensus, ledger, mempool, runtime, storage, networking, data-availability, and RPC crates.
+- On-chain programs: staking, governance, AMM, job escrow, reputation, account abstraction, and token modules.
+- AI mesh: attestation, router, coordinator, worker, runtime, and verifier crates.
+- Developer interfaces: Rust, TypeScript, and Python SDKs; `aetherctl`; faucet, keytool, indexer, and load generator.
+- Applications and shared UI: explorer, wallet, and shared frontend packages.
+- Deployment assets: Dockerfiles, Compose stacks, Helm charts, Kubernetes manifests, Terraform, Prometheus, and Grafana assets.
 
-- **Blazing Throughput** — QUIC transport, Turbine-style sharding, and batch crypto verification deliver >100k Ed25519 sig/s and 1.7k BLS verifications/s in acceptance tests.
-- **Provable AI** — Native support for verifiable inference pipelines: VRF leader election, KZG trace challenges, secure TEE attestations, and programmable staking/reputation.
-- **Security First** — Phase 6 security suite ships with full STRIDE/LINDDUN threat model, TLA+ consensus proofs, KES key rotation, and a remote signer architecture fit for HSM/KMS.
-- **Production Observability** — Prometheus metrics, Grafana-ready dashboards, alerting rules, and per-phase acceptance suites wired straight into CI.
-- **Developer Velocity** — Modular Rust workspace (47+ crates), clean APIs, and ready-to-run scripts for every phase of the roadmap.
+## Architecture Summary
 
----
+At a high level, Aether is organized as a layered system:
 
-## Product Pillars
+1. Interface layer: JSON-RPC, gRPC/firehose, SDKs, CLI, explorer, and wallet.
+2. Node core: transaction ingress, mempool, consensus, runtime, ledger, and state storage.
+3. Network and data plane: libp2p/gossipsub, QUIC transport, and Turbine-style data-distribution crates.
+4. AI verification path: attestation, verifiers, and AI mesh services that integrate with on-chain job flows.
+5. Operations layer: metrics, indexer, Compose environments, and deployment scaffolding under `deploy/`.
 
-### 1. High-Performance Ledger
-- eUTxO++ hybrid state model with Sparse Merkle commitments
-- Fee-prioritized mempool with RBF and QoS scheduling
-- RocksDB storage tuned for high-write, low-latency workloads
+The current node binary runs a hybrid consensus path built around VRF-based leader selection, HotStuff-style voting/finality, and BLS-backed vote handling. The runtime and ledger crates provide deterministic state transition logic, while the repository also contains supporting infrastructure for AI job verification and downstream indexing.
 
-### 2. Secure Consensus
-- VRF-driven leader election (Ed25519 + VRF proofs)
-- HotStuff-inspired finality with BLS aggregation
-- Comprehensive slashing protection via remote signer design
+## CI/CD Posture
 
-### 3. Verifiable AI Mesh
-- Deterministic containers for reproducible inference
-- TEE attestation pipeline (SEV-SNP / TDX simulation)
-- KZG-backed trace commitments and challenge flows
-- Reputation and staking programs purpose-built for AI providers
+The repository currently has one primary GitHub Actions workflow at `.github/workflows/ci.yml`. It runs on pushes to `main` and `release/**`, and on pull requests targeting `main`.
 
-### 4. Observability & Automation
-- Metrics for consensus, DA, networking, runtime, and AI jobs
-- Alert rules covering finality, throughput, packet loss, and peer health
-- CI matrix that enforces lint + acceptance suites for Phases 1–6
+Current CI jobs:
 
----
+- `lint`: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo audit`.
+- `test`: workspace unit tests and doc tests.
+- `build`: release builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`.
+- `docker`: container build validation.
+- `integration`: `docker-compose.test.yml` network startup plus workspace tests.
+- `phase-acceptance`: `scripts/run_phase{1..7}_acceptance.sh` when those scripts are present.
 
-## Proof It Works
+Deployment assets exist under `deploy/`, but GitHub Actions does not currently publish releases or perform automated environment rollouts. Operational deployment remains operator-driven.
 
-| Phase | Acceptance Highlights | Script |
-|-------|----------------------|--------|
-| 1 | Ledger, consensus, and mempool unit suites | `./scripts/run_phase1_acceptance.sh` |
-| 2 | Economics & system programs (staking, AMM, AIC, job escrow) | `./scripts/run_phase2_acceptance.sh` |
-| 3 | AI mesh stack (runtime, TEE, VCR, KZG, reputation) | `./scripts/run_phase3_acceptance.sh` |
-| 4 | Performance benches (Ed25519, BLS, Turbine, snapshots) | `./scripts/run_phase4_acceptance.sh` |
-| 5 | Metrics exporter + QUIC instrumentation | `./scripts/run_phase5_acceptance.sh` |
-| 6 | Security primitives (KES, crypto suites, VRF) | `./scripts/run_phase6_acceptance.sh` |
-| 7 | SDK + CLI + explorer/wallet + faucet tooling | `./scripts/run_phase7_acceptance.sh` |
+## Quick Start
 
-GitHub Actions fans out across all seven suites to keep every subsystem green.
+### Prerequisites
 
----
+- Rust stable toolchain. The workspace declares Rust `1.75` as the minimum supported version.
+- Docker and Docker Compose if you want to use the Compose-based dev/test environments.
+- Node.js 20+ and `npm` only if you plan to work on the TypeScript SDK or web applications.
 
-## Build the Future
+### Build and Run a Node
 
 ```bash
-# Clone
 git clone https://github.com/jadenfix/deets.git
 cd deets
 
-# Fast sanity checks
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-./scripts/run_phase4_acceptance.sh   # performance snapshot
-
-# Run a node
-cargo run --release --bin aether-node
+cargo build --workspace
+cargo run -p aether-node
 ```
 
-### Quick CLI Commands
+By default the node starts in the devnet preset, stores data under `./data/node1`, exposes JSON-RPC on `127.0.0.1:8545`, and keeps running until interrupted.
+
+You can query the node with JSON-RPC:
 
 ```bash
-# Lint/format/check in parallel
-./cli-format
-
-# Balanced test run (Rust + JS/TS lanes)
-./cli-test
-
-# Rust-only test mode
-./cli-test --rust-only
-
-# Devnet docker stack (default target)
-./cli-build
-./cli-up
-./cli-down
-
-# Test docker stack
-./cli-build --test
-./cli-up --test
-./cli-down --test --volumes
+curl -s http://127.0.0.1:8545 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"aeth_getSlotNumber","params":[],"id":1}'
 ```
 
-| Command | Purpose | Useful Flags |
-|---------|---------|--------------|
-| `./cli-test` | Runs Rust test suite and JS/TS tests, with lanes in parallel. | `--rust-only`, `--no-doc` |
-| `./cli-format` | Runs `fmt`, `clippy`, and `check` in parallel lanes. | `--help` |
-| `./cli-build` | Builds Docker images for compose stack. | `--test` |
-| `./cli-up` | Starts compose stack with `up --build -d`. | `--test` |
-| `./cli-down` | Stops compose stack with `down`. | `--test`, `--volumes` |
-
-Need data availability or AI job telemetry? Export Prometheus metrics instantly:
+### Common Local Workflows
 
 ```bash
-cargo run -p aether-metrics
-# -> visit http://localhost:9090/metrics
+# CI-aligned lint/check flow
+./scripts/lint.sh
+
+# CI-aligned test flow
+./scripts/test.sh
+
+# Local multi-process devnet
+./scripts/devnet.sh
+
+# Docker-based integration network
+./scripts/docker-test.sh
+
+# Optional TypeScript/web test lane
+npm run test:ts
 ```
 
----
+### CLI
 
-## Architecture at a Glance
+The repository includes `aetherctl` in `crates/tools/cli`:
 
-```mermaid
-graph TD
-    %% Styling
-    classDef client fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef network fill:#bbf,stroke:#333,stroke-width:2px;
-    classDef core fill:#dfd,stroke:#333,stroke-width:2px;
-    classDef storage fill:#ddd,stroke:#333,stroke-width:2px;
-    classDef aimesh fill:#fbf,stroke:#333,stroke-width:2px;
-
-    %% Components
-    subgraph Clients["1. Interface Layer"]
-        RPC[RPC Server / gRPC]
-        SDK[Python & TS Client SDKs]
-        Apps[Web Explorer / Wallet]
-    end
-    class RPC,SDK,Apps client
-
-    subgraph Network["2. Network & Transport"]
-        TCP(GossipSub)
-        QUIC(QUIC Transport)
-        Turbine(Turbine Shredding / Data Availability)
-    end
-    class TCP,QUIC,Turbine network
-
-    subgraph Consensus["3. Execution & Consensus"]
-        VRF{VRF PoS<br/>Leader Election}
-        HotStuff[HotStuff 2-chain<br/>BLS Finality]
-        Mempool[(Priority Mempool)]
-        Runtime[eUTxO++ Parallel Execution]
-    end
-    class VRF,HotStuff,Mempool,Runtime core
-
-    subgraph AIMesh["4. Verifiable AI Network"]
-        JobEscrow((Smart Contract:<br/>Job Escrow))
-        TEE[Off-chain TEE execution]
-        KZG[KZG Trace Verification]
-        Reputation((Smart Contract:<br/>Node Reputation))
-    end
-    class JobEscrow,TEE,KZG,Reputation aimesh
-
-    subgraph State["5. Storage"]
-        Merkle[(Sparse Merkle Tree)]
-        DB[(RocksDB Column Store)]
-    end
-    class Merkle,DB storage
-
-    %% Flow
-    Apps -->|Transactions| SDK
-    SDK -->|API format| RPC
-    RPC -->|Propagate| QUIC
-    RPC -->|Subscribe/Publish| TCP
-    QUIC --> Mempool
-    
-    Mempool --> VRF
-    VRF -->|Block Proposal| Runtime
-    Runtime -->|State validation| HotStuff
-    HotStuff -->|Broadcast state| Turbine
-    
-    Runtime -->|AI job funded| JobEscrow
-    JobEscrow -->|Task Assignment| TEE
-    TEE -->|Submit result + VCR proof| KZG
-    KZG -->|Verify execution| Reputation
-    
-    HotStuff -->|Finalized tx outcomes| Merkle
-    Merkle -->|Persistence| DB
+```bash
+cargo run -p aether-cli --bin aetherctl -- --help
 ```
 
-Dive deeper in:
-- [`overview.md`](./overview.md) – architecture narrative  
-- [`trm.md`](./trm.md) – seven-phase technical roadmap  
-- [`docs/security/REMOTE_SIGNER.md`](./docs/security/REMOTE_SIGNER.md) – hardened key management
+## Repository Layout
 
----
+```text
+crates/           Rust protocol, runtime, program, RPC, tooling, and verifier crates
+ai-mesh/          AI execution and coordination services
+apps/             Explorer and wallet applications
+sdks/             Python and TypeScript SDKs
+packages/         Shared frontend packages
+scripts/          Lint, test, devnet, Docker, and acceptance helpers
+deploy/           Docker, Helm, Kubernetes, Terraform, Prometheus, and Grafana assets
+docs/             Architecture, operations, security, and project reference material
+```
 
-## Roadmap
+## Documentation Map
 
-- **Phase 7 – Developer Ecosystem**: TypeScript/Python SDKs, wallet integrations, launchpad tooling
-- **Mainnet Readiness**: Formal audits, fuzzing campaigns, comprehensive slashing protection
-- **AI Marketplace**: On-chain order books for inference jobs, SLA-backed payment channels
+- `GETTING_STARTED.md`: contributor bootstrap and local workflows.
+- `overview.md`: high-level repository and system overview.
+- `docs/architecture.md`: current system design and deployment surfaces.
+- `progress.md`: status snapshot of what is present in the repository and what CI validates today.
+- `IMPLEMENTATION_ROADMAP.md`: forward-looking delivery plan aligned to the current codebase.
+- `trm.md`: technical roadmap and workstreams.
+- `docs/ops/RUNBOOKS.md`: operational procedures for local and Compose-based environments.
+- `docs/security/AUDIT_SCOPE.md`: audit scoping for the current repository.
 
-Stay tuned on our community channels (coming soon) to capture devnet access and validator slots the moment they open.
+## Contributing
 
----
-
-## Open Source community & Contributing
-
-Aether is proudly **open-source** and thrives on community contributions. Whether you are a Rust systems engineer, a cryptography researcher, a TypeScript UI developer, or an enthusiast writing documentation, there is a place for you here.
-
-- **Found a bug?** Open an issue to let us know.
-- **Have an idea?** Start a discussion or open a PR.
-- **Want to help?** Look for issues labeled `good first issue` or `help wanted`.
-
-Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) for more details on our codebase structure, how we review PRs, and our community code of conduct.
-
----
+Contributions are welcome across protocol, tooling, frontend, AI mesh, operations, and documentation work. Use [CONTRIBUTING.md](./CONTRIBUTING.md) for the expected validation flow and PR standards.
 
 ## License
 
-MIT License – Build, fork, and deploy with confidence. See the [LICENSE](./LICENSE) file for more details.
+This repository is licensed under the terms in [LICENSE](./LICENSE).

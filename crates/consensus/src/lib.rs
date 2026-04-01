@@ -104,8 +104,8 @@ pub fn has_quorum(voted_stake: u128, total_stake: u128) -> bool {
 pub mod hotstuff;
 pub mod hybrid;
 pub mod pacemaker;
-pub mod slashing;
 pub mod simple;
+pub mod slashing;
 pub mod vrf_pos;
 
 pub use hotstuff::{ConsensusAction, HotStuffConsensus, TimeoutCertificate, TimeoutVote};

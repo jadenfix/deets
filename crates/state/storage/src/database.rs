@@ -145,13 +145,11 @@ impl Storage {
         for op in batch.operations {
             match op {
                 BatchOperation::Put { cf, key, value } => {
-                    let cf_handle =
-                        self.db.cf_handle(&cf).context("column family not found")?;
+                    let cf_handle = self.db.cf_handle(&cf).context("column family not found")?;
                     wb.put_cf(cf_handle, key, value);
                 }
                 BatchOperation::Delete { cf, key } => {
-                    let cf_handle =
-                        self.db.cf_handle(&cf).context("column family not found")?;
+                    let cf_handle = self.db.cf_handle(&cf).context("column family not found")?;
                     wb.delete_cf(cf_handle, key);
                 }
             }
@@ -184,7 +182,8 @@ impl Storage {
     /// Call after bulk deletes to reclaim disk space.
     pub fn compact(&self, cf: &str) -> Result<()> {
         let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
-        self.db.compact_range_cf(cf_handle, None::<&[u8]>, None::<&[u8]>);
+        self.db
+            .compact_range_cf(cf_handle, None::<&[u8]>, None::<&[u8]>);
         Ok(())
     }
 }
@@ -309,9 +308,7 @@ mod tests {
         for i in 0u32..1000 {
             let key = i.to_be_bytes();
             let value = format!("account_{}", i);
-            storage
-                .put(CF_ACCOUNTS, &key, value.as_bytes())
-                .unwrap();
+            storage.put(CF_ACCOUNTS, &key, value.as_bytes()).unwrap();
         }
 
         // Point lookup should be fast with bloom filter
@@ -336,18 +333,30 @@ mod tests {
         }
 
         // Verify slot 50 exists
-        assert!(storage.get(CF_BLOCKS, &50u64.to_be_bytes()).unwrap().is_some());
+        assert!(storage
+            .get(CF_BLOCKS, &50u64.to_be_bytes())
+            .unwrap()
+            .is_some());
 
         // Prune slots < 50
         pruning::prune_old_blocks(&storage, 50).unwrap();
 
         // Slot 10 should be gone
-        assert!(storage.get(CF_BLOCKS, &10u64.to_be_bytes()).unwrap().is_none());
+        assert!(storage
+            .get(CF_BLOCKS, &10u64.to_be_bytes())
+            .unwrap()
+            .is_none());
 
         // Slot 50 should still exist
-        assert!(storage.get(CF_BLOCKS, &50u64.to_be_bytes()).unwrap().is_some());
+        assert!(storage
+            .get(CF_BLOCKS, &50u64.to_be_bytes())
+            .unwrap()
+            .is_some());
 
         // Slot 99 should still exist
-        assert!(storage.get(CF_BLOCKS, &99u64.to_be_bytes()).unwrap().is_some());
+        assert!(storage
+            .get(CF_BLOCKS, &99u64.to_be_bytes())
+            .unwrap()
+            .is_some());
     }
 }

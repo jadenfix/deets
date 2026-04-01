@@ -1,106 +1,144 @@
 # Aether Architecture
 
-## System Overview
+This document describes the current repository-level system design and the deployment surfaces that exist in the codebase today.
 
-Aether is a high-performance L1 blockchain designed for verifiable AI compute with:
+## Design Goals
 
-- **Consensus**: VRF-PoS + HotStuff BFT (500ms finality)
-- **Execution**: eUTxO++ with parallel scheduling (Sealevel-style)
-- **Networking**: QUIC + Turbine erasure-coded broadcast
-- **AI Mesh**: TEE-attested workers with verifiable compute receipts
+- deterministic execution and explicit state transitions;
+- clear separation between protocol, interface, AI verification, and operations concerns;
+- local-first developer workflows that can run without external infrastructure; and
+- deployment assets that can evolve from local environments toward managed infrastructure.
 
-## Component Architecture
+## System Context
 
-### Core Protocol Stack
+```text
+Clients / CLI / SDKs / Apps
+            |
+            v
+    JSON-RPC / gRPC surfaces
+            |
+            v
+  Node ingress -> mempool -> consensus -> runtime -> ledger -> state/storage
+            |                    |                      |
+            |                    |                      +-> Merkle/state backends
+            |                    +-> validator voting / finality
+            +-> P2P, QUIC, DA, gossip
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       USER APPLICATIONS                      │
-├─────────────────────────────────────────────────────────────┤
-│  Wallets  │  Explorers  │  DApps  │  AI Clients  │  ...    │
-└─────────────────────────────────────────────────────────────┘
-                            ↕ JSON-RPC / gRPC
-┌─────────────────────────────────────────────────────────────┐
-│                         RPC LAYER                            │
-│  JSON-RPC (port 8545)  │  gRPC Firehose (port 8546)         │
-└─────────────────────────────────────────────────────────────┘
-                            ↕
-┌─────────────────────────────────────────────────────────────┐
-│                        NODE CORE                             │
-├─────────────────────────────────────────────────────────────┤
-│  Mempool  →  Consensus (VRF+HotStuff)  →  Block Production  │
-│     ↓                                                         │
-│  Runtime (WASM + Parallel Scheduler)  →  State Updates      │
-│     ↓                                                         │
-│  Ledger (eUTxO++ + Merkle Tree)  →  RocksDB Storage         │
-└─────────────────────────────────────────────────────────────┘
-                            ↕ P2P (QUIC + Gossipsub)
-┌─────────────────────────────────────────────────────────────┐
-│                      NETWORKING LAYER                        │
-│  Gossipsub (tx, header, vote)  │  Turbine (shreds)          │
-└─────────────────────────────────────────────────────────────┘
+AI mesh services and verifiers sit alongside the protocol path and integrate with
+job-related program logic, proof validation, and downstream tooling.
 ```
 
-### AI Service Mesh
+## Major Repository Domains
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        USER / DAPP                           │
-└─────────────────────────────────────────────────────────────┘
-                            ↓ Post Job
-┌─────────────────────────────────────────────────────────────┐
-│                    JOB ESCROW (On-Chain)                     │
-│  AIC Locked  →  Provider Selected  →  Bond Staked           │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│                       JOB ROUTER                             │
-│  Reputation Query  →  Provider Matching  →  Assignment       │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    AI WORKER (TEE)                           │
-│  Execute in SNP/TDX  →  Generate Attestation  →  VCR        │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│                   VCR VALIDATION (On-Chain)                  │
-│  TEE Quote  →  KZG Commits  →  Challenge Window  →  Settle  │
-└─────────────────────────────────────────────────────────────┘
-```
+### Interfaces
 
-## Data Flow
+- `crates/rpc/json-rpc`: JSON-RPC server and WebSocket subscription surface.
+- `crates/rpc/grpc-firehose`: downstream event and indexing-oriented interface surface.
+- `crates/tools/cli`: `aetherctl`.
+- `sdks/`, `apps/`, and `packages/`: SDK and web-client layers.
 
-### Transaction Flow
+The JSON-RPC server currently binds to `127.0.0.1` by default and exposes `/health`, POST JSON-RPC, and `/ws`.
 
-1. User submits tx → Mempool (gossipsub 'tx')
-2. VRF leader election → Block proposal
-3. Turbine broadcast (RS erasure shreds)
-4. Parallel execution (R/W set scheduler)
-5. BLS vote aggregation → Finality
-6. State commit → Merkle root → Receipts
+### Node Core
 
-### AI Job Flow
+- `crates/node`: binary entrypoint, node orchestration, and environment-driven configuration.
+- `crates/mempool`: transaction staging and ordering.
+- `crates/consensus`: leader election, voting, slashing, and consensus logic.
+- `crates/runtime`: execution engine and scheduling logic.
+- `crates/ledger`: state transition and block application logic.
+- `crates/state/*`: storage and state-commitment backends.
 
-1. User posts job (AIC escrowed)
-2. Router selects provider (reputation-based)
-3. Provider executes in TEE → VCR generation
-4. VCR submitted on-chain → Challenge window
-5. Watchtower verification (optional challenge)
-6. Settlement: Burn AIC, pay provider, return bond
+The current binary assembles a hybrid path that combines VRF-oriented leader selection, HotStuff-style voting/finality, BLS-backed signatures, and ledger/runtime processing.
 
-## Scale Architecture
+### Networking and Data Distribution
 
-- **L1**: 5-20k TPS (parallel exec, 2-4MB blocks)
-- **L2/App-chains**: IBC-like async messaging
-- **External DA**: Celestia/Avail for data availability
-- **Edge RPC**: Anycast + ZK light clients
-- **Payment Channels**: AIC streaming for micro-payments
+- `crates/p2p`
+- `crates/networking/quic-transport`
+- `crates/networking/gossipsub`
+- `crates/da/*`
 
-## Security Model
+These crates provide the networking and data plane for peer connectivity, gossip, QUIC transport, shreds, and erasure/data-availability support.
 
-- **Consensus**: 2/3 BFT threshold, VRF unpredictability
-- **Execution**: Deterministic WASM, no side effects
-- **AI Verification**: TEE attestation + KZG crypto-economic proofs
-- **Slashing**: Double-sign (5%), downtime (gradual leak)
+### Programs and Verifiers
 
+- `crates/programs/*`: staking, governance, AMM, job escrow, reputation, token, and related logic.
+- `crates/verifiers/*`: verification crates for attestation and proof-related paths.
+
+### AI Mesh
+
+- `ai-mesh/runtime`
+- `ai-mesh/router`
+- `ai-mesh/coordinator`
+- `ai-mesh/worker`
+- `ai-mesh/attestation`
+
+These components model the off-chain service layer for AI execution, routing, coordination, and attestation-related work.
+
+### Tooling and Observability
+
+- `crates/metrics`
+- `crates/tools/indexer`
+- `crates/tools/faucet`
+- `crates/tools/loadgen`
+- `deploy/prometheus`
+- `deploy/grafana`
+
+## Execution Flow
+
+At a high level:
+
+1. A client or tool submits a transaction over JSON-RPC.
+2. The node validates and stages the transaction in the mempool.
+3. Consensus chooses or confirms the block-production path.
+4. Runtime and ledger apply deterministic state transitions.
+5. State roots, receipts, and downstream interfaces expose the resulting chain data.
+6. P2P and data-distribution components propagate blocks, votes, and related payloads.
+
+AI-related flows extend this model by pairing on-chain job/program logic with off-chain AI mesh services and verifier components.
+
+## Deployment Surfaces
+
+The repository currently includes several environment shapes:
+
+### Single-Node Local Process
+
+- `cargo run -p aether-node`
+- best for local development and direct RPC inspection
+
+### Multi-Node Local Devnet
+
+- `scripts/devnet.sh`
+- launches four local validator processes with separate RPC and P2P ports
+
+### Compose-Based Test Network
+
+- `docker-compose.test.yml`
+- used by CI to stand up a four-node test environment and run workspace tests
+
+### Compose-Based Development Stack
+
+- `deploy/docker/docker-compose.yml`
+- includes validators, RPC, indexer, PostgreSQL, Prometheus, Grafana, and MinIO assets
+
+### Infrastructure Scaffolding
+
+- `deploy/helm/`
+- `deploy/k8s/`
+- `deploy/terraform/`
+
+These assets represent deployment intent and infrastructure direction, but they are not the same as a fully automated release or rollout pipeline.
+
+## CI Alignment
+
+The architecture and project docs should stay aligned with the actual workflow in `.github/workflows/ci.yml`.
+
+Today that workflow validates:
+
+- linting and security audit;
+- workspace tests and doc tests;
+- multi-architecture Linux release builds;
+- Docker buildability;
+- a Compose-based integration flow; and
+- phase acceptance scripts.
+
+It does not currently perform artifact publication or automated deployment.

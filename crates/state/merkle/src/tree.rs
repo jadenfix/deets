@@ -116,12 +116,7 @@ impl SparseMerkleTree {
     /// Compute the hash of a subtree.
     /// `bit_index`: current position in the address bits
     /// `height`: remaining height of this subtree
-    fn subtree_hash(
-        &self,
-        leaves: &[(Vec<bool>, H256)],
-        bit_index: usize,
-        height: usize,
-    ) -> H256 {
+    fn subtree_hash(&self, leaves: &[(Vec<bool>, H256)], bit_index: usize, height: usize) -> H256 {
         if leaves.is_empty() {
             return self.defaults[height];
         }

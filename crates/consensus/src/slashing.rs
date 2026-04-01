@@ -157,7 +157,7 @@ fn verify_vote_signature(vote: &Vote) -> anyhow::Result<()> {
 /// Calculate how much stake to slash.
 pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
     match proof_type {
-        SlashType::DoubleSign => (stake * 5) / 100, // 5%
+        SlashType::DoubleSign => (stake * 5) / 100,   // 5%
         SlashType::SurroundVote => (stake * 5) / 100, // 5% (same as double-sign)
         SlashType::Downtime { missing_slots } => {
             let leak_rate = 1u128;
@@ -172,11 +172,7 @@ pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
 /// - Reduces validator stake by `slash_amount`
 /// - 10% of slashed amount goes to the reporter as a reward
 /// - If stake drops below `min_stake`, validator is deactivated
-pub fn apply_slash(
-    validator_stake: u128,
-    proof: &SlashProof,
-    _min_stake: u128,
-) -> SlashEvent {
+pub fn apply_slash(validator_stake: u128, proof: &SlashProof, _min_stake: u128) -> SlashEvent {
     let slash_amount = calculate_slash_amount(validator_stake, &proof.proof_type);
     let reporter_reward = slash_amount / 10; // 10% to reporter
 
@@ -223,10 +219,7 @@ mod tests {
 
         let proof = detect_double_sign(&vote1, &vote2);
         assert!(proof.is_some());
-        assert!(matches!(
-            proof.unwrap().proof_type,
-            SlashType::DoubleSign
-        ));
+        assert!(matches!(proof.unwrap().proof_type, SlashType::DoubleSign));
     }
 
     #[test]
@@ -282,10 +275,7 @@ mod tests {
 
         let proof = detect_surround_vote(&vote_a, 10, &vote_b, 20);
         assert!(proof.is_some());
-        assert!(matches!(
-            proof.unwrap().proof_type,
-            SlashType::SurroundVote
-        ));
+        assert!(matches!(proof.unwrap().proof_type, SlashType::SurroundVote));
     }
 
     #[test]
@@ -315,7 +305,10 @@ mod tests {
     fn test_calculate_slash_amount() {
         let stake = 1_000_000u128;
 
-        assert_eq!(calculate_slash_amount(stake, &SlashType::DoubleSign), 50_000);
+        assert_eq!(
+            calculate_slash_amount(stake, &SlashType::DoubleSign),
+            50_000
+        );
         assert_eq!(
             calculate_slash_amount(stake, &SlashType::SurroundVote),
             50_000

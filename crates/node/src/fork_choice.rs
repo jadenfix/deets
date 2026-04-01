@@ -67,16 +67,12 @@ impl ForkChoice {
 
     /// Check if a slot has competing blocks (a fork).
     pub fn has_fork(&self, slot: Slot) -> bool {
-        self.candidates
-            .get(&slot)
-            .map_or(false, |c| c.len() > 1)
+        self.candidates.get(&slot).map_or(false, |c| c.len() > 1)
     }
 
     /// Get all candidate blocks for a slot.
     pub fn candidates_for(&self, slot: Slot) -> &[H256] {
-        self.candidates
-            .get(&slot)
-            .map_or(&[], |v| v.as_slice())
+        self.candidates.get(&slot).map_or(&[], |v| v.as_slice())
     }
 
     /// Check if a slot is finalized.

@@ -149,8 +149,7 @@ mod tests {
         let verifier = KzgVerifier::new_insecure_test(1024);
         let mut challenge = sample_challenge();
         let openings = make_valid_openings(&verifier);
-        let response =
-            KzgOpeningResponse::new(H256::from_slice(&[9u8; 32]).unwrap(), openings);
+        let response = KzgOpeningResponse::new(H256::from_slice(&[9u8; 32]).unwrap(), openings);
 
         assert!(verify_kzg_openings(&verifier, &challenge, &response).is_err());
         challenge.point_indices[0].push(2);

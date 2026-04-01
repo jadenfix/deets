@@ -74,12 +74,7 @@ impl CommitRevealPool {
     }
 
     /// Reveal a transaction that matches a prior commitment (reveal phase).
-    pub fn reveal(
-        &mut self,
-        tx: Transaction,
-        salt: [u8; 32],
-        current_slot: u64,
-    ) -> Result<()> {
+    pub fn reveal(&mut self, tx: Transaction, salt: [u8; 32], current_slot: u64) -> Result<()> {
         // Compute what the commitment hash should be
         let expected_hash = Self::create_commitment(&tx, &salt);
 
@@ -130,9 +125,8 @@ impl CommitRevealPool {
 
     /// Clean up expired commitments.
     pub fn cleanup_expired(&mut self, current_slot: u64) {
-        self.commitments.retain(|_, c| {
-            current_slot <= c.commit_slot + self.commitment_ttl
-        });
+        self.commitments
+            .retain(|_, c| current_slot <= c.commit_slot + self.commitment_ttl);
     }
 
     /// Remove a commitment + reveal after execution.

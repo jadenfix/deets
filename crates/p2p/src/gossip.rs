@@ -165,12 +165,14 @@ impl GossipManager {
         if self.seen_messages.len() > self.cache_size {
             tracing::warn!(
                 "gossip dedup cache overflow ({} > {}), evicting oldest half",
-                self.seen_messages.len(), self.cache_size
+                self.seen_messages.len(),
+                self.cache_size
             );
             // HashSet doesn't preserve insertion order, so we can only drain randomly.
             // Keep ~half the entries to maintain some dedup state.
             let to_remove = self.seen_messages.len() / 2;
-            let remove_keys: Vec<Vec<u8>> = self.seen_messages.iter().take(to_remove).cloned().collect();
+            let remove_keys: Vec<Vec<u8>> =
+                self.seen_messages.iter().take(to_remove).cloned().collect();
             for key in remove_keys {
                 self.seen_messages.remove(&key);
             }
