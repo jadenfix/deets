@@ -57,6 +57,11 @@ pub enum FraudProofResult {
 
 impl FraudProofVerifier {
     pub fn new(required_bond: u128, challenger_reward_pct: u8) -> Self {
+        assert!(
+            challenger_reward_pct <= 100,
+            "challenger_reward_pct must be <= 100, got {}",
+            challenger_reward_pct
+        );
         FraudProofVerifier {
             required_bond,
             challenger_reward_pct,
@@ -73,8 +78,8 @@ impl FraudProofVerifier {
         proof: &FraudProof,
         batch_pre_state_root: &H256,
         batch_post_state_root: &H256,
-        sequencer: &Address,
-        sequencer_bond: u128,
+        _sequencer: &Address,
+        _sequencer_bond: u128,
     ) -> FraudProofResult {
         // Pre-state root must match the batch
         if proof.pre_state_root != *batch_pre_state_root {
@@ -98,15 +103,22 @@ impl FraudProofVerifier {
             };
         }
 
-        // In production: re-execute tx_data starting from pre_state_root
-        // and verify that the result matches correct_post_state_root.
-        // For now, we trust the challenger's computation.
-
-        let reward = sequencer_bond * self.challenger_reward_pct as u128 / 100;
-
-        FraudProofResult::Valid {
-            slashed_sequencer: *sequencer,
-            challenger_reward: reward,
+        // SAFETY: Fraud proof acceptance is DISABLED until the WASM re-execution
+        // sandbox is wired. Without re-executing tx_data from pre_state_root and
+        // independently verifying that the result matches correct_post_state_root,
+        // ANY attacker can forge a fraud proof with an arbitrary state root to
+        // slash honest sequencers and steal their bond. The state_proof field
+        // (Merkle proof) is also never verified.
+        //
+        // To enable: re-execute proof.tx_data in a sandboxed WASM VM starting
+        // from pre_state_root, compare output to correct_post_state_root, and
+        // verify state_proof against the Sparse Merkle Tree.
+        FraudProofResult::Invalid {
+            reason: "fraud proof verification disabled: \
+                     WASM re-execution not yet implemented — \
+                     accepting proofs without re-execution would allow \
+                     forged proofs to slash honest sequencers"
+                .into(),
         }
     }
 }
@@ -129,7 +141,10 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_fraud_proof() {
+    fn test_fraud_proof_rejected_without_reexecution() {
+        // Fraud proofs MUST be rejected until WASM re-execution is wired.
+        // Previously, verify() trusted the challenger's correct_post_state_root
+        // without re-executing, allowing any attacker to forge a proof.
         let verifier = FraudProofVerifier::new(1_000_000, 50);
         let proof = make_fraud_proof();
         let sequencer = Address::from_slice(&[1u8; 20]).unwrap();
@@ -142,14 +157,21 @@ mod tests {
             1_000_000,
         );
 
-        match result {
-            FraudProofResult::Valid {
-                challenger_reward, ..
-            } => {
-                assert_eq!(challenger_reward, 500_000); // 50% of 1M
+        match &result {
+            FraudProofResult::Invalid { reason } => {
+                assert!(
+                    reason.contains("re-execution not yet implemented"),
+                    "unexpected reason: {reason}"
+                );
             }
-            other => panic!("expected Valid, got {:?}", other),
+            other => panic!("expected Invalid (disabled), got {:?}", other),
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "challenger_reward_pct must be <= 100")]
+    fn test_reject_reward_pct_over_100() {
+        FraudProofVerifier::new(1_000, 101);
     }
 
     #[test]
