@@ -120,7 +120,7 @@ impl JobEscrowState {
         *escrowed = escrowed
             .checked_add(payment)
             .ok_or("requester escrow overflow")?;
-        self.total_jobs += 1;
+        self.total_jobs = self.total_jobs.checked_add(1).ok_or("total_jobs overflow")?;
 
         Ok(())
     }
@@ -206,7 +206,7 @@ impl JobEscrowState {
         if *escrowed < payment {
             return Err("insufficient requester escrow balance".to_string());
         }
-        *escrowed -= payment;
+        *escrowed = escrowed.checked_sub(payment).ok_or("escrow underflow")?;
         let remove_requester_escrow = *escrowed == 0;
         if remove_requester_escrow {
             self.requester_escrow.remove(&requester);
@@ -217,8 +217,9 @@ impl JobEscrowState {
             .ok_or("provider claimable overflow")?;
         let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
         job.status = JobStatus::Completed;
-        *self.provider_reputation.entry(provider).or_insert(0) += 1;
-        self.completed_jobs += 1;
+        let rep = self.provider_reputation.entry(provider).or_insert(0);
+        *rep = rep.checked_add(1).ok_or("reputation overflow")?;
+        self.completed_jobs = self.completed_jobs.checked_add(1).ok_or("completed_jobs overflow")?;
 
         Ok(Some((provider, payment)))
     }
@@ -269,7 +270,7 @@ impl JobEscrowState {
         if *escrowed < payment {
             return Err("insufficient requester escrow balance".to_string());
         }
-        *escrowed -= payment;
+        *escrowed = escrowed.checked_sub(payment).ok_or("escrow underflow")?;
         let remove_requester_escrow = *escrowed == 0;
         if remove_requester_escrow {
             self.requester_escrow.remove(&requester);
