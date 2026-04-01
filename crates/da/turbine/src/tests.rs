@@ -10,10 +10,16 @@
 // ============================================================================
 
 use super::*;
+use aether_crypto_primitives::Keypair;
 use aether_types::H256;
 use rand::{seq::SliceRandom, Rng};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+
+fn test_broadcaster(data_shards: usize, parity_shards: usize) -> TurbineBroadcaster {
+    let key = Keypair::generate();
+    TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap()
+}
 
 /// Test that reconstruction succeeds with packet loss up to parity threshold
 #[test]
@@ -23,7 +29,7 @@ fn phase4_acceptance_turbine_packet_loss_resilience() {
     const TOTAL_SHREDS: usize = DATA_SHARDS + PARITY_SHARDS;
     const TRIALS: usize = 200;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
     let mut rng = rand::thread_rng();
     let mut successes = 0usize;
 
@@ -81,7 +87,7 @@ fn test_out_of_order_shred_delivery() {
     const PARITY_SHARDS: usize = 2;
     const TRIALS: usize = 50;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
     let mut rng = rand::thread_rng();
 
     for trial in 0..TRIALS {
@@ -119,7 +125,7 @@ fn test_large_block_stress() {
     const PARITY_SHARDS: usize = 4;
     const BLOCK_SIZE: usize = 4_000_000; // 4MB
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
 
     // Generate large payload
     let mut payload = Vec::with_capacity(BLOCK_SIZE);
@@ -154,7 +160,7 @@ fn test_minimal_shred_reconstruction() {
     const DATA_SHARDS: usize = 10;
     const PARITY_SHARDS: usize = 2;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
     let payload = b"minimal shred test payload".to_vec();
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
@@ -185,7 +191,7 @@ fn test_network_partition_recovery() {
     const PARITY_SHARDS: usize = 4; // Higher redundancy for partition tolerance
     const PARTITION_SIZE: usize = 7; // Partition receives 7 of 14 shreds
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
     let payload = b"partition recovery test".to_vec();
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
 
@@ -238,7 +244,7 @@ fn bench_encoding_throughput() {
     const BLOCK_SIZE: usize = 2_000_000; // 2MB
     const ITERATIONS: usize = 100;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
 
     let payload = vec![0u8; BLOCK_SIZE];
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
@@ -277,7 +283,7 @@ fn bench_decoding_throughput() {
     const BLOCK_SIZE: usize = 2_000_000; // 2MB
     const ITERATIONS: usize = 100;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
 
     let payload = vec![0u8; BLOCK_SIZE];
     let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
@@ -321,7 +327,7 @@ fn test_concurrent_block_reconstruction() {
     const PARITY_SHARDS: usize = 2;
     const NUM_BLOCKS: usize = 5;
 
-    let broadcaster = TurbineBroadcaster::new(DATA_SHARDS, PARITY_SHARDS, 1).unwrap();
+    let broadcaster = test_broadcaster(DATA_SHARDS, PARITY_SHARDS);
 
     // Generate multiple blocks
     let mut all_shreds = Vec::new();
