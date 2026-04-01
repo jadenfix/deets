@@ -3,13 +3,15 @@
 # run-claude.sh — Continuous autonomous Claude Code runner for Aether
 # ============================================================================
 # Usage:
-#   ./run-claude.sh                    # Run TASKS.md in a loop until MAX_HOURS
-#   ./run-claude.sh path/to/tasks.md   # Run specific task file
+#   ./run-claude.sh                    # Single agent on TASKS.md
+#   ./run-claude.sh path/to/tasks.md   # Single agent on specific file
+#   AGENTS=3 ./run-claude.sh           # 3 parallel agents on TASKS.md
 #
 # Environment:
 #   MAX_HOURS=10      Max runtime in hours (default 10, ~overnight)
-#   MAX_TURNS=200     Max turns per claude session (default 200)
 #   COOLDOWN=30       Seconds between cycles (default 30)
+#   AGENTS=1          Number of parallel agents (default 1)
+#   RATE_WAIT=300     Seconds to wait on rate limit (default 300 = 5 min)
 #
 # Kill switch:
 #   touch /tmp/claude-runner-stop      # Gracefully stops after current cycle
@@ -20,17 +22,20 @@ set -euo pipefail
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TASKS_FILE="${1:-${REPO_DIR}/TASKS.md}"
 LOG_DIR="${REPO_DIR}/.claude/logs"
-LOCK_FILE="/tmp/claude-runner.lock"
 STOP_FILE="/tmp/claude-runner-stop"
 MAX_HOURS="${MAX_HOURS:-10}"
-MAX_TURNS="${MAX_TURNS:-200}"
 COOLDOWN="${COOLDOWN:-30}"
+AGENTS="${AGENTS:-1}"
+RATE_WAIT="${RATE_WAIT:-300}"
 
-# ── Guard against concurrent runs ──
+AGENT_ID="${AGENT_ID:-1}"
+LOCK_FILE="/tmp/claude-runner-agent${AGENT_ID}.lock"
+
+# ── Guard against concurrent runs of same agent ID ──
 if [ -f "$LOCK_FILE" ]; then
     EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
     if [ -n "$EXISTING_PID" ] && kill -0 "$EXISTING_PID" 2>/dev/null; then
-        echo "ERROR: Another claude-runner is already running (PID ${EXISTING_PID})" >&2
+        echo "ERROR: Agent $AGENT_ID already running (PID ${EXISTING_PID})" >&2
         exit 1
     fi
     rm -f "$LOCK_FILE"
@@ -66,16 +71,27 @@ START_EPOCH=$(date +%s)
 MAX_SECONDS=$(awk "BEGIN {printf \"%d\", $MAX_HOURS * 3600}")
 DEADLINE=$((START_EPOCH + MAX_SECONDS))
 
-CYCLE=0
+# ── Launch parallel agents if AGENTS > 1 and we're the parent ──
+if [ "$AGENTS" -gt 1 ] && [ "$AGENT_ID" -eq 1 ]; then
+    echo "=== Launching $AGENTS parallel agents ===" | tee "${LOG_DIR}/runner.log"
+    for i in $(seq 2 "$AGENTS"); do
+        echo "Starting agent $i..." | tee -a "${LOG_DIR}/runner.log"
+        AGENT_ID=$i AGENTS=1 "$0" "$TASKS_FILE" &
+    done
+    # Continue as agent 1
+    AGENTS=1
+fi
 
-echo "=== Aether Continuous Runner ===" | tee "${LOG_DIR}/runner.log"
-echo "Start:      $(date -Iseconds)" | tee -a "${LOG_DIR}/runner.log"
-echo "Tasks:      $TASKS_FILE" | tee -a "${LOG_DIR}/runner.log"
-echo "Max hours:  $MAX_HOURS" | tee -a "${LOG_DIR}/runner.log"
-echo "Max turns:  $MAX_TURNS per cycle" | tee -a "${LOG_DIR}/runner.log"
-echo "Cooldown:   ${COOLDOWN}s between cycles" | tee -a "${LOG_DIR}/runner.log"
-echo "Stop file:  $STOP_FILE" | tee -a "${LOG_DIR}/runner.log"
-echo "================================" | tee -a "${LOG_DIR}/runner.log"
+CYCLE=0
+RUNNER_LOG="${LOG_DIR}/runner-agent${AGENT_ID}.log"
+
+echo "=== Aether Agent $AGENT_ID ===" | tee "$RUNNER_LOG"
+echo "Start:      $(date -Iseconds)" | tee -a "$RUNNER_LOG"
+echo "Tasks:      $TASKS_FILE" | tee -a "$RUNNER_LOG"
+echo "Max hours:  $MAX_HOURS" | tee -a "$RUNNER_LOG"
+echo "Cooldown:   ${COOLDOWN}s between cycles" | tee -a "$RUNNER_LOG"
+echo "Stop file:  $STOP_FILE" | tee -a "$RUNNER_LOG"
+echo "==============================" | tee -a "$RUNNER_LOG"
 
 cd "$REPO_DIR"
 
@@ -83,64 +99,73 @@ while true; do
     # ── Check stop conditions ──
     NOW=$(date +%s)
     if [ "$NOW" -ge "$DEADLINE" ]; then
-        echo "[$(date -Iseconds)] Time limit reached ($MAX_HOURS hours). Stopping." | tee -a "${LOG_DIR}/runner.log"
+        echo "[$(date -Iseconds)] Agent $AGENT_ID: Time limit ($MAX_HOURS hrs). Stopping." | tee -a "$RUNNER_LOG"
         break
     fi
 
     if [ -f "$STOP_FILE" ]; then
-        echo "[$(date -Iseconds)] Stop file detected. Stopping." | tee -a "${LOG_DIR}/runner.log"
-        rm -f "$STOP_FILE"
+        echo "[$(date -Iseconds)] Agent $AGENT_ID: Stop file detected. Stopping." | tee -a "$RUNNER_LOG"
         break
     fi
 
     CYCLE=$((CYCLE + 1))
     TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-    LOG_FILE="${LOG_DIR}/run-${TIMESTAMP}-cycle${CYCLE}.log"
+    LOG_FILE="${LOG_DIR}/agent${AGENT_ID}-cycle${CYCLE}-${TIMESTAMP}.log"
 
-    echo "" | tee -a "${LOG_DIR}/runner.log"
-    echo "[$(date -Iseconds)] === Cycle $CYCLE ===" | tee -a "${LOG_DIR}/runner.log"
+    echo "" | tee -a "$RUNNER_LOG"
+    echo "[$(date -Iseconds)] Agent $AGENT_ID: === Cycle $CYCLE ===" | tee -a "$RUNNER_LOG"
 
-    # ── Pull latest (pick up merged PRs) ──
-    echo "[$(date -Iseconds)] Pulling latest..." | tee -a "${LOG_DIR}/runner.log"
-    git pull --ff-only 2>&1 | tee -a "${LOG_DIR}/runner.log" || true
+    # ── Ensure we're on main with clean state ──
+    git checkout main 2>&1 | tee -a "$RUNNER_LOG" || true
+    git pull --ff-only 2>&1 | tee -a "$RUNNER_LOG" || true
 
-    # ── Read task prompt ──
-    TASK_PROMPT="$(cat "$TASKS_FILE")"
+    # ── Read task prompt, inject agent ID for coordination ──
+    TASK_PROMPT="$(cat "$TASKS_FILE")
 
-    echo "[$(date -Iseconds)] Starting claude (max $MAX_TURNS turns)..." | tee -a "${LOG_DIR}/runner.log"
-    echo "Log: $LOG_FILE" | tee -a "${LOG_DIR}/runner.log"
+---
+You are Agent $AGENT_ID of $AGENTS total agents. To avoid conflicts:
+- Check PROGRESS.md and \`gh pr list --state all\` before picking a task.
+- Include 'Agent $AGENT_ID' in your branch names: fix/agent${AGENT_ID}-<scope>-<description>
+- If you see another agent already working on a task (open PR), skip it and pick the next one."
+
+    echo "[$(date -Iseconds)] Agent $AGENT_ID: Starting claude..." | tee -a "$RUNNER_LOG"
+    echo "Log: $LOG_FILE" | tee -a "$RUNNER_LOG"
 
     # ── Run claude ──
     caffeinate -dims \
         claude \
-            --permission-mode auto \
+            --permission-mode bypassPermissions \
             --model claude-opus-4-6 \
             -p "$TASK_PROMPT" \
-        >> "$LOG_FILE" 2>&1 || true
+        >> "$LOG_FILE" 2>&1
+    EXIT_CODE=$?
 
-    EXIT_CODE=${PIPESTATUS[0]:-0}
+    echo "[$(date -Iseconds)] Agent $AGENT_ID: Cycle $CYCLE done (exit $EXIT_CODE)" | tee -a "$RUNNER_LOG"
 
-    echo "[$(date -Iseconds)] Cycle $CYCLE finished (exit $EXIT_CODE)" | tee -a "${LOG_DIR}/runner.log"
-
-    # ── Notify ──
-    if command -v osascript >/dev/null 2>&1; then
-        if [ "$EXIT_CODE" -eq 0 ]; then
-            osascript -e "display notification \"Cycle $CYCLE complete\" with title \"Aether Runner\"" 2>/dev/null || true
-        else
-            osascript -e "display notification \"Cycle $CYCLE failed (exit $EXIT_CODE)\" with title \"Aether Runner\"" 2>/dev/null || true
+    # ── Detect rate limiting ──
+    if [ "$EXIT_CODE" -ne 0 ]; then
+        if grep -qi 'rate.limit\|429\|overloaded\|capacity\|quota' "$LOG_FILE" 2>/dev/null; then
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: Rate limited. Waiting ${RATE_WAIT}s..." | tee -a "$RUNNER_LOG"
+            sleep "$RATE_WAIT"
+            continue
         fi
     fi
 
-    # ── Cooldown before next cycle ──
-    echo "[$(date -Iseconds)] Cooling down ${COOLDOWN}s..." | tee -a "${LOG_DIR}/runner.log"
+    # ── Notify ──
+    if command -v osascript >/dev/null 2>&1; then
+        osascript -e "display notification \"Agent $AGENT_ID cycle $CYCLE done (exit $EXIT_CODE)\" with title \"Aether Runner\"" 2>/dev/null || true
+    fi
+
+    # ── Cooldown ──
+    echo "[$(date -Iseconds)] Agent $AGENT_ID: Cooldown ${COOLDOWN}s..." | tee -a "$RUNNER_LOG"
     sleep "$COOLDOWN"
 done
 
-echo "" | tee -a "${LOG_DIR}/runner.log"
-echo "=== Runner Complete ===" | tee -a "${LOG_DIR}/runner.log"
-echo "Finished: $(date -Iseconds)" | tee -a "${LOG_DIR}/runner.log"
-echo "Cycles:   $CYCLE" | tee -a "${LOG_DIR}/runner.log"
+echo "" | tee -a "$RUNNER_LOG"
+echo "=== Agent $AGENT_ID Complete ===" | tee -a "$RUNNER_LOG"
+echo "Finished: $(date -Iseconds)" | tee -a "$RUNNER_LOG"
+echo "Cycles:   $CYCLE" | tee -a "$RUNNER_LOG"
 
 if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"Runner done after $CYCLE cycles\" with title \"Aether Runner\"" 2>/dev/null || true
+    osascript -e "display notification \"Agent $AGENT_ID done after $CYCLE cycles\" with title \"Aether Runner\"" 2>/dev/null || true
 fi
