@@ -394,5 +394,126 @@ mod proptests {
             t2.update(a, va);
             prop_assert_eq!(t1.root(), t2.root());
         }
+
+        /// Proofs verify for every key in a multi-key tree.
+        #[test]
+        fn all_keys_provable(entries in prop::collection::vec((arb_address(), arb_h256()), 1..20)) {
+            let mut tree = SparseMerkleTree::new();
+            for (addr, val) in &entries {
+                tree.update(*addr, *val);
+            }
+            for (addr, _val) in &entries {
+                let proof = tree.prove(addr);
+                prop_assert!(proof.verify(), "inclusion proof must verify for all inserted keys");
+                // value_hash should be Some (key exists) — though if duplicate addrs,
+                // the last value wins, so just check it's Some
+                prop_assert!(proof.value_hash.is_some());
+            }
+        }
+
+        /// Exclusion proofs verify for keys not in the tree.
+        #[test]
+        fn exclusion_proof_verifies(
+            entries in prop::collection::vec((arb_address(), arb_h256()), 1..10),
+            absent in arb_address(),
+        ) {
+            let mut tree = SparseMerkleTree::new();
+            for (addr, val) in &entries {
+                tree.update(*addr, *val);
+            }
+            // Only test if `absent` wasn't in entries
+            if !entries.iter().any(|(a, _)| *a == absent) {
+                let proof = tree.prove(&absent);
+                prop_assert!(proof.verify(), "exclusion proof must verify");
+                prop_assert_eq!(proof.value_hash, None);
+            }
+        }
+
+        /// Tampered value hash causes proof verification failure.
+        #[test]
+        fn tampered_value_fails(addr in arb_address(), val in arb_h256(), tampered_val in arb_h256()) {
+            prop_assume!(val != tampered_val);
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, val);
+            let mut proof = tree.prove(&addr);
+            proof.value_hash = Some(tampered_val);
+            prop_assert!(!proof.verify(), "tampered value hash must fail verification");
+        }
+
+        /// Updating a key to the same value is idempotent (root unchanged).
+        #[test]
+        fn idempotent_update(addr in arb_address(), val in arb_h256()) {
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, val);
+            let root1 = tree.root();
+            tree.update(addr, val);
+            prop_assert_eq!(tree.root(), root1);
+        }
+
+        /// Deleting all keys restores the empty root.
+        #[test]
+        fn delete_all_restores_empty(entries in prop::collection::vec((arb_address(), arb_h256()), 1..15)) {
+            let mut tree = SparseMerkleTree::new();
+            let empty_root = tree.root();
+            let mut addrs = Vec::new();
+            for (addr, val) in &entries {
+                tree.update(*addr, *val);
+                addrs.push(*addr);
+            }
+            // Deduplicate addresses (last update wins, so just delete each unique addr)
+            addrs.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            addrs.dedup();
+            for addr in &addrs {
+                tree.delete(addr);
+            }
+            prop_assert_eq!(tree.root(), empty_root);
+        }
+
+        /// Insertion order doesn't matter for N keys (generalized order independence).
+        #[test]
+        fn insertion_order_independent(entries in prop::collection::vec((arb_address(), arb_h256()), 2..15)) {
+            let mut forward = SparseMerkleTree::new();
+            for (addr, val) in &entries {
+                forward.update(*addr, *val);
+            }
+            let mut backward = SparseMerkleTree::new();
+            for (addr, val) in entries.iter().rev() {
+                backward.update(*addr, *val);
+            }
+            // Note: if there are duplicate keys, insertion order affects which value
+            // is final, so roots may differ. That's expected. We only assert equality
+            // when all keys are unique.
+            let mut keys: Vec<_> = entries.iter().map(|(a, _)| *a).collect();
+            keys.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+            let unique = keys.windows(2).all(|w| w[0] != w[1]);
+            if unique {
+                prop_assert_eq!(forward.root(), backward.root());
+            }
+        }
+
+        /// Proof siblings have correct length (depth = 160).
+        #[test]
+        fn proof_has_correct_depth(addr in arb_address(), val in arb_h256()) {
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, val);
+            let proof = tree.prove(&addr);
+            prop_assert_eq!(proof.siblings.len(), 160);
+        }
+
+        /// Updating a value changes the root but keeps other proofs valid.
+        #[test]
+        fn update_value_changes_root(addr in arb_address(), v1 in arb_h256(), v2 in arb_h256()) {
+            prop_assume!(v1 != v2);
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, v1);
+            let root1 = tree.root();
+            tree.update(addr, v2);
+            let root2 = tree.root();
+            prop_assert_ne!(root1, root2);
+            // Proof still verifies after update
+            let proof = tree.prove(&addr);
+            prop_assert!(proof.verify());
+            prop_assert_eq!(proof.value_hash, Some(v2));
+        }
     }
 }
