@@ -39,6 +39,13 @@ pub struct Log {
     pub data: Vec<u8>,
 }
 
+// Host-function size limits to prevent unbounded memory usage from malicious contracts.
+const MAX_STORAGE_KEY_LEN: usize = 256;
+const MAX_STORAGE_VAL_LEN: usize = 4096;
+const MAX_LOG_DATA_LEN: usize = 4096;
+const MAX_LOG_COUNT: usize = 100;
+const MAX_RETURN_DATA_LEN: usize = 4096;
+
 /// Shared state accessible to host functions during execution.
 struct HostState {
     storage: HashMap<Vec<u8>, Vec<u8>>,
@@ -60,6 +67,10 @@ impl WasmVm {
         // Limit maximum WASM memory to 16MB (256 pages × 64KB) to prevent OOM
         config.static_memory_maximum_size(16 * 1024 * 1024);
         config.cranelift_opt_level(OptLevel::Speed);
+        // Limit WASM call stack depth to 512KB to prevent stack-overflow DoS.
+        config.max_wasm_stack(512 * 1024);
+        // Dynamic memory guard size; static_memory_maximum_size caps growth.
+        config.dynamic_memory_guard_size(64 * 1024);
 
         let engine = Engine::new(&config).expect("failed to create Wasmtime engine");
 
@@ -122,11 +133,17 @@ impl WasmVm {
                 match f.call(&mut store, (0, input.len() as i32)) {
                     Ok(result_code) => result_code == 0,
                     Err(e) => {
-                        // Check if it's an out-of-fuel error (= out of gas)
-                        if e.to_string().contains("fuel") {
+                        // Out-of-fuel means out-of-gas: do NOT retry another entry point.
+                        // A retry would start a new call with 0 remaining fuel, bypassing
+                        // the gas limit entirely.
+                        let oof = e
+                            .downcast_ref::<wasmtime::Trap>()
+                            .map(|t| *t == wasmtime::Trap::OutOfFuel)
+                            .unwrap_or_else(|| e.to_string().contains("fuel"));
+                        if oof {
                             false
                         } else {
-                            // Try simpler entry point with no args
+                            // Non-gas error — try simpler entry point with no args
                             let simple_func =
                                 instance.get_typed_func::<(), i32>(&mut store, "main");
                             match simple_func {
@@ -260,6 +277,12 @@ impl WasmVm {
                     Err(_) => return -1,
                 }
 
+                // Reject oversized keys/values before touching memory.
+                if key_len as usize > MAX_STORAGE_KEY_LEN || val_len as usize > MAX_STORAGE_VAL_LEN
+                {
+                    return -1;
+                }
+
                 let memory = match caller.get_export("memory") {
                     Some(Extern::Memory(m)) => m,
                     _ => return -1,
@@ -324,11 +347,19 @@ impl WasmVm {
                     _ => return -1,
                 };
 
+                // Enforce log data size limit.
+                if data_len as usize > MAX_LOG_DATA_LEN {
+                    return -1;
+                }
+
                 let log_data = data[start..end].to_vec();
                 let mut state = match caller.data().lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
+                if state.logs.len() >= MAX_LOG_COUNT {
+                    return -1; // Too many logs emitted
+                }
                 state.logs.push(Log {
                     topics: vec![],
                     data: log_data,
@@ -342,6 +373,11 @@ impl WasmVm {
             "env",
             "set_return",
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| -> i32 {
+                // Enforce return data size limit.
+                if len as usize > MAX_RETURN_DATA_LEN {
+                    return -1;
+                }
+
                 let memory = match caller.get_export("memory") {
                     Some(Extern::Memory(m)) => m,
                     _ => return -1,
@@ -611,6 +647,81 @@ mod tests {
         if let Ok(r) = result {
             assert!(!r.success || r.gas_used >= 100);
         }
+    }
+
+    #[test]
+    fn test_gas_exhaustion_does_not_retry_entrypoint() {
+        // When "execute" exhausts fuel the VM must NOT fall through to "main".
+        let mut vm = WasmVm::new(50);
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 50,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (func (export "execute") (param i32 i32) (result i32)
+                    (local $i i32)
+                    (loop $loop
+                        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                        (br_if $loop (i32.lt_u (local.get $i) (i32.const 99999)))
+                    )
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"").unwrap();
+        assert!(!result.success, "OOF execution must report failure, not retry");
+    }
+
+    #[test]
+    fn test_storage_key_size_limit() {
+        let mut vm = WasmVm::new(1_000_000);
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // key_len=1000 exceeds MAX_STORAGE_KEY_LEN=256 — must not panic
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (import "env" "storage_write" (func $sw (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 2)
+                (func (export "execute") (param i32 i32) (result i32)
+                    i32.const 0
+                    i32.const 1000
+                    i32.const 0
+                    i32.const 1
+                    call $sw
+                    drop
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"");
+        assert!(result.is_ok(), "oversized key must not panic the VM");
+        // The write should be silently rejected (storage_write returned -1)
+        let exec = result.unwrap();
+        assert!(
+            exec.storage_changes.is_empty(),
+            "oversized key write must be rejected"
+        );
     }
 
     #[test]
