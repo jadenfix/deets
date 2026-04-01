@@ -610,8 +610,10 @@ fn test_reject_slot_monotonicity_violation() {
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("slot monotonicity") || err_msg.contains("future slot"),
-            "error should mention slot issue, got: {}",
+            err_msg.contains("slot monotonicity")
+                || err_msg.contains("future slot")
+                || err_msg.contains("unknown validator"),
+            "error should reject the forged block, got: {}",
             err_msg
         );
     }

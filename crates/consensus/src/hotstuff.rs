@@ -208,6 +208,13 @@ impl HotStuffConsensus {
 
     /// Process a proposed block. Returns actions for the node to execute.
     pub fn on_propose(&mut self, block: &Block) -> Result<Vec<ConsensusAction>> {
+        let _span = tracing::info_span!(
+            "consensus_propose",
+            slot = block.header.slot,
+            block_hash = ?block.hash(),
+        )
+        .entered();
+
         if self.current_phase != Phase::Propose {
             bail!("not in propose phase");
         }
@@ -241,6 +248,14 @@ impl HotStuffConsensus {
         &mut self,
         vote: HotStuffVote,
     ) -> Result<(Option<AggregatedVote>, Vec<ConsensusAction>)> {
+        let _span = tracing::debug_span!(
+            "consensus_vote",
+            slot = vote.slot,
+            phase = ?vote.phase,
+            validator = ?vote.validator,
+        )
+        .entered();
+
         self.verify_vote(&vote)?;
 
         // Track parent and slot
@@ -332,6 +347,11 @@ impl HotStuffConsensus {
                         .contains_key(&(parent_slot, Phase::Prevote, parent_hash))
                     {
                         self.finalized_slot = parent_slot;
+                        tracing::info!(
+                            finalized_slot = parent_slot,
+                            block_hash = ?parent_hash,
+                            "Block finalized via 2-chain rule"
+                        );
                         actions.push(ConsensusAction::Finalized {
                             slot: parent_slot,
                             block_hash: parent_hash,
@@ -350,6 +370,7 @@ impl HotStuffConsensus {
 
     /// Handle a pacemaker timeout: create a timeout vote.
     pub fn on_timeout(&self, round: u64) -> Result<Vec<ConsensusAction>> {
+        let _span = tracing::warn_span!("consensus_timeout", round).entered();
         let mut actions = Vec::new();
 
         if let (Some(kp), Some(addr)) = (&self.my_keypair, &self.my_address) {
@@ -457,6 +478,7 @@ impl HotStuffConsensus {
     ///   (ensures the new leader extends from the highest certified block)
     /// - Clears stale votes from the previous round
     pub fn on_timeout_certificate(&mut self, tc: &TimeoutCertificate) -> Result<()> {
+        let _span = tracing::warn_span!("consensus_tc", round = tc.round).entered();
         // Recompute voted stake from local validator set — never trust tc.total_stake.
         // A malicious peer could forge a TC with inflated total_stake to bypass quorum.
         let mut seen_signers = HashSet::new();
