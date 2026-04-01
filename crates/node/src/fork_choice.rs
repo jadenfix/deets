@@ -1,6 +1,10 @@
 use aether_types::{Slot, H256};
 use std::collections::HashMap;
 
+/// Maximum number of candidate blocks tracked per slot.
+/// Prevents OOM from an attacker spamming unique block hashes for a single slot.
+const MAX_CANDIDATES_PER_SLOT: usize = 16;
+
 /// Simple fork choice: for each slot, track all candidate blocks and
 /// select the canonical one based on finality or first-seen ordering.
 pub struct ForkChoice {
@@ -38,6 +42,9 @@ impl ForkChoice {
         let candidates = self.candidates.entry(slot).or_default();
         if candidates.contains(&block_hash) {
             return false; // Already known
+        }
+        if candidates.len() >= MAX_CANDIDATES_PER_SLOT {
+            return false; // Prevent OOM from excessive candidates per slot
         }
         let is_fork = !candidates.is_empty();
         candidates.push(block_hash);
@@ -234,6 +241,27 @@ mod tests {
             Some(hash(0xFF)),
             "finalized block should override tiebreak"
         );
+    }
+
+    #[test]
+    fn test_per_slot_candidate_cap_prevents_oom() {
+        let mut fc = ForkChoice::new();
+        // Fill up the candidate cap for slot 1
+        for i in 0..MAX_CANDIDATES_PER_SLOT {
+            let h = hash(i as u8);
+            fc.add_block(1, h);
+        }
+        assert_eq!(fc.candidates_for(1).len(), MAX_CANDIDATES_PER_SLOT);
+
+        // One more should be rejected
+        let extra = hash(0xFE);
+        let is_fork = fc.add_block(1, extra);
+        assert!(!is_fork, "excess candidate should be rejected");
+        assert_eq!(fc.candidates_for(1).len(), MAX_CANDIDATES_PER_SLOT);
+
+        // Different slot should still work
+        assert!(!fc.add_block(2, hash(0x01)));
+        assert_eq!(fc.candidates_for(2).len(), 1);
     }
 
     #[test]

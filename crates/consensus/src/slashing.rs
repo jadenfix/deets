@@ -204,12 +204,20 @@ pub fn apply_slash(validator_stake: u128, proof: &SlashProof, _min_stake: u128) 
     }
 }
 
+/// A recorded vote including signature, so double-sign proofs carry real evidence.
+#[derive(Clone)]
+struct RecordedVote {
+    block_hash: H256,
+    validator_pubkey: PublicKey,
+    signature: Signature,
+}
+
 /// Tracks votes per (validator, slot) to detect double-signing in real time.
 /// Designed to be embedded in the node's vote processing path.
 #[derive(Default)]
 pub struct SlashingDetector {
-    /// Maps (validator_address, slot) -> first vote's block_hash.
-    seen_votes: HashMap<(Address, u64), H256>,
+    /// Maps (validator_address, slot) -> first vote (with full signature).
+    seen_votes: HashMap<(Address, u64), RecordedVote>,
     /// Pending slash proofs awaiting enforcement.
     pending_slashes: Vec<SlashProof>,
 }
@@ -238,24 +246,25 @@ impl SlashingDetector {
         let key = (validator, slot);
         match self.seen_votes.entry(key) {
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(block_hash);
+                e.insert(RecordedVote {
+                    block_hash,
+                    validator_pubkey,
+                    signature,
+                });
                 None
             }
             std::collections::hash_map::Entry::Occupied(e) => {
-                let first_hash = *e.get();
-                if first_hash == block_hash {
+                let first = e.get();
+                if first.block_hash == block_hash {
                     return None; // Duplicate vote, not a double-sign
                 }
-                // Double-sign detected!
+                // Double-sign detected — both votes carry real signatures
                 let vote1 = Vote {
                     slot,
-                    block_hash: first_hash,
+                    block_hash: first.block_hash,
                     validator,
-                    validator_pubkey: validator_pubkey.clone(),
-                    // We don't have the original signature for vote1, so we can't
-                    // create a fully-verifiable proof here. In production, we'd store
-                    // the full vote. For now, use a placeholder.
-                    signature: aether_types::Signature::from_bytes(vec![]),
+                    validator_pubkey: first.validator_pubkey.clone(),
+                    signature: first.signature.clone(),
                 };
                 let vote2 = Vote {
                     slot,
@@ -579,6 +588,48 @@ mod tests {
         assert!(detector
             .record_vote(addr, pubkey.clone(), 5, hash_b, sig.clone())
             .is_none());
+    }
+
+    #[test]
+    fn test_slashing_detector_produces_verifiable_proofs() {
+        // The detector must store full vote signatures so that the proofs
+        // it produces pass verify_slash_proof (BLS signature check).
+        let mut detector = SlashingDetector::new();
+        let kp = BlsKeypair::generate();
+        let pubkey = PublicKey::from_bytes(kp.public_key());
+        let addr = pubkey.to_address();
+
+        let hash_a = H256::from_slice(&[1u8; 32]).unwrap();
+        let hash_b = H256::from_slice(&[2u8; 32]).unwrap();
+
+        // Sign both votes properly with BLS
+        let msg_a = {
+            let mut m = Vec::new();
+            m.extend_from_slice(hash_a.as_bytes());
+            m.extend_from_slice(&10u64.to_le_bytes());
+            m
+        };
+        let msg_b = {
+            let mut m = Vec::new();
+            m.extend_from_slice(hash_b.as_bytes());
+            m.extend_from_slice(&10u64.to_le_bytes());
+            m
+        };
+        let sig_a = Signature::from_bytes(kp.sign(&msg_a));
+        let sig_b = Signature::from_bytes(kp.sign(&msg_b));
+
+        // First vote
+        assert!(detector
+            .record_vote(addr, pubkey.clone(), 10, hash_a, sig_a)
+            .is_none());
+
+        // Double-sign — should produce a verifiable proof
+        let proof = detector
+            .record_vote(addr, pubkey.clone(), 10, hash_b, sig_b)
+            .expect("should detect double-sign");
+
+        // The proof must pass full cryptographic verification
+        verify_slash_proof(&proof).expect("detector-produced proof must be verifiable");
     }
 
     #[test]
