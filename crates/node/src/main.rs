@@ -97,7 +97,7 @@ impl RpcBackend for NodeRpcBackend {
 
 async fn run_slot_loop(
     node: Arc<RwLock<Node>>,
-    mut net_rx: mpsc::UnboundedReceiver<aether_p2p::network::NetworkEvent>,
+    mut net_rx: mpsc::Receiver<aether_p2p::network::NetworkEvent>,
     slot_ms: u64,
 ) -> Result<()> {
     loop {
@@ -123,14 +123,16 @@ async fn run_slot_loop(
 async fn run_p2p_outbound(
     mut p2p: P2PNetwork,
     mut outbound_rx: mpsc::Receiver<OutboundMessage>,
-    net_tx: mpsc::UnboundedSender<aether_p2p::network::NetworkEvent>,
+    net_tx: mpsc::Sender<aether_p2p::network::NetworkEvent>,
 ) -> Result<()> {
     loop {
         tokio::select! {
             // Poll for inbound P2P events
             event = p2p.poll() => {
                 if let Some(event) = event {
-                    let _ = net_tx.send(event);
+                    if net_tx.try_send(event).is_err() {
+                        tracing::warn!("Inbound P2P channel full, dropping network event");
+                    }
                 }
             }
             // Handle outbound messages from the node
@@ -301,8 +303,10 @@ async fn main() -> Result<()> {
     let (outbound_tx, outbound_rx) = mpsc::channel(P2P_OUTBOUND_CAPACITY);
     node.set_broadcast_tx(outbound_tx);
 
-    // Set up P2P inbound channel
-    let (net_tx, net_rx) = mpsc::unbounded_channel();
+    // Set up P2P inbound channel with bounded capacity to prevent OOM from
+    // peer message floods. Events are dropped (not blocked) when full.
+    const P2P_INBOUND_CAPACITY: usize = 4096;
+    let (net_tx, net_rx) = mpsc::channel(P2P_INBOUND_CAPACITY);
 
     let shared_node = Arc::new(RwLock::new(node));
 
