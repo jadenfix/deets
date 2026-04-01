@@ -2,6 +2,9 @@
 name = "aether-ledger"
 version.workspace = true
 edition.workspace = true
+description = "eUTxO++ state machine and transaction processing for the Aether ledger"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "ledger", "utxo", "state"]
 
 [dependencies]
 anyhow.workspace = true

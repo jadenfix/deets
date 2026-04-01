@@ -2,6 +2,9 @@
 name = "aether-codecs"
 version.workspace = true
 edition.workspace = true
+description = "Borsh and bincode serialization codecs for Aether wire and state encoding"
+categories = ["encoding"]
+keywords = ["aether", "borsh", "bincode", "serialization"]
 
 [dependencies]
 bincode.workspace = true

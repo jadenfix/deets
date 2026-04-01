@@ -2,6 +2,9 @@
 name = "aether-loadgen"
 version.workspace = true
 edition.workspace = true
+description = "Load generator for Aether devnet stress testing and performance benchmarking"
+categories = ["development-tools::testing"]
+keywords = ["aether", "loadgen", "benchmarks", "testing"]
 
 [dependencies]
 tokio.workspace = true

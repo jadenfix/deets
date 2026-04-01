@@ -2,6 +2,9 @@
 name = "aether-state-storage"
 version.workspace = true
 edition.workspace = true
+description = "RocksDB-backed persistent storage layer for Aether blockchain state"
+categories = ["database-implementations"]
+keywords = ["aether", "storage", "rocksdb", "state"]
 
 [dependencies]
 rocksdb.workspace = true

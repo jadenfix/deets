@@ -2,6 +2,9 @@
 name = "aether-faucet"
 version.workspace = true
 edition.workspace = true
+description = "Devnet faucet server dispensing test SWR and AIC tokens on the Aether devnet"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "faucet", "devnet", "tokens"]
 
 [dependencies]
 tokio.workspace = true

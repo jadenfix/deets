@@ -2,6 +2,9 @@
 name = "aether-rollup"
 version.workspace = true
 edition.workspace = true
+description = "L2 rollup and app-chain support infrastructure for Aether"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "rollup", "l2", "scaling"]
 
 [dependencies]
 anyhow.workspace = true

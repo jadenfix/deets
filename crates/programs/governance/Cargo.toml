@@ -2,6 +2,9 @@
 name = "aether-program-governance"
 version.workspace = true
 edition.workspace = true
+description = "On-chain governance program: proposals, voting, and treasury management for Aether"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "governance", "proposals", "voting"]
 
 [dependencies]
 aether-types = { path = "../../types" }

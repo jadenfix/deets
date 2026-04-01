@@ -2,6 +2,9 @@
 name = "aether-node"
 version.workspace = true
 edition.workspace = true
+description = "Aether validator node binary: block production, sync, consensus coordination"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "node", "validator", "blockchain"]
 
 [[bin]]
 name = "aether-node"

@@ -2,6 +2,9 @@
 name = "aether-consensus"
 version.workspace = true
 edition.workspace = true
+description = "VRF-PoS + HotStuff BFT consensus engine for Aether blockchain"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "consensus", "hotstuff", "bls"]
 
 [dependencies]
 tokio.workspace = true

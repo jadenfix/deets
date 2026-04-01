@@ -2,6 +2,9 @@
 name = "aether-verifiers-kzg"
 version.workspace = true
 edition.workspace = true
+description = "On-chain KZG proof verifier for Aether AI computation commitments"
+categories = ["cryptography"]
+keywords = ["aether", "kzg", "verifier", "proofs"]
 
 [dependencies]
 anyhow.workspace = true

@@ -2,6 +2,9 @@
 name = "aether-light-client"
 version.workspace = true
 edition.workspace = true
+description = "SPV light-client verification and Merkle proof validation for Aether"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "light-client", "spv", "proofs"]
 
 [dependencies]
 anyhow.workspace = true

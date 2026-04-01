@@ -2,6 +2,9 @@
 name = "aether-da-erasure"
 version.workspace = true
 edition.workspace = true
+description = "Reed-Solomon erasure coding for Aether data availability shred reconstruction"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "erasure-coding", "reed-solomon", "da"]
 
 [dependencies]
 anyhow.workspace = true

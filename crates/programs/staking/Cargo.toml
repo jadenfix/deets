@@ -2,6 +2,9 @@
 name = "aether-program-staking"
 version.workspace = true
 edition.workspace = true
+description = "SWR staking program: validator registration, delegation, slashing, and rewards"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "staking", "validators", "swr"]
 
 [dependencies]
 aether-types = { path = "../../types" }

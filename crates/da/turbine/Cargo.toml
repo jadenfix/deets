@@ -2,6 +2,9 @@
 name = "aether-da-turbine"
 version.workspace = true
 edition.workspace = true
+description = "Turbine block propagation protocol with erasure-coded shred distribution for Aether"
+categories = ["network-programming", "cryptography::cryptocurrencies"]
+keywords = ["aether", "turbine", "da", "propagation"]
 
 [dependencies]
 tokio.workspace = true

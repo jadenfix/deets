@@ -2,6 +2,9 @@
 name = "aether-gossipsub"
 version.workspace = true
 edition.workspace = true
+description = "Gossipsub topic-based message dissemination for Aether transaction and block propagation"
+categories = ["network-programming"]
+keywords = ["aether", "gossipsub", "networking", "pubsub"]
 
 [dependencies]
 libp2p.workspace = true

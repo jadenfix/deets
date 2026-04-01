@@ -2,6 +2,9 @@
 name = "aether-quic-transport"
 version.workspace = true
 edition.workspace = true
+description = "QUIC-based low-latency transport layer for Aether inter-validator communication"
+categories = ["network-programming"]
+keywords = ["aether", "quic", "transport", "networking"]
 
 [dependencies]
 quinn.workspace = true

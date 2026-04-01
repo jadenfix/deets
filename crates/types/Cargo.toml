@@ -2,6 +2,9 @@
 name = "aether-types"
 version.workspace = true
 edition.workspace = true
+description = "Shared primitive types for the Aether blockchain (Block, Transaction, Address, etc.)"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "blockchain", "types"]
 
 [dependencies]
 serde.workspace = true

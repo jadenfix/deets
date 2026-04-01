@@ -2,6 +2,9 @@
 name = "aether-program-job-escrow"
 version.workspace = true
 edition.workspace = true
+description = "AI job escrow program: AIC bonding, VCR verification, and settlement for Aether AI mesh"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "escrow", "ai", "aic"]
 
 [dependencies]
 aether-types = { path = "../../types" }

@@ -2,6 +2,9 @@
 name = "aether-crypto-vrf"
 version.workspace = true
 edition.workspace = true
+description = "Verifiable Random Function (VRF) for Aether leader election and slot randomness"
+categories = ["cryptography"]
+keywords = ["aether", "vrf", "randomness", "blockchain"]
 
 [dependencies]
 anyhow.workspace = true

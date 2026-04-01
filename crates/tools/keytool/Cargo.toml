@@ -2,6 +2,9 @@
 name = "aether-keytool"
 version.workspace = true
 edition.workspace = true
+description = "Key generation, management, and inspection tool for Aether validator and user keys"
+categories = ["command-line-utilities", "cryptography"]
+keywords = ["aether", "keytool", "keys", "validator"]
 
 [dependencies]
 anyhow.workspace = true

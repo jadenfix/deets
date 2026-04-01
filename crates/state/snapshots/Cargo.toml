@@ -2,6 +2,9 @@
 name = "aether-state-snapshots"
 version.workspace = true
 edition.workspace = true
+description = "State snapshot generation and fast-sync import/export for Aether nodes"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "snapshots", "sync", "state"]
 
 [dependencies]
 anyhow.workspace = true

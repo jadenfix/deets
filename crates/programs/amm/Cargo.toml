@@ -2,6 +2,9 @@
 name = "aether-program-amm"
 version.workspace = true
 edition.workspace = true
+description = "Automated market maker (AMM) program with constant-product pools for Aether DeFi"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "amm", "defi", "swap"]
 
 [dependencies]
 aether-types = { path = "../../types" }

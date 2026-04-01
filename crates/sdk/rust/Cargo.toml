@@ -2,6 +2,9 @@
 name = "aether-sdk"
 version.workspace = true
 edition.workspace = true
+description = "Ergonomic Rust client SDK for building applications on the Aether blockchain"
+categories = ["api-bindings", "cryptography::cryptocurrencies"]
+keywords = ["aether", "sdk", "client", "blockchain"]
 
 [dependencies]
 tokio.workspace = true

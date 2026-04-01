@@ -2,6 +2,9 @@
 name = "aether-program-reputation"
 version.workspace = true
 edition.workspace = true
+description = "Provider reputation tracking and scoring for the Aether AI mesh network"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["aether", "reputation", "ai-mesh", "scoring"]
 
 [dependencies]
 serde.workspace = true
