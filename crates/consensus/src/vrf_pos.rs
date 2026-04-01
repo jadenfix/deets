@@ -48,7 +48,7 @@ pub struct VrfPosConsensus {
 
 impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
-        let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))

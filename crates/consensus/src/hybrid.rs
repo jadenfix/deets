@@ -98,7 +98,7 @@ impl HybridConsensus {
         my_bls_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
-        let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))
@@ -409,7 +409,7 @@ impl HybridConsensus {
         votes_map.insert(voter_addr, vote.clone());
 
         // Check for quorum (2/3+ stake)
-        let voted_stake: u128 = votes_map.values().map(|v| v.stake).sum();
+        let voted_stake: u128 = votes_map.values().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let has_quorum = crate::has_quorum(voted_stake, self.total_stake);
 
         if has_quorum {
@@ -504,7 +504,7 @@ impl HybridConsensus {
         let agg_sig = aggregate_signatures(&signatures)?;
         let agg_pk = aggregate_public_keys(&pubkeys)?;
 
-        let total_stake = votes.iter().map(|v| v.stake).sum();
+        let total_stake = votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let signers: Vec<Address> = votes.iter().map(|v| v.validator.to_address()).collect();
 
         Ok(QuorumCertificate {
@@ -900,7 +900,7 @@ mod tests {
             "Dedup should prevent duplicate accumulation"
         );
 
-        let voted_stake: u128 = votes.values().map(|v| v.stake).sum();
+        let voted_stake: u128 = votes.values().map(|v| v.stake).fold(0u128, u128::saturating_add);
         assert_eq!(
             voted_stake, 1000,
             "Total stake should be 1000, not 1,000,000"

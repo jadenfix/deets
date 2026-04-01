@@ -86,15 +86,15 @@ impl SimpleConsensus {
         };
 
         // Calculate total voting stake
-        let total_stake: u128 = self.validators.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = self.validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let mut voted_stake = 0u128;
 
         for vote in votes {
-            voted_stake += vote.stake;
+            voted_stake = voted_stake.saturating_add(vote.stake);
         }
 
         // Check if ≥2/3 stake voted
-        let quorum_reached = voted_stake * 3 >= total_stake * 2;
+        let quorum_reached = voted_stake.saturating_mul(3) >= total_stake.saturating_mul(2);
 
         if quorum_reached && slot > self.finalized_slot {
             self.finalized_slot = slot;
@@ -109,7 +109,7 @@ impl SimpleConsensus {
     }
 
     pub fn total_stake(&self) -> u128 {
-        self.validators.iter().map(|v| v.stake).sum()
+        self.validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add)
     }
 }
 
