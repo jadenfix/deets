@@ -11,7 +11,7 @@ use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
 use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, H256};
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 struct NodeRpcBackend {
@@ -81,6 +81,23 @@ impl RpcBackend for NodeRpcBackend {
     fn get_latest_block_slot(&self) -> Result<Option<u64>> {
         let node = self.read_node()?;
         Ok(node.latest_block_slot())
+    }
+
+    fn get_peer_count(&self) -> Result<usize> {
+        let node = self.read_node()?;
+        Ok(node.peer_count())
+    }
+
+    fn get_sync_status(&self) -> Result<Value> {
+        let node = self.read_node()?;
+        let syncing = node.is_syncing();
+        let current_slot = node.current_slot();
+        let finalized = node.finalized_slot();
+        Ok(json!({
+            "syncing": syncing,
+            "currentSlot": current_slot,
+            "finalizedSlot": finalized,
+        }))
     }
 
     fn allows_airdrop(&self) -> bool {

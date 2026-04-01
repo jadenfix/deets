@@ -9,6 +9,8 @@ pub enum NodeMessage {
     BlockReceived(Block),
     VoteReceived(Vote),
     TransactionReceived(Transaction),
+    PeerConnected,
+    PeerDisconnected,
 }
 
 /// Outbound messages from the node to the P2P network.
@@ -51,6 +53,8 @@ pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
         NetworkEvent::TransactionReceived(data) if data.len() <= MAX_TX_SIZE => {
             deserialize_bounded(&data, MAX_TX_SIZE).map(NodeMessage::TransactionReceived)
         }
+        NetworkEvent::PeerConnected(_) => Some(NodeMessage::PeerConnected),
+        NetworkEvent::PeerDisconnected(_) => Some(NodeMessage::PeerDisconnected),
         _ => None, // Silently drop oversized or unknown messages
     }
 }

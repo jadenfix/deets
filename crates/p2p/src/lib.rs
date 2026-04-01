@@ -44,4 +44,5 @@ pub mod peer_diversity;
 pub use compact_block::{compress_message, decompress_message, CompactBlock};
 pub use gossip::GossipManager;
 pub use network::{P2PNetwork, PeerInfo};
+pub use libp2p::PeerId;
 pub use peer_diversity::PeerDiversityGuard;

@@ -71,6 +71,8 @@ pub struct Node {
     slashing_detector: SlashingDetector,
     /// Tracks sync state (synced, syncing, stalled).
     sync_manager: SyncManager,
+    /// Number of connected peers (updated externally via `set_peer_count`).
+    peer_count: usize,
     /// Orphan blocks waiting for their parent to arrive, keyed by parent hash.
     orphan_blocks: HashMap<H256, Vec<Block>>,
     /// Total number of orphan blocks buffered (across all parent hashes).
@@ -145,6 +147,7 @@ impl Node {
             consecutive_timeouts: 0,
             slashing_detector: SlashingDetector::new(),
             sync_manager: SyncManager::new(10),
+            peer_count: 0,
             orphan_blocks: HashMap::new(),
             orphan_count: 0,
         })
@@ -1054,6 +1057,16 @@ impl Node {
         self.sync_manager.is_syncing()
     }
 
+    /// Returns the number of connected peers.
+    pub fn peer_count(&self) -> usize {
+        self.peer_count
+    }
+
+    /// Updates the connected peer count (called from the P2P layer).
+    pub fn set_peer_count(&mut self, count: usize) {
+        self.peer_count = count;
+    }
+
     /// Returns the number of buffered orphan blocks.
     pub fn orphan_count(&self) -> usize {
         self.orphan_count
@@ -1113,6 +1126,14 @@ impl Node {
                 if let Err(e) = self.mempool.add_transaction(tx) {
                     tracing::debug!(err = %e, "Tx rejected");
                 }
+            }
+            Some(NodeMessage::PeerConnected) => {
+                self.peer_count = self.peer_count.saturating_add(1);
+                tracing::info!(peer_count = self.peer_count, "Peer connected");
+            }
+            Some(NodeMessage::PeerDisconnected) => {
+                self.peer_count = self.peer_count.saturating_sub(1);
+                tracing::info!(peer_count = self.peer_count, "Peer disconnected");
             }
             None => {}
         }
@@ -1499,6 +1520,47 @@ mod tests {
 
         // Node starts as synced
         assert!(!node.is_syncing());
+    }
+
+    #[test]
+    fn peer_count_tracks_connect_disconnect() {
+        use aether_p2p::PeerId;
+
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        assert_eq!(node.peer_count(), 0);
+
+        // Simulate peer connect events
+        node.handle_network_event(NetworkEvent::PeerConnected(PeerId::random()))
+            .unwrap();
+        assert_eq!(node.peer_count(), 1);
+
+        node.handle_network_event(NetworkEvent::PeerConnected(PeerId::random()))
+            .unwrap();
+        assert_eq!(node.peer_count(), 2);
+
+        // Simulate peer disconnect
+        node.handle_network_event(NetworkEvent::PeerDisconnected(PeerId::random()))
+            .unwrap();
+        assert_eq!(node.peer_count(), 1);
+
+        // Disconnect below zero saturates at 0
+        node.handle_network_event(NetworkEvent::PeerDisconnected(PeerId::random()))
+            .unwrap();
+        node.handle_network_event(NetworkEvent::PeerDisconnected(PeerId::random()))
+            .unwrap();
+        assert_eq!(node.peer_count(), 0);
     }
 
     #[test]
