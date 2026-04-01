@@ -2,7 +2,7 @@
 
 # Deny certain lints
 # These are errors, not warnings
-msrv = "1.75"
+msrv = "1.80"
 
 # Cognitive complexity threshold
 cognitive-complexity-threshold = 30

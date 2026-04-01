@@ -3,6 +3,7 @@ use aether_types::{Block, Transaction, Vote};
 use bincode::Options;
 
 /// Decoded message types from the P2P network.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug)]
 pub enum NodeMessage {
     BlockReceived(Block),
@@ -11,6 +12,7 @@ pub enum NodeMessage {
 }
 
 /// Outbound messages from the node to the P2P network.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
 pub enum OutboundMessage {
     BroadcastBlock(Block),

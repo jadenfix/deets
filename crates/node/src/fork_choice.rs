@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 /// Simple fork choice: for each slot, track all candidate blocks and
 /// select the canonical one based on finality or first-seen ordering.
+#[derive(Default)]
 pub struct ForkChoice {
     /// All known blocks per slot (can have multiple competing blocks).
     candidates: HashMap<Slot, Vec<H256>>,
@@ -14,11 +15,7 @@ pub struct ForkChoice {
 
 impl ForkChoice {
     pub fn new() -> Self {
-        ForkChoice {
-            candidates: HashMap::new(),
-            canonical: HashMap::new(),
-            finalized: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Record a new block candidate for a slot. Returns true if this is a new fork
@@ -67,7 +64,7 @@ impl ForkChoice {
 
     /// Check if a slot has competing blocks (a fork).
     pub fn has_fork(&self, slot: Slot) -> bool {
-        self.candidates.get(&slot).map_or(false, |c| c.len() > 1)
+        self.candidates.get(&slot).is_some_and(|c| c.len() > 1)
     }
 
     /// Get all candidate blocks for a slot.
