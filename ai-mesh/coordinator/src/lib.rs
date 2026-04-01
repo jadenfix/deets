@@ -149,9 +149,49 @@ impl MeshCoordinator {
             assigned_at: current_timestamp(),
         };
 
-        self.assignments.insert(job_id, assignment.clone());
+        // Reject duplicate job assignment
+        if self.assignments.contains_key(&job_id) {
+            bail!("job already assigned");
+        }
 
-        Ok(best_worker.worker_id.clone())
+        let worker_id = best_worker.worker_id.clone();
+        self.assignments.insert(job_id, assignment);
+
+        // Mark worker as occupied so it won't be double-assigned
+        if let Some(w) = self.workers.get_mut(&worker_id) {
+            w.available = false;
+        }
+
+        Ok(worker_id)
+    }
+
+    /// Complete a job — release worker back to available pool
+    pub fn complete_job(&mut self, job_id: &[u8]) -> Result<Vec<u8>> {
+        let assignment = self
+            .assignments
+            .remove(job_id)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+
+        // Mark worker available again
+        if let Some(w) = self.workers.get_mut(&assignment.worker_id) {
+            w.available = true;
+        }
+
+        Ok(assignment.worker_id)
+    }
+
+    /// Cancel a job — release worker without reputation penalty
+    pub fn cancel_job(&mut self, job_id: &[u8]) -> Result<Vec<u8>> {
+        let assignment = self
+            .assignments
+            .remove(job_id)
+            .ok_or_else(|| anyhow::anyhow!("job not found"))?;
+
+        if let Some(w) = self.workers.get_mut(&assignment.worker_id) {
+            w.available = true;
+        }
+
+        Ok(assignment.worker_id)
     }
 
     /// Update worker reputation
@@ -320,6 +360,90 @@ mod tests {
 
         let worker = coordinator.get_worker(&[1]).unwrap();
         assert_eq!(worker.reputation_score, 10);
+    }
+
+    #[test]
+    fn test_assign_job_marks_worker_unavailable() {
+        let mut coordinator = MeshCoordinator::new();
+        coordinator.register_worker(test_worker(1, 100)).unwrap();
+
+        let reqs = JobRequirements {
+            tee_types: vec!["sev-snp".to_string()],
+            capabilities: vec!["onnx".to_string()],
+            min_reputation: 0,
+        };
+
+        coordinator.assign_job(vec![1], &reqs).unwrap();
+
+        // Worker should now be unavailable
+        assert!(!coordinator.get_worker(&[1]).unwrap().available);
+        assert_eq!(coordinator.available_worker_count(), 0);
+
+        // Second job should fail — no available workers
+        let err = coordinator.assign_job(vec![2], &reqs).unwrap_err();
+        assert!(err.to_string().contains("no eligible workers"));
+    }
+
+    #[test]
+    fn test_duplicate_job_assignment_rejected() {
+        let mut coordinator = MeshCoordinator::new();
+        coordinator.register_worker(test_worker(1, 100)).unwrap();
+        coordinator.register_worker(test_worker(2, 50)).unwrap();
+
+        let reqs = JobRequirements {
+            tee_types: vec!["sev-snp".to_string()],
+            capabilities: vec!["onnx".to_string()],
+            min_reputation: 0,
+        };
+
+        coordinator.assign_job(vec![1], &reqs).unwrap();
+        let err = coordinator.assign_job(vec![1], &reqs).unwrap_err();
+        assert!(err.to_string().contains("job already assigned"));
+    }
+
+    #[test]
+    fn test_complete_job_releases_worker() {
+        let mut coordinator = MeshCoordinator::new();
+        coordinator.register_worker(test_worker(1, 100)).unwrap();
+
+        let reqs = JobRequirements {
+            tee_types: vec!["sev-snp".to_string()],
+            capabilities: vec!["onnx".to_string()],
+            min_reputation: 0,
+        };
+
+        coordinator.assign_job(vec![1], &reqs).unwrap();
+        assert_eq!(coordinator.available_worker_count(), 0);
+
+        let worker_id = coordinator.complete_job(&[1]).unwrap();
+        assert_eq!(worker_id, vec![1]);
+        assert_eq!(coordinator.available_worker_count(), 1);
+
+        // Can now assign again
+        coordinator.assign_job(vec![2], &reqs).unwrap();
+    }
+
+    #[test]
+    fn test_cancel_job_releases_worker() {
+        let mut coordinator = MeshCoordinator::new();
+        coordinator.register_worker(test_worker(1, 100)).unwrap();
+
+        let reqs = JobRequirements {
+            tee_types: vec!["sev-snp".to_string()],
+            capabilities: vec!["onnx".to_string()],
+            min_reputation: 0,
+        };
+
+        coordinator.assign_job(vec![1], &reqs).unwrap();
+        coordinator.cancel_job(&[1]).unwrap();
+        assert!(coordinator.get_worker(&[1]).unwrap().available);
+    }
+
+    #[test]
+    fn test_complete_nonexistent_job_fails() {
+        let mut coordinator = MeshCoordinator::new();
+        let err = coordinator.complete_job(&[99]).unwrap_err();
+        assert!(err.to_string().contains("job not found"));
     }
 
     #[test]
