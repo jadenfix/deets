@@ -128,12 +128,37 @@ impl JobEscrowState {
         Ok(())
     }
 
+    /// Minimum provider reputation required to accept a job.
+    ///
+    /// Providers whose reputation score is at or below this threshold have been
+    /// penalised sufficiently that they are barred from taking new work.  The
+    /// coordinator independently bans providers at -100, but the on-chain
+    /// escrow enforces the same floor so a compromised off-chain coordinator
+    /// cannot bypass it.
+    pub const MIN_PROVIDER_REPUTATION: i32 = -50;
+
     /// Provider accepts job
     pub fn accept_job(&mut self, job_id: H256, provider: Address) -> Result<(), String> {
+        // Reject providers whose reputation is too low.
+        let reputation = self.get_provider_reputation(&provider);
+        if reputation <= Self::MIN_PROVIDER_REPUTATION {
+            return Err(format!(
+                "provider reputation {} is too low to accept jobs (minimum {})",
+                reputation,
+                Self::MIN_PROVIDER_REPUTATION
+            ));
+        }
+
         let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
         if job.status != JobStatus::Posted {
             return Err("job not available".to_string());
+        }
+
+        // A requester must not be able to act as provider for their own job —
+        // doing so would let them steal the escrowed payment.
+        if provider == job.requester {
+            return Err("provider cannot be the same address as the job requester".to_string());
         }
 
         job.provider = Some(provider);
@@ -376,6 +401,71 @@ mod tests {
         assert_eq!(state.escrowed_balance_of(&addr(1)), 0);
         assert_eq!(state.claimable_balance_of(&addr(2)), 1000);
         assert_eq!(state.get_provider_reputation(&addr(2)), 1);
+    }
+
+    #[test]
+    fn test_accept_job_requester_cannot_be_provider() {
+        let mut state = JobEscrowState::new();
+        let job_id = H256::zero();
+
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
+
+        // addr(1) is the requester — they must not be allowed to accept their own job.
+        let err = state.accept_job(job_id, addr(1)).unwrap_err();
+        assert!(
+            err.contains("provider cannot be the same address as the job requester"),
+            "unexpected error: {err}"
+        );
+
+        // Job should still be Posted.
+        assert_eq!(state.get_job(&job_id).unwrap().status, JobStatus::Posted);
+    }
+
+    #[test]
+    fn test_accept_job_low_reputation_blocked() {
+        let mut state = JobEscrowState::new();
+        let job_id = H256::zero();
+
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
+
+        // Drive addr(2) reputation to -51 (below threshold).
+        *state.provider_reputation.entry(addr(2)).or_insert(0) = -51;
+
+        let err = state.accept_job(job_id, addr(2)).unwrap_err();
+        assert!(
+            err.contains("reputation") && err.contains("too low"),
+            "unexpected error: {err}"
+        );
+
+        // A provider at exactly MIN_PROVIDER_REPUTATION is also blocked.
+        *state
+            .provider_reputation
+            .entry(addr(2))
+            .or_insert(0) = JobEscrowState::MIN_PROVIDER_REPUTATION;
+        let err2 = state.accept_job(job_id, addr(2)).unwrap_err();
+        assert!(err2.contains("too low"), "unexpected error: {err2}");
+    }
+
+    #[test]
+    fn test_accept_job_good_reputation_allowed() {
+        let mut state = JobEscrowState::new();
+        let job_id = H256::zero();
+
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
+
+        // addr(2) has reputation -49, one above the threshold — should be allowed.
+        *state.provider_reputation.entry(addr(2)).or_insert(0) = -49;
+        state.accept_job(job_id, addr(2)).unwrap();
+        assert_eq!(
+            state.get_job(&job_id).unwrap().status,
+            JobStatus::Accepted
+        );
     }
 
     #[test]
