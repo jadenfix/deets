@@ -1,6 +1,6 @@
 # Aether Operations Runbooks
 
-This document covers the environments that are clearly represented in the repository today: local node execution, the process-based devnet, the Compose-based test network, and the larger Compose development stack under `deploy/docker/`.
+This document covers the environments that are clearly represented in the repository today: local node execution, the process-based devnet, the Compose-based container smoke path, and the larger Compose development stack under `deploy/docker/`.
 
 ## Environment Inventory
 
@@ -21,11 +21,12 @@ This document covers the environments that are clearly represented in the reposi
 
 - Defined in `docker-compose.test.yml`
 - Helper script: `./scripts/docker-test.sh`
+- Starts one containerized node plus a test-runner container
 
 ### Compose Development Stack
 
 - Defined in `deploy/docker/docker-compose.yml`
-- Includes validators, RPC, PostgreSQL, indexer, Prometheus, Grafana, and MinIO services
+- Includes a node, indexer, Prometheus, Grafana, and MinIO services
 
 ## Common Health Checks
 
@@ -101,14 +102,14 @@ Checks:
 
 If the issue persists, confirm that no old `aether-node` processes are still running and that the expected ports are available.
 
-## Scenario 4: Docker Test Network Fails
+## Scenario 4: Docker Smoke Path Fails
 
 Checks:
 
-1. Build and start the network manually:
+1. Build and start the node manually:
    ```bash
    docker compose -f docker-compose.test.yml build
-   docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
+   docker compose -f docker-compose.test.yml up -d node
    ```
 2. Inspect container logs:
    ```bash

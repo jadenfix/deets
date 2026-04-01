@@ -80,6 +80,12 @@ impl Ledger {
         self.merkle_tree.root()
     }
 
+    /// Rebuild the in-memory state root from persisted accounts.
+    /// Used after out-of-band state initialization such as genesis bootstrap.
+    pub fn refresh_state_root(&mut self) -> Result<()> {
+        self.recompute_state_root()
+    }
+
     /// Access the underlying storage (for block/receipt persistence).
     pub fn storage(&self) -> &Storage {
         &self.storage

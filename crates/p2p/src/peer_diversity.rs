@@ -209,8 +209,6 @@ mod tests {
     fn test_disconnect_frees_slot() {
         let mut guard = PeerDiversityGuard::new(125);
 
-        let ip = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1));
-
         // Fill /16 to limit
         for i in 0..10u8 {
             let peer_ip = IpAddr::V4(Ipv4Addr::new(10, 1, 0, i));

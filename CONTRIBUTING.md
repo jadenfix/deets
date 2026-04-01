@@ -6,7 +6,7 @@ This document describes the current contribution expectations for the repository
 
 Core requirements:
 
-- Rust stable toolchain. The workspace minimum supported version is `1.75`.
+- Rust `1.86.0` with `rustfmt` and `clippy`, matching CI.
 - Git.
 - Docker and Docker Compose for Compose-based validation and local network flows.
 

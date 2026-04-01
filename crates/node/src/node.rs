@@ -4,7 +4,9 @@ use aether_crypto_primitives::Keypair;
 use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
-use aether_state_storage::{Storage, CF_BLOCKS, CF_METADATA, CF_RECEIPTS};
+use aether_state_storage::{
+    Storage, StorageBatch, CF_ACCOUNTS, CF_BLOCKS, CF_METADATA, CF_RECEIPTS,
+};
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
     H256,
@@ -19,12 +21,21 @@ use tokio::sync::mpsc;
 use tokio::time;
 
 use crate::fork_choice::ForkChoice;
+use crate::genesis::GenesisConfig;
 use crate::network_handler::{decode_network_event, NodeMessage, OutboundMessage};
 use crate::poh::{PohMetrics, PohRecorder};
 
 const MAX_OUTBOUND_BUFFER: usize = 10_000;
 const MAX_CACHED_BLOCKS: usize = 10_000;
 const MAX_CACHED_RECEIPTS: usize = 50_000;
+const GENESIS_HASH_METADATA_KEY: &[u8] = b"genesis_hash";
+
+type BlockCacheState = (
+    HashMap<Slot, H256>,
+    HashMap<H256, Block>,
+    H256,
+    Option<Slot>,
+);
 
 pub struct Node {
     chain_config: Arc<ChainConfig>,
@@ -88,7 +99,7 @@ impl Node {
 
         let fee_market = FeeMarket::new(
             chain_config.fees.a,
-            chain_config.chain.block_bytes_max as u64,
+            chain_config.chain.block_bytes_max,
             chain_config.fees.min_base_fee,
         );
         let emission_schedule = EmissionSchedule::new(
@@ -122,14 +133,7 @@ impl Node {
     }
 
     /// Load persisted blocks from RocksDB on startup.
-    fn load_blocks_from_storage(
-        storage: &Storage,
-    ) -> Result<(
-        HashMap<Slot, H256>,
-        HashMap<H256, Block>,
-        H256,
-        Option<Slot>,
-    )> {
+    fn load_blocks_from_storage(storage: &Storage) -> Result<BlockCacheState> {
         let mut by_slot = HashMap::new();
         let mut by_hash = HashMap::new();
         let mut latest_hash = H256::zero();
@@ -834,6 +838,51 @@ impl Node {
         self.ledger.seed_account(address, balance)
     }
 
+    /// Initialize genesis accounts exactly once and verify the configured genesis
+    /// stays stable across restarts.
+    pub fn ensure_genesis_state(&mut self, genesis: &GenesisConfig) -> Result<()> {
+        let genesis_hash = genesis.build().genesis_hash;
+        let storage = self.ledger.storage();
+
+        if let Some(stored_hash) = storage.get(CF_METADATA, GENESIS_HASH_METADATA_KEY)? {
+            let stored_hash = H256::from_slice(&stored_hash)
+                .map_err(|err| anyhow::anyhow!("stored genesis hash metadata is invalid: {err}"))?;
+            if stored_hash != genesis_hash {
+                bail!(
+                    "configured genesis hash {} does not match database genesis hash {}",
+                    genesis_hash,
+                    stored_hash
+                );
+            }
+            return Ok(());
+        }
+
+        let has_accounts = storage.iterator(CF_ACCOUNTS)?.next().is_some();
+        if has_accounts || self.latest_block_slot.is_some() {
+            bail!(
+                "refusing to initialize genesis state on a non-empty database without stored genesis metadata"
+            );
+        }
+
+        let mut batch = StorageBatch::new();
+        for account in &genesis.accounts {
+            let seeded = Account::with_balance(account.address, account.balance);
+            batch.put(
+                CF_ACCOUNTS,
+                account.address.as_bytes().to_vec(),
+                bincode::serialize(&seeded)?,
+            );
+        }
+        batch.put(
+            CF_METADATA,
+            GENESIS_HASH_METADATA_KEY.to_vec(),
+            genesis_hash.as_bytes().to_vec(),
+        );
+        storage.write_batch(batch)?;
+        self.ledger.refresh_state_root()?;
+        Ok(())
+    }
+
     pub fn get_block_by_slot(&self, slot: Slot) -> Option<Block> {
         self.blocks_by_slot
             .get(&slot)
@@ -889,11 +938,11 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.status).unwrap_or_default());
-        receipt_hasher.update(&receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.logs).unwrap_or_default());
+        receipt_hasher.update(bincode::serialize(&receipt.status).unwrap_or_default());
+        receipt_hasher.update(receipt.gas_used.to_le_bytes());
+        receipt_hasher.update(bincode::serialize(&receipt.logs).unwrap_or_default());
         receipt_hasher.update(receipt.state_root.as_bytes());
-        hasher.update(&receipt_hasher.finalize());
+        hasher.update(receipt_hasher.finalize());
     }
     H256::from_slice(&hasher.finalize()).unwrap()
 }
@@ -901,6 +950,7 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hybrid_node::ValidatorKeypair;
     use aether_consensus::SimpleConsensus;
     use aether_types::{PublicKey, ValidatorInfo};
     use tempfile::TempDir;
@@ -1030,5 +1080,66 @@ mod tests {
     fn empty_root_is_zero() {
         assert_eq!(compute_transactions_root(&[]), H256::zero());
         assert_eq!(compute_receipts_root(&[]), H256::zero());
+    }
+
+    #[test]
+    fn genesis_state_is_initialized_once_and_verified_on_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let validator = ValidatorKeypair::generate();
+        let genesis = GenesisConfig::from_keypairs(ChainConfig::devnet(), &[validator], 1_000_000);
+        let validators = genesis.build().validator_set;
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            None,
+            None,
+            Arc::new(genesis.chain_config.clone()),
+        )
+        .unwrap();
+
+        let seeded_address = genesis.accounts[0].address;
+        let seeded_balance = genesis.accounts[0].balance;
+        assert!(node.get_account(seeded_address).unwrap().is_none());
+
+        node.ensure_genesis_state(&genesis).unwrap();
+        let account = node.get_account(seeded_address).unwrap().unwrap();
+        assert_eq!(account.balance, seeded_balance);
+
+        node.seed_account(&seeded_address, 42).unwrap();
+        node.ensure_genesis_state(&genesis).unwrap();
+        let account = node.get_account(seeded_address).unwrap().unwrap();
+        assert_eq!(account.balance, 42);
+    }
+
+    #[test]
+    fn genesis_hash_mismatch_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let validator = ValidatorKeypair::generate();
+        let genesis_a =
+            GenesisConfig::from_keypairs(ChainConfig::devnet(), &[validator], 1_000_000);
+        let validators = genesis_a.build().validator_set;
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            None,
+            None,
+            Arc::new(genesis_a.chain_config.clone()),
+        )
+        .unwrap();
+
+        node.ensure_genesis_state(&genesis_a).unwrap();
+
+        let validator = ValidatorKeypair::generate();
+        let mut genesis_b =
+            GenesisConfig::from_keypairs(ChainConfig::devnet(), &[validator], 1_000_000);
+        genesis_b.timestamp += 1;
+
+        let err = node.ensure_genesis_state(&genesis_b).unwrap_err();
+        assert!(
+            err.to_string().contains("configured genesis hash"),
+            "unexpected error: {err}"
+        );
     }
 }

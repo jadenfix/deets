@@ -4,6 +4,7 @@ use bincode::Options;
 
 /// Decoded message types from the P2P network.
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum NodeMessage {
     BlockReceived(Block),
     VoteReceived(Vote),
@@ -12,6 +13,7 @@ pub enum NodeMessage {
 
 /// Outbound messages from the node to the P2P network.
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum OutboundMessage {
     BroadcastBlock(Block),
     BroadcastVote(Vote),

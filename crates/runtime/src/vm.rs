@@ -9,7 +9,6 @@ use wasmtime::*;
 /// Uses Wasmtime with fuel-based gas metering, deterministic configuration
 /// (no SIMD, no threads, no floating point), and host function bindings
 /// for blockchain state interaction.
-
 pub struct WasmVm {
     engine: Engine,
     gas_limit: u64,
@@ -527,7 +526,7 @@ mod tests {
         let result = vm.execute(&wasm, &context, b"").unwrap();
         assert!(result.success);
         assert_eq!(
-            result.storage_changes.get(&b"key".to_vec()),
+            result.storage_changes.get(b"key".as_slice()),
             Some(&b"value".to_vec()),
             "storage should contain the written key-value pair"
         );

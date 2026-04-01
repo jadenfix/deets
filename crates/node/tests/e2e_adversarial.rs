@@ -24,7 +24,7 @@ use tempfile::TempDir;
 
 struct TestNetwork {
     nodes: Vec<Node>,
-    keypairs_cache: Vec<Address>,
+    _keypairs_cache: Vec<Address>,
     _temp_dirs: Vec<TempDir>,
     pending_blocks: Vec<Block>,
     pending_votes: Vec<Vote>,
@@ -96,7 +96,7 @@ impl TestNetwork {
 
         TestNetwork {
             nodes,
-            keypairs_cache: validator_addrs,
+            _keypairs_cache: validator_addrs,
             _temp_dirs: temp_dirs,
             pending_blocks: Vec::new(),
             pending_votes: Vec::new(),
@@ -269,7 +269,6 @@ fn test_finality_advances() {
     // With 4 validators and tau=0.8, this can take many slots.
     network.run_slots(100);
 
-    let finalized = network.nodes[0].finalized_slot();
     // Finality may or may not have advanced depending on VRF lottery.
     // Just verify it doesn't regress and nodes agree.
     let finalized_slots: Vec<Slot> = network.nodes.iter().map(|n| n.finalized_slot()).collect();
@@ -338,7 +337,7 @@ fn test_vote_from_unknown_validator_rejected() {
     };
 
     // Should be rejected (unknown validator)
-    let result = network.nodes[0].on_vote_received(fake_vote);
+    let _result = network.nodes[0].on_vote_received(fake_vote);
     // Either returns error or silently ignores — it should NOT affect finality
     let finalized_before = network.nodes[0].finalized_slot();
     network.run_slots(1);
@@ -513,7 +512,7 @@ fn test_block_headers_have_valid_roots() {
 
 #[test]
 fn test_mempool_bounded() {
-    let mut network = TestNetwork::new(4);
+    let network = TestNetwork::new(4);
 
     // Mempool should start empty or small
     let initial_size = network.nodes[0].mempool_size();

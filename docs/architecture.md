@@ -113,12 +113,12 @@ The repository currently includes several environment shapes:
 ### Compose-Based Test Network
 
 - `docker-compose.test.yml`
-- used by CI to stand up a four-node test environment and run workspace tests
+- used by CI to stand up a single containerized node, perform RPC smoke checks, and run workspace tests from a test-runner container
 
 ### Compose-Based Development Stack
 
 - `deploy/docker/docker-compose.yml`
-- includes validators, RPC, indexer, PostgreSQL, Prometheus, Grafana, and MinIO assets
+- includes a node, indexer, Prometheus, Grafana, and MinIO assets
 
 ### Infrastructure Scaffolding
 
@@ -138,7 +138,7 @@ Today that workflow validates:
 - workspace tests and doc tests;
 - multi-architecture Linux release builds;
 - Docker buildability;
-- a Compose-based integration flow; and
+- a Compose-based container smoke flow; and
 - phase acceptance scripts.
 
 It does not currently perform artifact publication or automated deployment.

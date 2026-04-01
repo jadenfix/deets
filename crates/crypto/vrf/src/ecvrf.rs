@@ -13,7 +13,6 @@ use sha2::{Digest, Sha512};
 ///
 /// Proof structure: Gamma (32 bytes) || c (16 bytes) || s (32 bytes) = 80 bytes
 /// Output: SHA-512(suite_string || 0x03 || Gamma_cofactor) truncated to 32 bytes
-
 const SUITE_STRING: u8 = 0x04; // ECVRF-EDWARDS25519-SHA512-ELL2
 
 #[derive(Clone, Debug)]
@@ -428,6 +427,7 @@ pub fn check_leader_eligibility_integer(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -715,6 +715,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod proptests {
     use super::*;
     use proptest::prelude::*;
@@ -753,7 +754,11 @@ mod proptests {
         #[test]
         fn output_in_range(output in prop::array::uniform32(any::<u8>())) {
             let val = output_to_value(&output);
-            prop_assert!(val >= 0.0 && val < 1.0, "output_to_value {} not in [0,1)", val);
+            prop_assert!(
+                (0.0..1.0).contains(&val),
+                "output_to_value {} not in [0,1)",
+                val
+            );
         }
     }
 }

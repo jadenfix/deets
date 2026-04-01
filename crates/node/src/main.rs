@@ -240,16 +240,21 @@ async fn main() -> Result<()> {
     };
     let validator_address = validator_keypair.address();
 
+    let genesis = if let Some(genesis_path) = env_first(&["AETHER_GENESIS_PATH", "GENESIS_FILE"]) {
+        println!("Loading genesis from: {genesis_path}");
+        let genesis_bytes = std::fs::read(&genesis_path)
+            .with_context(|| format!("failed to read genesis file: {genesis_path}"))?;
+        let genesis: GenesisConfig = serde_json::from_slice(&genesis_bytes)
+            .with_context(|| "failed to parse genesis JSON")?;
+        genesis.validate()?;
+        Some(genesis)
+    } else {
+        None
+    };
+
     // Build consensus from genesis file (multi-validator) or single-validator mode
     let consensus: Box<dyn aether_consensus::ConsensusEngine> =
-        if let Some(genesis_path) = env_first(&["AETHER_GENESIS_PATH", "GENESIS_FILE"]) {
-            println!("Loading genesis from: {genesis_path}");
-            let genesis_bytes = std::fs::read(&genesis_path)
-                .with_context(|| format!("failed to read genesis file: {genesis_path}"))?;
-            let genesis: GenesisConfig = serde_json::from_slice(&genesis_bytes)
-                .with_context(|| "failed to parse genesis JSON")?;
-            genesis.validate()?;
-
+        if let Some(genesis) = genesis.as_ref() {
             let result = genesis.build();
             let vrf_pubkeys = genesis.vrf_pubkeys();
             let bls_pubkeys = genesis.bls_pubkeys();
@@ -298,13 +303,18 @@ async fn main() -> Result<()> {
         chain_config.clone(),
     )?;
 
-    // Seed validator with genesis balance (only on first run)
-    let genesis_balance = chain_config.tokens.swr_initial_supply;
-    if node.get_account(validator_address)?.is_none() {
-        node.seed_account(&validator_address, genesis_balance)?;
-        println!("Genesis: funded validator with {genesis_balance}");
+    if let Some(genesis) = genesis.as_ref() {
+        node.ensure_genesis_state(genesis)?;
+        println!("Genesis state loaded and verified");
     } else {
-        println!("Node already initialized, skipping genesis funding");
+        // Single-validator quick-start mode funds the local validator on first run.
+        let genesis_balance = chain_config.tokens.swr_initial_supply;
+        if node.get_account(validator_address)?.is_none() {
+            node.seed_account(&validator_address, genesis_balance)?;
+            println!("Genesis: funded validator with {genesis_balance}");
+        } else {
+            println!("Node already initialized, skipping genesis funding");
+        }
     }
 
     // Set up P2P outbound channel

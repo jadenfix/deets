@@ -9,7 +9,6 @@
 /// - Priority fee (tip) goes to the block proposer
 ///
 /// This creates deflationary pressure proportional to network usage.
-
 /// Fee market state tracked per-block.
 #[derive(Debug, Clone)]
 pub struct FeeMarket {

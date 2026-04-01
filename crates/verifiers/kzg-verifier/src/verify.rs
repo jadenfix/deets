@@ -87,7 +87,6 @@ fn validate_opening(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aether_crypto_kzg::{KzgCommitment, KzgProof, ScalarBytes};
     use aether_types::H256;
 
     fn sample_challenge() -> KzgChallenge {

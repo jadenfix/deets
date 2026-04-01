@@ -6,7 +6,7 @@ This guide takes a contributor from clone to a running node, a local multi-node 
 
 Required:
 
-- Rust stable toolchain
+- Rust `1.86.0` with `rustfmt` and `clippy`
 - Git
 
 Recommended:
@@ -94,7 +94,7 @@ Useful commands:
 
 Inspect logs in `./data/devnet/node*.log`.
 
-## 5. Run the Docker-Based Test Network
+## 5. Run the Docker-Based Container Smoke
 
 The integration environment used by CI is described in `docker-compose.test.yml`.
 
@@ -108,7 +108,7 @@ Manual path:
 
 ```bash
 docker compose -f docker-compose.test.yml build
-docker compose -f docker-compose.test.yml up -d validator-1 validator-2 validator-3 validator-4
+docker compose -f docker-compose.test.yml up -d node
 docker compose -f docker-compose.test.yml run test-runner
 docker compose -f docker-compose.test.yml down
 ```

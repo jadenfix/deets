@@ -33,7 +33,7 @@ Current CI jobs:
 - `test`: workspace unit tests and doc tests.
 - `build`: release builds for `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu`.
 - `docker`: container build validation.
-- `integration`: `docker-compose.test.yml` network startup plus workspace tests.
+- `integration`: single-node container smoke via `docker-compose.test.yml`, including RPC health checks and a workspace test run from the test-runner container.
 - `phase-acceptance`: `scripts/run_phase{1..7}_acceptance.sh` when those scripts are present.
 
 Deployment assets exist under `deploy/`, but GitHub Actions does not currently publish releases or perform automated environment rollouts. Operational deployment remains operator-driven.
@@ -42,7 +42,7 @@ Deployment assets exist under `deploy/`, but GitHub Actions does not currently p
 
 ### Prerequisites
 
-- Rust stable toolchain. The workspace declares Rust `1.75` as the minimum supported version.
+- Rust `1.86.0` with `rustfmt` and `clippy`, matching the pinned CI toolchain.
 - Docker and Docker Compose if you want to use the Compose-based dev/test environments.
 - Node.js 20+ and `npm` only if you plan to work on the TypeScript SDK or web applications.
 
@@ -78,7 +78,7 @@ curl -s http://127.0.0.1:8545 \
 # Local multi-process devnet
 ./scripts/devnet.sh
 
-# Docker-based integration network
+# Docker-based container smoke
 ./scripts/docker-test.sh
 
 # Optional TypeScript/web test lane
