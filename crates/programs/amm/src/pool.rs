@@ -33,8 +33,11 @@ pub struct LiquidityPool {
 }
 
 impl LiquidityPool {
-    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Self {
-        LiquidityPool {
+    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Result<Self, String> {
+        if fee_bps > 10000 {
+            return Err("fee_bps must be <= 10000".to_string());
+        }
+        Ok(LiquidityPool {
             pool_id,
             token_a,
             token_b,
@@ -42,7 +45,7 @@ impl LiquidityPool {
             reserve_b: 0,
             lp_token_supply: 0,
             fee_bps,
-        }
+        })
     }
 
     /// Add liquidity to the pool
@@ -337,6 +340,7 @@ mod tests {
             Address::from_slice(&[2u8; 20]).unwrap(),
             30, // 0.3% fee
         )
+        .unwrap()
     }
 
     #[test]
@@ -565,5 +569,27 @@ mod tests {
 
         let price = pool.get_price().unwrap();
         assert!(price > 0);
+    }
+
+    #[test]
+    fn test_fee_bps_above_10000_rejected() {
+        let result = LiquidityPool::new(
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            Address::from_slice(&[2u8; 20]).unwrap(),
+            10001,
+        );
+        assert!(result.is_err(), "fee_bps > 10000 must be rejected");
+    }
+
+    #[test]
+    fn test_fee_bps_at_boundary_accepted() {
+        let pool = LiquidityPool::new(
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            Address::from_slice(&[2u8; 20]).unwrap(),
+            10000, // 100% fee — extreme but valid
+        );
+        assert!(pool.is_ok());
     }
 }

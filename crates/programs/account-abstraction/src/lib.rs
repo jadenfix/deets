@@ -50,7 +50,9 @@ impl UserOperation {
 
     /// Total gas this operation requires.
     pub fn total_gas(&self) -> u64 {
-        self.call_gas_limit + self.verification_gas_limit + self.pre_verification_gas
+        self.call_gas_limit
+            .saturating_add(self.verification_gas_limit)
+            .saturating_add(self.pre_verification_gas)
     }
 
     /// Validate basic structural constraints.

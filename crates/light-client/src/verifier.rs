@@ -126,7 +126,13 @@ impl LightClientVerifier {
         let header_msg = hasher.finalize().to_vec();
 
         // Aggregate public keys and verify
-        if !finalized.aggregate_signature.is_empty() && !signer_pk_bytes.is_empty() {
+        if signer_pk_bytes.is_empty() {
+            bail!(
+                "finalized header at slot {} has no signers",
+                header.slot
+            );
+        }
+        if !finalized.aggregate_signature.is_empty() {
             let agg_pk = aether_crypto_bls::aggregate_public_keys(&signer_pk_bytes)
                 .map_err(|e| anyhow::anyhow!("failed to aggregate signer public keys: {e}"))?;
 
