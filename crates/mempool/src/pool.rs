@@ -140,10 +140,17 @@ impl Mempool {
                         old_fee
                     );
                 }
+                let old_nonce = self.by_hash[&old_hash].nonce;
                 // Remove the old transaction being replaced
                 self.by_hash.remove(&old_hash);
                 if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
                     sender_txs.remove(&old_hash);
+                }
+                // If the replaced tx was already pending (nonce < next_nonce),
+                // roll back next_nonce so the replacement can enter pending.
+                let expected = self.next_nonce.get(&tx.sender).copied().unwrap_or(0);
+                if old_nonce < expected {
+                    self.next_nonce.insert(tx.sender, old_nonce);
                 }
                 // Stale heap entry is harmless — skipped in get_transactions() via by_hash check
             }

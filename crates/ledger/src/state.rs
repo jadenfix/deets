@@ -544,7 +544,45 @@ impl Ledger {
             spec_tree.update(recipient.address, recipient_hash);
         }
 
-        // Handle UTxO deletes/creates in overlay
+        // Validate UTxO inputs: existence, ownership, and accumulate total
+        let mut total_input = 0u128;
+        for input in &tx.inputs {
+            let key = bincode::serialize(input)?;
+            let utxo: Utxo = match overlay.get(CF_UTXOS, &key) {
+                Some(Some(bytes)) => bincode::deserialize(&bytes)?,
+                Some(None) => bail!("UTxO input already spent in this block: {:?}", input),
+                None => {
+                    let stored = self
+                        .get_utxo(input)?
+                        .ok_or_else(|| anyhow!("UTxO input not found: {:?}", input))?;
+                    stored
+                }
+            };
+            if utxo.owner != tx.sender {
+                bail!(
+                    "UTxO input {:?} owned by {:?}, not sender {:?}",
+                    input,
+                    utxo.owner,
+                    tx.sender
+                );
+            }
+            total_input = total_input
+                .checked_add(utxo.amount)
+                .ok_or_else(|| anyhow!("UTxO total input overflow"))?;
+        }
+
+        // Validate UTxO outputs and balance
+        let mut total_output = 0u128;
+        for output in &tx.outputs {
+            total_output = total_output
+                .checked_add(output.amount)
+                .ok_or_else(|| anyhow!("UTxO total output overflow"))?;
+        }
+        if total_input < total_output {
+            bail!("UTxO inputs insufficient for outputs");
+        }
+
+        // Delete consumed UTxOs from overlay
         for input in &tx.inputs {
             let key = bincode::serialize(input)?;
             overlay.delete(CF_UTXOS, key);
