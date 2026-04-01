@@ -4,8 +4,7 @@
 # ============================================================================
 # Usage:
 #   ./run-claude.sh                    # Single agent on TASKS.md
-#   ./run-claude.sh path/to/tasks.md   # Single agent on specific file
-#   AGENTS=3 ./run-claude.sh           # 3 parallel agents on TASKS.md
+#   AGENTS=5 ./run-claude.sh           # 5 parallel agents (each in own worktree)
 #
 # Environment:
 #   MAX_HOURS=10      Max runtime in hours (default 10, ~overnight)
@@ -14,7 +13,7 @@
 #   RATE_WAIT=300     Seconds to wait on rate limit (default 300 = 5 min)
 #
 # Kill switch:
-#   touch /tmp/claude-runner-stop      # Gracefully stops after current cycle
+#   touch /tmp/claude-runner-stop      # Gracefully stops all agents
 # ============================================================================
 
 set -euo pipefail
@@ -27,7 +26,6 @@ MAX_HOURS="${MAX_HOURS:-10}"
 COOLDOWN="${COOLDOWN:-30}"
 AGENTS="${AGENTS:-1}"
 RATE_WAIT="${RATE_WAIT:-300}"
-
 AGENT_ID="${AGENT_ID:-1}"
 LOCK_FILE="/tmp/claude-runner-agent${AGENT_ID}.lock"
 
@@ -41,7 +39,29 @@ if [ -f "$LOCK_FILE" ]; then
     rm -f "$LOCK_FILE"
 fi
 echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
+
+# ── Worktree setup (agents 2+ get their own copy) ──
+WORKTREE_DIR=""
+if [ "$AGENT_ID" -gt 1 ]; then
+    WORKTREE_DIR="/tmp/aether-agent${AGENT_ID}"
+    if [ -d "$WORKTREE_DIR" ]; then
+        git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+    fi
+    git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+    git -C "$REPO_DIR" worktree add "$WORKTREE_DIR" main
+    WORK_DIR="$WORKTREE_DIR"
+else
+    WORK_DIR="$REPO_DIR"
+fi
+
+# ── Cleanup on exit ──
+cleanup() {
+    rm -f "$LOCK_FILE"
+    if [ -n "$WORKTREE_DIR" ] && [ -d "$WORKTREE_DIR" ]; then
+        git -C "$REPO_DIR" worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
 
 # ── Clear any stale stop file ──
 rm -f "$STOP_FILE"
@@ -75,11 +95,9 @@ DEADLINE=$((START_EPOCH + MAX_SECONDS))
 if [ "$AGENTS" -gt 1 ] && [ "$AGENT_ID" -eq 1 ]; then
     echo "=== Launching $AGENTS parallel agents ===" | tee "${LOG_DIR}/runner.log"
     for i in $(seq 2 "$AGENTS"); do
-        echo "Starting agent $i..." | tee -a "${LOG_DIR}/runner.log"
-        AGENT_ID=$i AGENTS=1 "$0" "$TASKS_FILE" &
+        echo "Starting agent $i (worktree: /tmp/aether-agent${i})..." | tee -a "${LOG_DIR}/runner.log"
+        AGENT_ID=$i AGENTS=$AGENTS "$0" "$TASKS_FILE" &
     done
-    # Continue as agent 1
-    AGENTS=1
 fi
 
 CYCLE=0
@@ -87,16 +105,15 @@ RUNNER_LOG="${LOG_DIR}/runner-agent${AGENT_ID}.log"
 
 echo "=== Aether Agent $AGENT_ID ===" | tee "$RUNNER_LOG"
 echo "Start:      $(date -Iseconds)" | tee -a "$RUNNER_LOG"
-echo "Tasks:      $TASKS_FILE" | tee -a "$RUNNER_LOG"
+echo "Work dir:   $WORK_DIR" | tee -a "$RUNNER_LOG"
 echo "Max hours:  $MAX_HOURS" | tee -a "$RUNNER_LOG"
 echo "Cooldown:   ${COOLDOWN}s between cycles" | tee -a "$RUNNER_LOG"
 echo "Stop file:  $STOP_FILE" | tee -a "$RUNNER_LOG"
 echo "==============================" | tee -a "$RUNNER_LOG"
 
-cd "$REPO_DIR"
+cd "$WORK_DIR"
 
 while true; do
-    # ── Check stop conditions ──
     NOW=$(date +%s)
     if [ "$NOW" -ge "$DEADLINE" ]; then
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Time limit ($MAX_HOURS hrs). Stopping." | tee -a "$RUNNER_LOG"
@@ -115,18 +132,19 @@ while true; do
     echo "" | tee -a "$RUNNER_LOG"
     echo "[$(date -Iseconds)] Agent $AGENT_ID: === Cycle $CYCLE ===" | tee -a "$RUNNER_LOG"
 
-    # ── Ensure we're on main with clean state ──
+    # ── Reset to latest main ──
     git checkout main 2>&1 | tee -a "$RUNNER_LOG" || true
-    git pull --ff-only 2>&1 | tee -a "$RUNNER_LOG" || true
+    git pull --ff-only origin main 2>&1 | tee -a "$RUNNER_LOG" || true
 
-    # ── Read task prompt, inject agent ID for coordination ──
+    # ── Build task prompt with agent coordination ──
     TASK_PROMPT="$(cat "$TASKS_FILE")
 
 ---
-You are Agent $AGENT_ID of $AGENTS total agents. To avoid conflicts:
+You are Agent $AGENT_ID of $AGENTS total agents running in parallel. To avoid conflicts:
 - Check PROGRESS.md and \`gh pr list --state all\` before picking a task.
-- Include 'Agent $AGENT_ID' in your branch names: fix/agent${AGENT_ID}-<scope>-<description>
-- If you see another agent already working on a task (open PR), skip it and pick the next one."
+- Use branch names like: fix/agent${AGENT_ID}-<scope>-<description>
+- If you see another agent already working on a task (open PR), skip it and pick the next one.
+- You are working in directory: $WORK_DIR"
 
     echo "[$(date -Iseconds)] Agent $AGENT_ID: Starting claude..." | tee -a "$RUNNER_LOG"
     echo "Log: $LOG_FILE" | tee -a "$RUNNER_LOG"
@@ -165,7 +183,3 @@ echo "" | tee -a "$RUNNER_LOG"
 echo "=== Agent $AGENT_ID Complete ===" | tee -a "$RUNNER_LOG"
 echo "Finished: $(date -Iseconds)" | tee -a "$RUNNER_LOG"
 echo "Cycles:   $CYCLE" | tee -a "$RUNNER_LOG"
-
-if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display notification \"Agent $AGENT_ID done after $CYCLE cycles\" with title \"Aether Runner\"" 2>/dev/null || true
-fi
