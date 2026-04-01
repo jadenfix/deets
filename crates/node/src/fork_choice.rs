@@ -72,7 +72,7 @@ impl ForkChoice {
         let is_known = self
             .candidates
             .get(&slot)
-            .map_or(false, |c| c.contains(&block_hash));
+            .is_some_and(|c| c.contains(&block_hash));
         let is_canonical = self.canonical.get(&slot) == Some(&block_hash);
 
         if !is_known && !is_canonical {
