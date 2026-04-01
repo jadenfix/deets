@@ -145,6 +145,21 @@ agent_prompt() {
 - Ensure the build is reproducible (pinned deps, deterministic features)
 **Style:** You run the full build from scratch. You time it. You make it faster. You make it never break."
             ;;
+        7)
+            ROLE="Junior Engineer (Sonnet)"
+            FOCUS="You handle the straightforward, well-defined tasks that don't require deep architecture knowledge. You're fast and reliable.
+
+**Your expertise:** Clippy fixes, doc comments, code formatting, simple refactors, adding missing derives, fixing compiler warnings, updating dependencies.
+**You own:**
+- Fix any remaining clippy warnings across the workspace
+- Add missing doc comments to public APIs
+- Fix any broken or outdated imports
+- Clean up dead code, unused variables, redundant clones
+- Add missing \`Debug\`, \`Clone\`, \`Serialize\`/\`Deserialize\` derives where needed
+- Update Cargo.toml metadata (descriptions, categories, keywords)
+- Fix any TODO comments that have obvious solutions
+**Style:** You make small, clean PRs. You don't overthink. You ship fast."
+            ;;
         *)
             ROLE="General Engineer"
             FOCUS="Pick the highest-priority uncompleted task from any tier."
@@ -243,11 +258,17 @@ run_agent() {
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Running claude → $LOG_FILE" | tee -a "$RUNNER_LOG"
 
+        # ── Pick model (Agent 7 uses Sonnet, rest use Opus) ──
+        local MODEL="claude-opus-4-6"
+        if [ "$AGENT_ID" -eq 7 ]; then
+            MODEL="claude-sonnet-4-6"
+        fi
+
         # ── Run claude ──
         caffeinate -dims \
             claude \
                 --permission-mode bypassPermissions \
-                --model claude-opus-4-6 \
+                --model "$MODEL" \
                 -p "$TASK_PROMPT" \
             >> "$LOG_FILE" 2>&1
         local EXIT_CODE=$?
