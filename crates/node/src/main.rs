@@ -83,6 +83,12 @@ impl RpcBackend for NodeRpcBackend {
         Ok(node.latest_block_slot())
     }
 
+    fn allows_airdrop(&self) -> bool {
+        self.read_node()
+            .map(|node| node.allows_airdrop())
+            .unwrap_or(false)
+    }
+
     fn request_airdrop(&self, address: Address, amount: u128) -> Result<()> {
         let mut node = self.write_node()?;
         node.seed_account(&address, amount)

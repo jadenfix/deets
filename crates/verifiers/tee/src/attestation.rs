@@ -116,7 +116,7 @@ impl TeeVerifier {
     }
 
     fn verify_signature_chain(&self, report: &AttestationReport) -> Result<()> {
-        let root_cert = self
+        let _root_cert = self
             .root_certs
             .get(&report.tee_type)
             .ok_or_else(|| anyhow::anyhow!("no root cert for TEE type {:?}", report.tee_type))?;
@@ -124,65 +124,13 @@ impl TeeVerifier {
         if report.cert_chain.is_empty() {
             bail!("empty certificate chain");
         }
-
-        let leaf_cert = &report.cert_chain[0];
-
-        // Build the report message: TEE type || measurement || nonce || timestamp
-        let mut report_msg = Vec::new();
-        report_msg.extend_from_slice(format!("{:?}", report.tee_type).as_bytes());
-        report_msg.extend_from_slice(&report.measurement);
-        report_msg.extend_from_slice(&report.nonce);
-        report_msg.extend_from_slice(&report.timestamp.to_le_bytes());
-
-        // Verify chain integrity: each cert[i] must be bound to cert[i+1] via hash,
-        // and the last cert must be bound to the root cert.
-        use sha2::{Digest, Sha256};
-        let mut expected_parent = root_cert.clone();
-        for (i, cert) in report.cert_chain.iter().enumerate().rev() {
-            if cert.is_empty() {
-                bail!("certificate {} in chain is empty", i);
-            }
-            let mut hasher = Sha256::new();
-            hasher.update(&expected_parent);
-            hasher.update(cert);
-            let chain_hash = hasher.finalize();
-
-            // Verify the cert embeds a binding to its parent via hash prefix.
-            // Full x509 signature verification requires an x509 library —
-            // this implements structural + hash-chain validation as a baseline.
-            if cert.len() < 32 {
-                bail!("certificate {} too short for hash binding", i);
-            }
-            if cert[..32] != chain_hash[..32] {
-                bail!("certificate {} does not bind to parent (hash mismatch)", i);
-            }
-            expected_parent = cert.clone();
-        }
-
-        // Verify the report signature binds to the leaf cert and report content
         if report.signature.is_empty() {
             bail!("attestation report has empty signature");
         }
-
-        let mut hasher = Sha256::new();
-        hasher.update(leaf_cert);
-        hasher.update(&report_msg);
-        let expected_binding = hasher.finalize();
-
-        // Verify the signature contains the expected binding
-        // This ensures the signature is cryptographically tied to both the
-        // leaf certificate and the report content
-        if report.signature.len() < 32 {
-            bail!(
-                "signature too short: {} bytes (minimum 32 for binding check)",
-                report.signature.len()
-            );
-        }
-        if report.signature[..32] != expected_binding[..32] {
-            bail!("attestation signature does not bind to leaf cert and report content");
-        }
-
-        Ok(())
+        bail!(
+            "cryptographic certificate verification for {:?} attestations is not implemented; refusing non-simulation report",
+            report.tee_type
+        );
     }
 
     fn verify_sev_snp(&self, report: &AttestationReport) -> Result<()> {
@@ -322,6 +270,24 @@ mod tests {
         assert!(
             msg.contains("empty certificate chain"),
             "expected error about empty certificate chain, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_non_simulation_attestation_fails_closed() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        verifier.set_root_cert(TeeType::SevSnp, vec![0xAA; 64]);
+
+        let mut report = create_test_report();
+        report.tee_type = TeeType::SevSnp;
+        report.measurement = vec![1u8; 48];
+
+        let err = verifier.verify(&report, 1010).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refusing non-simulation report"),
+            "expected fail-closed error, got: {msg}"
         );
     }
 }

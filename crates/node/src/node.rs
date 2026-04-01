@@ -849,6 +849,13 @@ impl Node {
         self.latest_block_slot
     }
 
+    pub fn allows_airdrop(&self) -> bool {
+        matches!(
+            self.chain_config.chain.chain_id.as_str(),
+            "aether-dev-1" | "aether-testnet-1"
+        )
+    }
+
     pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
         self.ledger.seed_account(address, balance)
     }
