@@ -71,12 +71,12 @@ impl PersistentStore {
             .context("missing tx_index CF")?;
         for tx in &block.transactions {
             let tx_hash = tx.hash();
-            batch.put_cf(tx_cf, tx_hash.as_bytes(), &key);
+            batch.put_cf(tx_cf, tx_hash.as_bytes(), key.as_slice());
         }
 
         // Update latest slot
         let meta_cf = self.db.cf_handle(CF_META).context("missing meta CF")?;
-        batch.put_cf(meta_cf, b"latest_slot", &key);
+        batch.put_cf(meta_cf, b"latest_slot", key.as_slice());
 
         // Atomic commit — all-or-nothing
         self.db.write(batch)?;
