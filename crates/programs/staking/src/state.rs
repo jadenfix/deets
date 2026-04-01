@@ -403,10 +403,11 @@ mod tests {
         let mut state = StakingState::new();
 
         let result = state.register_validator(
-            test_address(1),
-            1_000_000_000, // 1000 SWR
-            1000,          // 10% commission
-            test_address(2),
+            test_address(1), // caller
+            test_address(1), // address
+            1_000_000_000,   // 1000 SWR
+            1000,            // 10% commission
+            test_address(2), // reward_address
         );
 
         assert!(result.is_ok());
@@ -419,7 +420,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         let result = state.delegate(
@@ -439,7 +446,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         state
@@ -469,7 +482,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         // Slash 5%
@@ -509,7 +528,13 @@ mod tests {
         let mut state = StakingState::new();
 
         state
-            .register_validator(test_address(1), 1_000_000_000, 1000, test_address(2))
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
             .unwrap();
 
         // Slash at 100% (rate = 10000 bps)
