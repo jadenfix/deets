@@ -84,7 +84,7 @@ impl Node {
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
-        let mempool = Mempool::new(chain_config.fees.clone());
+        let mempool = Mempool::new(chain_config.fees.clone(), chain_config.chain.chain_id_numeric);
 
         // Warn on asymmetric key configuration
         if validator_key.is_some() != bls_key.is_some() {
