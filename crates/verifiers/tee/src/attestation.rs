@@ -148,7 +148,7 @@ impl TeeVerifier {
             let mut hasher = Sha256::new();
             hasher.update(&expected_parent);
             hasher.update(cert);
-            let chain_hash = hasher.finalize();
+            let _chain_hash = hasher.finalize();
 
             // The chain is structurally valid if certs are non-empty and ordered
             if cert.is_empty() {

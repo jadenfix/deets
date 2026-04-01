@@ -51,6 +51,7 @@ pub struct HybridConsensus {
     epoch_length: u64,
 
     // === VRF-PoS Parameters ===
+    #[allow(dead_code)]
     tau: f64, // Leader rate (0 < tau <= 1) — kept for API compatibility
     tau_numerator: u128,   // Integer numerator for deterministic eligibility check
     tau_denominator: u128, // Integer denominator for deterministic eligibility check
@@ -209,7 +210,7 @@ impl HybridConsensus {
     }
 
     /// Create a vote for a block (BLS signature)
-    pub fn create_vote(&self, block_hash: H256, phase: Phase) -> Result<Option<Vote>> {
+    pub fn create_vote(&self, block_hash: H256, _phase: Phase) -> Result<Option<Vote>> {
         let bls_keypair = match &self.my_bls_keypair {
             Some(kp) => kp,
             None => return Ok(None), // Not a validator

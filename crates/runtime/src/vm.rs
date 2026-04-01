@@ -109,7 +109,7 @@ impl WasmVm {
 
         // Write input data to WASM memory if memory exists
         if let Some(mem) = &memory {
-            let input_offset = 0u32;
+            let _input_offset = 0u32;
             if input.len() <= mem.data_size(&store) {
                 mem.data_mut(&mut store)[..input.len()].copy_from_slice(input);
             }

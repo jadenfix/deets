@@ -3,7 +3,6 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::config::ResolvedConfig;
-use crate::io::parse_address;
 use crate::transfers::{perform_transfer, TransferParams};
 
 #[derive(Subcommand, Debug)]

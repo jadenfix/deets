@@ -34,6 +34,7 @@ pub struct VrfPosConsensus {
     total_stake: u128,
 
     /// Leader rate parameter (0 < tau <= 1) — kept for API compatibility
+    #[allow(dead_code)]
     tau: f64,
     tau_numerator: u128,
     tau_denominator: u128,

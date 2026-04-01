@@ -9,7 +9,7 @@ use aether_node::{
 };
 use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
-use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, Vote, H256};
+use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, H256};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::mpsc;

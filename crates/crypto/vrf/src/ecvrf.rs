@@ -324,6 +324,7 @@ pub fn output_to_value(output: &[u8; 32]) -> f64 {
 ///
 /// threshold = tau * stake_i / total_stake
 /// eligible if output_value < threshold
+#[allow(deprecated)]
 pub fn check_leader_eligibility(
     vrf_output: &[u8; 32],
     stake: u128,

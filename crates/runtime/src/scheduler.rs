@@ -2,7 +2,6 @@ use aether_types::Transaction;
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 
 /// Parallel Scheduler for Transaction Execution
 ///
@@ -210,6 +209,7 @@ mod tests {
     use super::*;
     use aether_types::{Address, PublicKey, Signature};
     use std::collections::HashSet;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 

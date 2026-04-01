@@ -4,6 +4,7 @@ use crate::error::ContractResult;
 ///
 /// In WASM: calls `env.emit_log` host function.
 /// In tests: prints to stdout.
+#[allow(unused_variables)]
 pub fn emit_log(data: &[u8]) -> ContractResult<()> {
     #[cfg(test)]
     {

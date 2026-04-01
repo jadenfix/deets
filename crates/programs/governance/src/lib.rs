@@ -403,7 +403,7 @@ impl GovernanceState {
     /// Execute a treasury allocation (after proposal passes).
     pub fn execute_treasury_allocation(
         &mut self,
-        recipient: &Address,
+        _recipient: &Address,
         amount: u128,
     ) -> Result<(), String> {
         if amount > self.treasury_balance {

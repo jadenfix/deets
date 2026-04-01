@@ -175,7 +175,7 @@ pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
 pub fn apply_slash(
     validator_stake: u128,
     proof: &SlashProof,
-    min_stake: u128,
+    _min_stake: u128,
 ) -> SlashEvent {
     let slash_amount = calculate_slash_amount(validator_stake, &proof.proof_type);
     let reporter_reward = slash_amount / 10; // 10% to reporter
