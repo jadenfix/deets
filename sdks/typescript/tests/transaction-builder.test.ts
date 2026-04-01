@@ -50,6 +50,7 @@ test("transfer builder submits over JSON-RPC", async () => {
       response.txHash,
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     );
+    assert.equal(tx.signature, "0x".padEnd(2 + 128, "b"));
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -68,6 +69,26 @@ test("transfer builder validates required fields", () => {
         nonce: 0,
       }),
     /recipient not set/,
+  );
+});
+
+test("transfer builder rejects short signatures", () => {
+  const client = new AetherClient("https://rpc.aether.local");
+
+  assert.throws(
+    () =>
+      client
+        .transfer()
+        .to("0x8b0b54d2248a3a5617b6bd8a2fd4cc8ebc0f2e90")
+        .amount(1_000_000n)
+        .build({
+          sender: "0x1111111111111111111111111111111111111111",
+          senderPublicKey:
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          signature: "0x" + "bb".repeat(32),
+          nonce: 0,
+        }),
+    /signature must be exactly 64 bytes/,
   );
 });
 

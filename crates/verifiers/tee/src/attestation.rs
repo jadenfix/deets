@@ -116,7 +116,7 @@ impl TeeVerifier {
     }
 
     fn verify_signature_chain(&self, report: &AttestationReport) -> Result<()> {
-        let root_cert = self
+        let _root_cert = self
             .root_certs
             .get(&report.tee_type)
             .ok_or_else(|| anyhow::anyhow!("no root cert for TEE type {:?}", report.tee_type))?;
@@ -124,58 +124,13 @@ impl TeeVerifier {
         if report.cert_chain.is_empty() {
             bail!("empty certificate chain");
         }
-
-        // Verify chain integrity: each cert must reference the next.
-        // The leaf cert (first) is signed by intermediate, intermediate by root.
-        // Verify the leaf cert signed the attestation report.
-        let leaf_cert = &report.cert_chain[0];
-
-        // Verify leaf cert signed the report signature
-        // Hash: TEE type || measurement || nonce || timestamp
-        let mut report_msg = Vec::new();
-        report_msg.extend_from_slice(&format!("{:?}", report.tee_type).as_bytes());
-        report_msg.extend_from_slice(&report.measurement);
-        report_msg.extend_from_slice(&report.nonce);
-        report_msg.extend_from_slice(&report.timestamp.to_le_bytes());
-
-        // For chain verification: each cert[i] must be verifiable by cert[i+1],
-        // and the last cert must be verifiable by the root cert.
-        // Use SHA-256 hash-chain as lightweight verification until x509 is integrated.
-        use sha2::{Digest, Sha256};
-        let mut expected_parent = root_cert.clone();
-        for (i, cert) in report.cert_chain.iter().enumerate().rev() {
-            // Verify cert references its parent via hash binding
-            let mut hasher = Sha256::new();
-            hasher.update(&expected_parent);
-            hasher.update(cert);
-            let _chain_hash = hasher.finalize();
-
-            // The chain is structurally valid if certs are non-empty and ordered
-            if cert.is_empty() {
-                bail!("certificate {} in chain is empty", i);
-            }
-            expected_parent = cert.clone();
-        }
-
-        // Verify the report signature binds to the leaf cert
         if report.signature.is_empty() {
             bail!("attestation report has empty signature");
         }
-
-        // Verify signature over report content using leaf cert as public key
-        // NOTE: Full x509 signature verification requires an x509 library.
-        // This implements structural validation; cryptographic verification
-        // should use rcgen/x509-parser in production.
-        let mut hasher = Sha256::new();
-        hasher.update(leaf_cert);
-        hasher.update(&report_msg);
-        let _expected_binding = hasher.finalize();
-
-        // Structural checks pass. Full cryptographic x509 verification
-        // requires integration with a certificate parsing library.
-        // This is significantly more secure than the previous no-op stub.
-
-        Ok(())
+        bail!(
+            "cryptographic certificate verification for {:?} attestations is not implemented; refusing non-simulation report",
+            report.tee_type
+        );
     }
 
     fn verify_sev_snp(&self, report: &AttestationReport) -> Result<()> {
@@ -315,6 +270,24 @@ mod tests {
         assert!(
             msg.contains("empty certificate chain"),
             "expected error about empty certificate chain, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_non_simulation_attestation_fails_closed() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        verifier.set_root_cert(TeeType::SevSnp, vec![0xAA; 64]);
+
+        let mut report = create_test_report();
+        report.tee_type = TeeType::SevSnp;
+        report.measurement = vec![1u8; 48];
+
+        let err = verifier.verify(&report, 1010).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refusing non-simulation report"),
+            "expected fail-closed error, got: {msg}"
         );
     }
 }

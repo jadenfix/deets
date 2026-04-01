@@ -12,13 +12,25 @@ async fn main() -> anyhow::Result<()> {
 
     let mut config = FaucetConfig::default();
     if let Ok(limit) = env::var("AETHER_FAUCET_LIMIT") {
-        if let Ok(parsed) = limit.parse() {
-            config.default_amount_limit = parsed;
+        match limit.parse() {
+            Ok(parsed) => config.default_amount_limit = parsed,
+            Err(e) => tracing::warn!(
+                "ignoring invalid AETHER_FAUCET_LIMIT={:?}: {}; using default {}",
+                limit,
+                e,
+                config.default_amount_limit
+            ),
         }
     }
     if let Ok(cooldown) = env::var("AETHER_FAUCET_COOLDOWN") {
-        if let Ok(parsed) = cooldown.parse::<u64>() {
-            config.cooldown = Duration::from_secs(parsed);
+        match cooldown.parse::<u64>() {
+            Ok(parsed) => config.cooldown = Duration::from_secs(parsed),
+            Err(e) => tracing::warn!(
+                "ignoring invalid AETHER_FAUCET_COOLDOWN={:?}: {}; using default {}s",
+                cooldown,
+                e,
+                config.cooldown.as_secs()
+            ),
         }
     }
 

@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::types::{JobRequest, JobSubmission};
 
+/// Builder for constructing AI job submissions.
 pub struct JobBuilder {
     endpoint: String,
     job_id: Option<String>,
@@ -27,25 +28,29 @@ impl JobBuilder {
         }
     }
 
-    pub fn job_id(mut self, job_id: impl Into<String>) -> Self {
+    /// Set the unique job identifier. Returns an error if the ID is empty.
+    pub fn job_id(mut self, job_id: impl Into<String>) -> Result<Self> {
         let job_id = job_id.into();
         if job_id.trim().is_empty() {
-            return self;
+            return Err(anyhow!("job_id must not be empty"));
         }
         self.job_id = Some(job_id);
-        self
+        Ok(self)
     }
 
+    /// Set the hash of the model to execute.
     pub fn model_hash(mut self, hash: H256) -> Self {
         self.model_hash = Some(hash);
         self
     }
 
+    /// Set the hash of the input data.
     pub fn input_hash(mut self, hash: H256) -> Self {
         self.input_hash = Some(hash);
         self
     }
 
+    /// Set the maximum fee willing to pay for execution.
     pub fn max_fee(mut self, fee: u128) -> Self {
         if fee > 0 {
             self.max_fee = fee;
@@ -53,6 +58,7 @@ impl JobBuilder {
         self
     }
 
+    /// Set the expiration timestamp (unix seconds).
     pub fn expires_at(mut self, ts: u64) -> Self {
         if ts > 0 {
             self.expires_at = Some(ts);
@@ -60,11 +66,13 @@ impl JobBuilder {
         self
     }
 
+    /// Attach arbitrary JSON metadata to the job.
     pub fn metadata(mut self, metadata: Value) -> Self {
         self.metadata = Some(metadata);
         self
     }
 
+    /// Validate and build the job request.
     pub fn build(&self) -> Result<JobRequest> {
         let job_id = self
             .job_id
@@ -90,6 +98,7 @@ impl JobBuilder {
         })
     }
 
+    /// Build the job and wrap it in a ready-to-send submission payload.
     pub fn to_submission(&self) -> Result<JobSubmission> {
         let job = self.build()?;
         Ok(JobSubmission {

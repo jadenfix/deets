@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
@@ -71,27 +71,31 @@ pub struct FaucetResponse {
 enum FaucetError {
     #[error("github handle is required")]
     MissingGithub,
-    #[error("github handle invalid")]
+    #[error("github handle invalid: must start and end with alphanumeric, may contain hyphens, and be 1-39 characters (e.g. 'octocat')")]
     InvalidGithub,
-    #[error("address invalid")]
+    #[error("address invalid: expected a 0x-prefixed 40-character hex address (e.g. 0x1111111111111111111111111111111111111111)")]
     InvalidAddress,
-    #[error("token not allowed")]
-    TokenNotAllowed,
-    #[error("amount exceeds limit ({0})")]
+    #[error("token not allowed: allowed tokens are {0}")]
+    TokenNotAllowed(String),
+    #[error("amount must be between 1 and {0} (the per-request faucet limit)")]
     AmountLimit(u64),
-    #[error("request throttled – retry later")]
-    Throttled,
+    #[error("request throttled: try again in {0} seconds")]
+    Throttled(u64),
 }
 
-static GITHUB_HANDLE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap()
-});
+static GITHUB_HANDLE_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+fn github_handle_re() -> &'static regex::Regex {
+    GITHUB_HANDLE_RE.get_or_init(|| {
+        regex::Regex::new(r"^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,38}[a-zA-Z0-9])?$").unwrap()
+    })
+}
 
 fn validate_github(handle: &str) -> Result<(), FaucetError> {
     if handle.trim().is_empty() {
         return Err(FaucetError::MissingGithub);
     }
-    if GITHUB_HANDLE_RE.is_match(handle) {
+    if github_handle_re().is_match(handle) {
         Ok(())
     } else {
         Err(FaucetError::InvalidGithub)
@@ -119,7 +123,7 @@ fn validate_token(token: &str, allowlist: &[String]) -> Result<(), FaucetError> 
     {
         Ok(())
     } else {
-        Err(FaucetError::TokenNotAllowed)
+        Err(FaucetError::TokenNotAllowed(allowlist.join(", ")))
     }
 }
 
@@ -127,8 +131,10 @@ fn check_rate_limit(state: &AppState, handle: &str) -> Result<(), FaucetError> {
     let mut map = state.last_requests.lock();
     let now = Instant::now();
     if let Some(last) = map.get(handle) {
-        if now.duration_since(*last) < state.config.cooldown {
-            return Err(FaucetError::Throttled);
+        let elapsed = now.duration_since(*last);
+        if elapsed < state.config.cooldown {
+            let remaining = (state.config.cooldown - elapsed).as_secs();
+            return Err(FaucetError::Throttled(remaining));
         }
     }
     map.insert(handle.to_string(), now);
@@ -150,7 +156,7 @@ async fn handle_request(
         ),
         Err(err) => {
             let status = match err {
-                FaucetError::Throttled => StatusCode::TOO_MANY_REQUESTS,
+                FaucetError::Throttled(_) => StatusCode::TOO_MANY_REQUESTS,
                 _ => StatusCode::BAD_REQUEST,
             };
             (

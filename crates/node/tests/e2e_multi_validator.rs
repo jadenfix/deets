@@ -10,7 +10,7 @@ use aether_node::{
     ValidatorKeypair,
 };
 use aether_types::{
-    Address, Block, ChainConfig, PublicKey, Signature, Slot, Transaction, ValidatorInfo, Vote, H256,
+    Address, Block, ChainConfig, PublicKey, Signature, Transaction, ValidatorInfo, Vote, H256,
 };
 use std::collections::HashSet;
 use std::sync::Arc;

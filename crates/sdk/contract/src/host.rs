@@ -24,11 +24,15 @@ pub fn get_block_number() -> u64 {
 }
 
 /// Get the current block timestamp.
+///
+/// Mock implementation for native builds; WASM builds use `env.block_timestamp` host call.
 pub fn get_timestamp() -> u64 {
     1_700_000_000 // Mock timestamp
 }
 
 /// Get the caller's address (20 bytes).
+///
+/// Mock implementation for native builds; WASM builds use `env.get_caller` host call.
 pub fn get_caller() -> [u8; 20] {
     [1u8; 20] // Mock caller
 }

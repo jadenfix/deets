@@ -11,7 +11,7 @@ use aether_types::{
 };
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +25,13 @@ use crate::poh::{PohMetrics, PohRecorder};
 const MAX_OUTBOUND_BUFFER: usize = 10_000;
 const MAX_CACHED_BLOCKS: usize = 10_000;
 const MAX_CACHED_RECEIPTS: usize = 50_000;
+
+type LoadedBlocks = (
+    BTreeMap<Slot, H256>,
+    HashMap<H256, Block>,
+    H256,
+    Option<Slot>,
+);
 
 pub struct Node {
     chain_config: Arc<ChainConfig>,
@@ -42,7 +49,7 @@ pub struct Node {
     fork_choice: ForkChoice,
     latest_block_hash: H256,
     latest_block_slot: Option<Slot>,
-    blocks_by_slot: HashMap<Slot, H256>,
+    blocks_by_slot: BTreeMap<Slot, H256>,
     blocks_by_hash: HashMap<H256, Block>,
     receipts: HashMap<H256, TransactionReceipt>,
     /// Channel to send outbound messages (blocks, votes, txs) to P2P layer.
@@ -88,7 +95,7 @@ impl Node {
 
         let fee_market = FeeMarket::new(
             chain_config.fees.a,
-            chain_config.chain.block_bytes_max as u64,
+            chain_config.chain.block_bytes_max,
             chain_config.fees.min_base_fee,
         );
         let emission_schedule = EmissionSchedule::new(
@@ -122,29 +129,33 @@ impl Node {
     }
 
     /// Load persisted blocks from RocksDB on startup.
-    fn load_blocks_from_storage(
-        storage: &Storage,
-    ) -> Result<(
-        HashMap<Slot, H256>,
-        HashMap<H256, Block>,
-        H256,
-        Option<Slot>,
-    )> {
-        let mut by_slot = HashMap::new();
-        let mut by_hash = HashMap::new();
-        let mut latest_hash = H256::zero();
-        let mut latest_slot: Option<Slot> = None;
-
+    fn load_blocks_from_storage(storage: &Storage) -> Result<LoadedBlocks> {
+        // Collect all blocks, then keep only the most recent MAX_CACHED_BLOCKS
+        let mut all: Vec<(Slot, H256, Block)> = Vec::new();
         for (_, value) in storage.iterator(CF_BLOCKS)? {
             if let Ok(block) = bincode::deserialize::<Block>(&value) {
                 let hash = block.hash();
                 let slot = block.header.slot;
-                by_slot.insert(slot, hash);
-                by_hash.insert(hash, block);
-                if latest_slot.map_or(true, |s| slot > s) {
-                    latest_slot = Some(slot);
-                    latest_hash = hash;
-                }
+                all.push((slot, hash, block));
+            }
+        }
+        all.sort_unstable_by_key(|(slot, _, _)| *slot);
+
+        // Trim to the most recent blocks
+        let start = all.len().saturating_sub(MAX_CACHED_BLOCKS);
+        let recent = &all[start..];
+
+        let mut by_slot = BTreeMap::new();
+        let mut by_hash = HashMap::new();
+        let mut latest_hash = H256::zero();
+        let mut latest_slot: Option<Slot> = None;
+
+        for (slot, hash, block) in recent {
+            by_slot.insert(*slot, *hash);
+            by_hash.insert(*hash, block.clone());
+            if latest_slot.map_or(true, |s| *slot > s) {
+                latest_slot = Some(*slot);
+                latest_hash = *hash;
             }
         }
 
@@ -352,22 +363,26 @@ impl Node {
 
     /// Evict oldest cached blocks/receipts to keep memory bounded.
     fn evict_old_cache(&mut self) {
-        // Evict blocks exceeding cache limit (oldest first)
+        // Evict blocks exceeding cache limit — O(log n) per eviction via BTreeMap
         while self.blocks_by_hash.len() > MAX_CACHED_BLOCKS {
-            if let Some(&min_slot) = self.blocks_by_slot.keys().min() {
-                if let Some(hash) = self.blocks_by_slot.remove(&min_slot) {
-                    self.blocks_by_hash.remove(&hash);
-                }
+            if let Some((&min_slot, &hash)) = self.blocks_by_slot.iter().next() {
+                self.blocks_by_slot.remove(&min_slot);
+                self.blocks_by_hash.remove(&hash);
             } else {
                 break;
             }
         }
 
-        // Evict old receipts
+        // Evict oldest receipts by slot (not random HashMap order)
         if self.receipts.len() > MAX_CACHED_RECEIPTS {
-            let to_remove: Vec<H256> = self.receipts.keys().take(1000).cloned().collect();
-            for key in to_remove {
-                self.receipts.remove(&key);
+            let mut by_slot: Vec<(u64, H256)> = self
+                .receipts
+                .iter()
+                .map(|(hash, r)| (r.slot, *hash))
+                .collect();
+            by_slot.sort_unstable_by_key(|(slot, _)| *slot);
+            for (_, hash) in by_slot.into_iter().take(1000) {
+                self.receipts.remove(&hash);
             }
         }
 
@@ -436,7 +451,11 @@ impl Node {
         let transactions_root = compute_transactions_root(&transactions);
         let receipts_root = compute_receipts_root(&receipts);
 
-        let proposer_bytes = self.validator_key.as_ref().unwrap().to_address();
+        let key = self
+            .validator_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("validator_key required for block production"))?;
+        let proposer_bytes = key.to_address();
         let proposer = aether_types::Address::from_slice(&proposer_bytes)
             .map_err(|e| anyhow::anyhow!("invalid proposer address: {e}"))?;
 
@@ -488,21 +507,7 @@ impl Node {
             }
         }
 
-        // Store block and receipts — set block_hash/slot on receipts for storage
-        for receipt in &receipts {
-            let mut stored_receipt = receipt.clone();
-            stored_receipt.block_hash = block_hash;
-            stored_receipt.slot = slot;
-            self.receipts.insert(stored_receipt.tx_hash, stored_receipt);
-        }
-
-        self.fork_choice.add_block(slot, block_hash);
-        self.latest_block_hash = block_hash;
-        self.latest_block_slot = Some(slot);
-        self.blocks_by_slot.insert(slot, block_hash);
-        self.blocks_by_hash.insert(block_hash, block.clone());
-
-        // Persist block to disk
+        // Build stored receipts once (with block context), use for both cache and disk
         let stored_receipts: Vec<TransactionReceipt> = receipts
             .iter()
             .map(|r| {
@@ -512,6 +517,18 @@ impl Node {
                 sr
             })
             .collect();
+
+        for sr in &stored_receipts {
+            self.receipts.insert(sr.tx_hash, sr.clone());
+        }
+
+        self.fork_choice.add_block(slot, block_hash);
+        self.latest_block_hash = block_hash;
+        self.latest_block_slot = Some(slot);
+        self.blocks_by_slot.insert(slot, block_hash);
+        self.blocks_by_hash.insert(block_hash, block.clone());
+
+        // Persist block to disk
         self.persist_block(&block, block_hash, &stored_receipts)?;
 
         // Record block parent for 2-chain finality tracking
@@ -681,15 +698,7 @@ impl Node {
         self.consensus
             .record_block(block_hash, block.header.parent_hash, block.header.slot);
 
-        // Store receipts with block context
-        for receipt in &receipts {
-            let mut stored_receipt = receipt.clone();
-            stored_receipt.block_hash = block_hash;
-            stored_receipt.slot = block.header.slot;
-            self.receipts.insert(stored_receipt.tx_hash, stored_receipt);
-        }
-
-        // Persist block and receipts to disk
+        // Build stored receipts once (with block context), use for both cache and disk
         let stored_receipts: Vec<TransactionReceipt> = receipts
             .iter()
             .map(|r| {
@@ -699,6 +708,9 @@ impl Node {
                 sr
             })
             .collect();
+        for sr in &stored_receipts {
+            self.receipts.insert(sr.tx_hash, sr.clone());
+        }
         self.persist_block(&block, block_hash, &stored_receipts)?;
 
         // Remove included txs from mempool
@@ -796,7 +808,11 @@ impl Node {
 
                 // Finalize in fork choice
                 if let Some(&hash) = self.blocks_by_slot.get(&slot) {
-                    self.fork_choice.finalize(slot, hash);
+                    if !self.fork_choice.finalize(slot, hash) {
+                        eprintln!(
+                            "WARN: fork_choice: could not finalize unknown block {hash:?} at slot {slot}"
+                        );
+                    }
                 }
             }
         }
@@ -828,6 +844,13 @@ impl Node {
 
     pub fn latest_block_slot(&self) -> Option<Slot> {
         self.latest_block_slot
+    }
+
+    pub fn allows_airdrop(&self) -> bool {
+        matches!(
+            self.chain_config.chain.chain_id.as_str(),
+            "aether-dev-1" | "aether-testnet-1"
+        )
     }
 
     pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {
@@ -889,11 +912,11 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.status).unwrap_or_default());
-        receipt_hasher.update(&receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(&bincode::serialize(&receipt.logs).unwrap_or_default());
+        receipt_hasher.update(bincode::serialize(&receipt.status).unwrap_or_default());
+        receipt_hasher.update(receipt.gas_used.to_le_bytes());
+        receipt_hasher.update(bincode::serialize(&receipt.logs).unwrap_or_default());
         receipt_hasher.update(receipt.state_root.as_bytes());
-        hasher.update(&receipt_hasher.finalize());
+        hasher.update(receipt_hasher.finalize());
     }
     H256::from_slice(&hasher.finalize()).unwrap()
 }
@@ -1021,7 +1044,7 @@ mod tests {
             signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
         };
 
-        let root1 = compute_transactions_root(&[tx1.clone()]);
+        let root1 = compute_transactions_root(std::slice::from_ref(&tx1));
         let root2 = compute_transactions_root(&[tx1]);
         assert_eq!(root1, root2, "same input must produce same root");
     }

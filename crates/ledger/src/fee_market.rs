@@ -9,7 +9,7 @@
 /// - Priority fee (tip) goes to the block proposer
 ///
 /// This creates deflationary pressure proportional to network usage.
-
+///
 /// Fee market state tracked per-block.
 #[derive(Debug, Clone)]
 pub struct FeeMarket {
@@ -69,7 +69,7 @@ impl FeeMarket {
         total_fees_collected: u128,
     ) -> BlockFeeResult {
         // Calculate burn amount (base_fee * gas_used)
-        let burned = self.base_fee * block_gas_used as u128;
+        let burned = self.base_fee.saturating_mul(block_gas_used as u128);
         // Proposer gets the remainder (priority fees / tips)
         let proposer_reward = total_fees_collected.saturating_sub(burned);
 
@@ -100,16 +100,16 @@ impl FeeMarket {
         if gas_used > self.target_gas {
             // Increase: base_fee * (1 + (gas_used - target) / target / 8)
             let gas_delta = gas_used - self.target_gas;
-            let fee_delta =
-                self.base_fee.saturating_mul(gas_delta as u128) / (self.target_gas as u128 * 8);
+            let fee_delta = self.base_fee.saturating_mul(gas_delta as u128)
+                / ((self.target_gas as u128).saturating_mul(8).max(1));
             // Increase by at least 1
             let fee_delta = fee_delta.max(1);
             self.base_fee.saturating_add(fee_delta)
         } else {
             // Decrease: base_fee * (1 - (target - gas_used) / target / 8)
             let gas_delta = self.target_gas - gas_used;
-            let fee_delta =
-                self.base_fee.saturating_mul(gas_delta as u128) / (self.target_gas as u128 * 8);
+            let fee_delta = self.base_fee.saturating_mul(gas_delta as u128)
+                / ((self.target_gas as u128).saturating_mul(8).max(1));
             let new_fee = self.base_fee.saturating_sub(fee_delta);
             new_fee.max(self.min_base_fee)
         }

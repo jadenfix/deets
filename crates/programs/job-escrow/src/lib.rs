@@ -62,6 +62,8 @@ pub struct Job {
 pub struct JobEscrowState {
     pub jobs: HashMap<H256, Job>,
     pub provider_reputation: HashMap<Address, i32>,
+    pub requester_escrow: HashMap<Address, u128>,
+    pub provider_claimable: HashMap<Address, u128>,
     pub total_jobs: u64,
     pub completed_jobs: u64,
 }
@@ -71,6 +73,8 @@ impl JobEscrowState {
         JobEscrowState {
             jobs: HashMap::new(),
             provider_reputation: HashMap::new(),
+            requester_escrow: HashMap::new(),
+            provider_claimable: HashMap::new(),
             total_jobs: 0,
             completed_jobs: 0,
         }
@@ -112,6 +116,10 @@ impl JobEscrowState {
         };
 
         self.jobs.insert(job_id, job);
+        let escrowed = self.requester_escrow.entry(requester).or_insert(0);
+        *escrowed = escrowed
+            .checked_add(payment)
+            .ok_or("requester escrow overflow")?;
         self.total_jobs += 1;
 
         Ok(())
@@ -163,33 +171,56 @@ impl JobEscrowState {
     }
 
     /// Verify and complete job
-    pub fn verify_job(&mut self, job_id: H256, current_slot: u64) -> Result<(), String> {
-        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
+    pub fn verify_job(
+        &mut self,
+        job_id: H256,
+        current_slot: u64,
+    ) -> Result<Option<(Address, u128)>, String> {
+        let (requester, provider, payment) = {
+            let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
 
-        if job.status != JobStatus::Submitted {
-            return Err("job not submitted".to_string());
-        }
-
-        // Check challenge period ended
-        if let Some(challenge_end) = job.challenge_end_slot {
-            if current_slot < challenge_end {
-                return Err("challenge period not ended".to_string());
+            if job.status != JobStatus::Submitted {
+                return Err("job not submitted".to_string());
             }
+
+            // Check challenge period ended
+            if let Some(challenge_end) = job.challenge_end_slot {
+                if current_slot <= challenge_end {
+                    return Err("challenge period not ended".to_string());
+                }
+            }
+
+            // TODO(security): Implement actual VCR proof verification before mainnet.
+            // Currently accepts all submitted results without cryptographic validation.
+
+            let provider = job.provider.ok_or("job has no provider")?;
+            let requester = job.requester;
+            let payment = job.payment;
+            (requester, provider, payment)
+        };
+
+        let escrowed = self
+            .requester_escrow
+            .get_mut(&requester)
+            .ok_or("missing requester escrow balance")?;
+        if *escrowed < payment {
+            return Err("insufficient requester escrow balance".to_string());
         }
-
-        // In production: verify VCR proof
-        // For now: assume valid
-
-        job.status = JobStatus::Verified;
-
-        // Update provider reputation
-        if let Some(provider) = job.provider {
-            *self.provider_reputation.entry(provider).or_insert(0) += 1;
+        *escrowed -= payment;
+        let remove_requester_escrow = *escrowed == 0;
+        if remove_requester_escrow {
+            self.requester_escrow.remove(&requester);
         }
-
+        let claimable = self.provider_claimable.entry(provider).or_insert(0);
+        *claimable = claimable
+            .checked_add(payment)
+            .ok_or("provider claimable overflow")?;
+        let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
+        job.status = JobStatus::Completed;
+        *self.provider_reputation.entry(provider).or_insert(0) += 1;
         self.completed_jobs += 1;
 
-        Ok(())
+        Ok(Some((provider, payment)))
     }
 
     /// Challenge a result.
@@ -215,16 +246,35 @@ impl JobEscrowState {
 
     /// Cancel job (refund requester)
     pub fn cancel_job(&mut self, job_id: H256, caller: Address) -> Result<(), String> {
+        let (requester, payment) = {
+            let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
+
+            if caller != job.requester {
+                return Err("not job requester".to_string());
+            }
+
+            if job.status != JobStatus::Posted {
+                return Err("cannot cancel job".to_string());
+            }
+
+            let requester = job.requester;
+            let payment = job.payment;
+            (requester, payment)
+        };
+
+        let escrowed = self
+            .requester_escrow
+            .get_mut(&requester)
+            .ok_or("missing requester escrow balance")?;
+        if *escrowed < payment {
+            return Err("insufficient requester escrow balance".to_string());
+        }
+        *escrowed -= payment;
+        let remove_requester_escrow = *escrowed == 0;
+        if remove_requester_escrow {
+            self.requester_escrow.remove(&requester);
+        }
         let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
-
-        if caller != job.requester {
-            return Err("not job requester".to_string());
-        }
-
-        if job.status != JobStatus::Posted {
-            return Err("cannot cancel job".to_string());
-        }
-
         job.status = JobStatus::Cancelled;
 
         Ok(())
@@ -236,6 +286,14 @@ impl JobEscrowState {
 
     pub fn get_provider_reputation(&self, provider: &Address) -> i32 {
         self.provider_reputation.get(provider).copied().unwrap_or(0)
+    }
+
+    pub fn escrowed_balance_of(&self, requester: &Address) -> u128 {
+        self.requester_escrow.get(requester).copied().unwrap_or(0)
+    }
+
+    pub fn claimable_balance_of(&self, provider: &Address) -> u128 {
+        self.provider_claimable.get(provider).copied().unwrap_or(0)
     }
 }
 
@@ -265,6 +323,7 @@ mod tests {
         let job = state.get_job(&job_id).unwrap();
         assert_eq!(job.status, JobStatus::Posted);
         assert_eq!(job.payment, 1000);
+        assert_eq!(state.escrowed_balance_of(&addr(1)), 1000);
     }
 
     #[test]
@@ -299,10 +358,30 @@ mod tests {
         assert_eq!(job.status, JobStatus::Submitted);
 
         // Verify after challenge period
-        state.verify_job(job_id, 200).unwrap();
+        let result = state.verify_job(job_id, 200).unwrap();
+        assert!(result.is_some());
+        let (provider, payment) = result.unwrap();
+        assert_eq!(provider, addr(2));
+        assert_eq!(payment, 1000);
 
         let job = state.get_job(&job_id).unwrap();
-        assert_eq!(job.status, JobStatus::Verified);
+        assert_eq!(job.status, JobStatus::Completed);
+        assert_eq!(state.escrowed_balance_of(&addr(1)), 0);
+        assert_eq!(state.claimable_balance_of(&addr(2)), 1000);
         assert_eq!(state.get_provider_reputation(&addr(2)), 1);
+    }
+
+    #[test]
+    fn test_cancel_job_releases_requester_escrow() {
+        let mut state = JobEscrowState::new();
+        let job_id = H256::from_slice(&[1u8; 32]).unwrap();
+
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 750, 100, 1000)
+            .unwrap();
+        assert_eq!(state.escrowed_balance_of(&addr(1)), 750);
+
+        state.cancel_job(job_id, addr(1)).unwrap();
+        assert_eq!(state.escrowed_balance_of(&addr(1)), 0);
     }
 }

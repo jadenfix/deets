@@ -109,7 +109,7 @@ def test_transfer_builder_constructs_transaction():
         .build(
             sender="0x1111111111111111111111111111111111111111",
             sender_public_key="0x" + "a1" * 32,
-            signature="0x" + "b2" * 32,
+            signature="0x" + "b2" * 64,
             nonce=42,
         )
     )
@@ -125,6 +125,22 @@ def test_transfer_builder_requires_recipient():
         client.transfer().amount(1_000).build(
             sender="0x1111111111111111111111111111111111111111",
             sender_public_key="0x" + "a1" * 32,
-            signature="0x" + "b2" * 32,
+            signature="0x" + "b2" * 64,
             nonce=0,
+        )
+
+
+def test_transfer_builder_rejects_short_signature():
+    client = AetherClient("http://127.0.0.1:8545")
+    with pytest.raises(ValueError, match="signature must be exactly 64 bytes"):
+        (
+            client.transfer()
+            .to("0x8b0b54d2248a3a5617b6bd8a2fd4cc8ebc0f2e90")
+            .amount(1_000_000)
+            .build(
+                sender="0x1111111111111111111111111111111111111111",
+                sender_public_key="0x" + "a1" * 32,
+                signature="0x" + "b2" * 32,
+                nonce=0,
+            )
         )

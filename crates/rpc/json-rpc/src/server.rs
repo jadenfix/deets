@@ -70,6 +70,9 @@ pub trait RpcBackend: Send + Sync {
     fn get_latest_block_slot(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+    fn allows_airdrop(&self) -> bool {
+        false
+    }
     fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
         Err(anyhow::anyhow!("airdrop not supported"))
     }
@@ -107,13 +110,15 @@ impl SubscriptionManager {
             topic: "newBlock".to_string(),
             data: json!({
                 "slot": block.header.slot,
-                "hash": format!("{:?}", block.hash()),
-                "proposer": format!("{:?}", block.header.proposer),
+                "hash": format!("0x{}", hex::encode(block.hash().as_bytes())),
+                "proposer": format!("0x{}", hex::encode(block.header.proposer.as_bytes())),
                 "txCount": block.transactions.len(),
                 "timestamp": block.header.timestamp,
             }),
         };
-        let _ = self.sender.send(event);
+        if let Err(e) = self.sender.send(event) {
+            tracing::debug!("No active subscribers for new block event: {e}");
+        }
     }
 
     /// Broadcast a finality event.
@@ -122,10 +127,12 @@ impl SubscriptionManager {
             topic: "finality".to_string(),
             data: json!({
                 "finalizedSlot": slot,
-                "blockHash": format!("{:?}", block_hash),
+                "blockHash": format!("0x{}", hex::encode(block_hash.as_bytes())),
             }),
         };
-        let _ = self.sender.send(event);
+        if let Err(e) = self.sender.send(event) {
+            tracing::debug!("No active subscribers for finality event: {e}");
+        }
     }
 
     /// Get a new subscriber receiver.
@@ -171,9 +178,9 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and(with_backend(backend))
             .and_then(handle_rpc_request);
 
-        let health = warp::get()
-            .and(warp::path("health"))
-            .map(|| warp::reply::json(&json!({"status": "ok"})));
+        let health = warp::get().and(warp::path("health")).map(|| {
+            warp::reply::json(&json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")}))
+        });
 
         // WebSocket subscription endpoint
         let ws_subs = subs.clone();
@@ -184,15 +191,25 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
                 ws.on_upgrade(move |socket| handle_ws_connection(socket, subs))
             });
 
-        let cors = warp::cors()
-            .allow_origins(vec!["http://localhost:3000", "http://127.0.0.1:3000"])
+        let cors_origins: Vec<String> = std::env::var("CORS_ORIGINS")
+            .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_else(|_| {
+                vec![
+                    "http://localhost:3000".to_string(),
+                    "http://127.0.0.1:3000".to_string(),
+                ]
+            });
+        let mut cors = warp::cors()
             .allow_methods(vec!["POST", "GET", "OPTIONS"])
             .allow_headers(vec!["content-type"]);
+        for origin in &cors_origins {
+            cors = cors.allow_origin(origin.as_str());
+        }
 
         let routes = rpc.or(health).or(ws).with(cors);
 
-        println!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
-        println!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
+        tracing::info!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
+        tracing::info!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
         warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
 
         Ok(())
@@ -209,7 +226,13 @@ async fn handle_ws_connection(ws: WebSocket, subs: Arc<SubscriptionManager>) {
         loop {
             match tokio::time::timeout(timeout_duration, rx.recv()).await {
                 Ok(Ok(event)) => {
-                    let msg = serde_json::to_string(&event).unwrap_or_default();
+                    let msg = match serde_json::to_string(&event) {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            tracing::warn!("Failed to serialize subscription event: {e}");
+                            continue;
+                        }
+                    };
                     if ws_tx.send(Message::text(msg)).await.is_err() {
                         break; // Client disconnected
                     }
@@ -245,7 +268,28 @@ async fn handle_rpc_request<B: RpcBackend>(
     req: JsonRpcRequest,
     backend: Arc<RwLock<B>>,
 ) -> Result<impl Reply, warp::Rejection> {
-    let response = process_rpc_request(req.clone(), backend).await;
+    let req_id = req.id.clone();
+    let response = match tokio::time::timeout(
+        Duration::from_secs(30),
+        process_rpc_request(req, backend),
+    )
+    .await
+    {
+        Ok(resp) => resp,
+        Err(_) => {
+            tracing::warn!("RPC request timed out after 30s");
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32000,
+                    message: "Request timed out".to_string(),
+                    data: None,
+                }),
+                id: req_id,
+            }
+        }
+    };
     Ok(warp::reply::json(&response))
 }
 
@@ -301,7 +345,10 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
 
     let tx_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: "Invalid parameter type".to_string(),
+        message: format!(
+            "Invalid parameter type: expected hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -320,7 +367,7 @@ async fn handle_send_raw_transaction<B: RpcBackend>(
             data: None,
         })?;
 
-    Ok(json!(format!("{:?}", tx_hash)))
+    Ok(json!(format!("0x{}", hex::encode(tx_hash.as_bytes()))))
 }
 
 async fn handle_send_transaction<B: RpcBackend>(
@@ -405,7 +452,7 @@ async fn handle_send_transaction<B: RpcBackend>(
             data: None,
         })?;
 
-    Ok(json!(format!("{:?}", tx_hash)))
+    Ok(json!(format!("0x{}", hex::encode(tx_hash.as_bytes()))))
 }
 
 async fn handle_get_block_by_number<B: RpcBackend>(
@@ -523,7 +570,10 @@ async fn handle_get_block_by_hash<B: RpcBackend>(
 
     let hash_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: "Invalid hash".to_string(),
+        message: format!(
+            "Invalid hash: expected 0x-prefixed 64-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
@@ -531,13 +581,13 @@ async fn handle_get_block_by_hash<B: RpcBackend>(
 
     let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hex: {}", e),
+        message: format!("Invalid hash hex '{}': {}", hash_hex, e),
         data: None,
     })?;
 
     let block_hash = H256::from_slice(&hash_bytes).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hash length: {}", e),
+        message: format!("Invalid hash length for '{}': {}", hash_hex, e),
         data: None,
     })?;
 
@@ -567,19 +617,22 @@ async fn handle_get_transaction_receipt<B: RpcBackend>(
 
     let hash_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: "Invalid hash".to_string(),
+        message: format!(
+            "Invalid hash: expected 0x-prefixed 64-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
     let hash_bytes = hex::decode(hash_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hex: {}", e),
+        message: format!("Invalid hash hex '{}': {}", hash_hex, e),
         data: None,
     })?;
 
     let tx_hash = H256::from_slice(&hash_bytes).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hash length: {}", e),
+        message: format!("Invalid hash length for '{}': {}", hash_hex, e),
         data: None,
     })?;
 
@@ -610,7 +663,7 @@ async fn handle_get_state_root<B: RpcBackend>(
             data: None,
         })?;
 
-    Ok(json!(format!("{:?}", state_root)))
+    Ok(json!(format!("0x{}", hex::encode(state_root.as_bytes()))))
 }
 
 async fn handle_get_account<B: RpcBackend>(
@@ -627,19 +680,22 @@ async fn handle_get_account<B: RpcBackend>(
 
     let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: "Invalid address".to_string(),
+        message: format!(
+            "Invalid address: expected 0x-prefixed 40-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
 
     let addr_bytes = hex::decode(addr_hex.trim_start_matches("0x")).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid hex: {}", e),
+        message: format!("Invalid address hex '{}': {}", addr_hex, e),
         data: None,
     })?;
 
     let address = Address::from_slice(&addr_bytes).map_err(|e| JsonRpcError {
         code: -32602,
-        message: format!("Invalid address length: {}", e),
+        message: format!("Invalid address length for '{}': {}", addr_hex, e),
         data: None,
     })?;
 
@@ -695,15 +751,35 @@ async fn handle_request_airdrop<B: RpcBackend>(
         });
     }
 
+    // Airdrop is only available on devnet/testnet to prevent abuse
+    let max_airdrop: u128 = 1_000_000_000_000; // 1M tokens max per request
+
     let addr_hex = params[0].as_str().ok_or_else(|| JsonRpcError {
         code: -32602,
-        message: "Invalid address".to_string(),
+        message: format!(
+            "Invalid address: expected 0x-prefixed 40-char hex string, got {}",
+            params[0]
+        ),
         data: None,
     })?;
     let address = parse_address(addr_hex, "address")?;
     let amount = parse_u128_value(&params[1], "amount")?;
+    if amount > max_airdrop {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: format!("airdrop amount {} exceeds maximum {}", amount, max_airdrop),
+            data: None,
+        });
+    }
 
     let backend = backend.read().await;
+    if !backend.allows_airdrop() {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: "airdrop is disabled on this network".to_string(),
+            data: None,
+        });
+    }
     backend
         .request_airdrop(address, amount)
         .map_err(|e| JsonRpcError {
@@ -719,7 +795,10 @@ async fn handle_request_airdrop<B: RpcBackend>(
 mod tests {
     use super::*;
 
-    struct MockBackend;
+    #[derive(Default)]
+    struct MockBackend {
+        allow_airdrop: bool,
+    }
 
     impl RpcBackend for MockBackend {
         fn send_raw_transaction(&self, _tx_bytes: Vec<u8>) -> Result<H256> {
@@ -757,6 +836,18 @@ mod tests {
         fn get_finalized_slot(&self) -> Result<u64> {
             Ok(0)
         }
+
+        fn allows_airdrop(&self) -> bool {
+            self.allow_airdrop
+        }
+
+        fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
+            if self.allow_airdrop {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("airdrop not supported"))
+            }
+        }
     }
 
     #[tokio::test]
@@ -775,7 +866,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_slot_number() {
-        let backend = Arc::new(RwLock::new(MockBackend));
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "aeth_getSlotNumber".to_string(),
@@ -790,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_transaction_payload() {
-        let backend = Arc::new(RwLock::new(MockBackend));
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
         let sender_pubkey = PublicKey::from_bytes(vec![7u8; 32]);
         let sender = sender_pubkey.to_address();
         let req = JsonRpcRequest {
@@ -815,5 +906,37 @@ mod tests {
         let response = process_rpc_request(req, backend).await;
         assert!(response.result.is_some());
         assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_airdrop_rejected_when_disabled() {
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_requestAirdrop".to_string(),
+            params: vec![json!(format!("0x{}", "11".repeat(20))), json!("100")],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        let error = response.error.expect("airdrop should be rejected");
+        assert!(error.message.contains("disabled on this network"));
+    }
+
+    #[tokio::test]
+    async fn test_airdrop_allowed_when_backend_enables_it() {
+        let backend = Arc::new(RwLock::new(MockBackend {
+            allow_airdrop: true,
+        }));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_requestAirdrop".to_string(),
+            params: vec![json!(format!("0x{}", "11".repeat(20))), json!("100")],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        assert!(response.error.is_none());
+        assert_eq!(response.result, Some(json!({"success": true})));
     }
 }

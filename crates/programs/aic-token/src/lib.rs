@@ -59,7 +59,11 @@ impl AicTokenState {
         }
     }
 
-    /// Mint new tokens
+    /// Mint new tokens.
+    ///
+    /// Only the `mint_authority` can mint. There is currently no supply cap
+    /// enforced at the program level — governance should impose minting limits
+    /// to prevent unchecked inflation.
     pub fn mint(&mut self, caller: Address, to: Address, amount: u128) -> Result<(), String> {
         if caller != self.mint_authority {
             return Err("unauthorized".to_string());
@@ -74,7 +78,21 @@ impl AicTokenState {
     }
 
     /// Burn tokens (destroy permanently)
-    pub fn burn(&mut self, from: Address, amount: u128) -> Result<(), String> {
+    pub fn burn(&mut self, caller: Address, from: Address, amount: u128) -> Result<(), String> {
+        // Only the token owner or an approved spender can burn
+        if caller != from {
+            // Check allowance
+            let allowance = self
+                .allowances
+                .get_mut(&from)
+                .and_then(|m| m.get_mut(&caller))
+                .ok_or("unauthorized: caller is not owner and has no allowance")?;
+            if *allowance < amount {
+                return Err("insufficient allowance for burn".to_string());
+            }
+            *allowance = allowance.checked_sub(amount).ok_or("allowance underflow")?;
+        }
+
         let balance = self.balances.get_mut(&from).ok_or("insufficient balance")?;
 
         if *balance < amount {
@@ -186,7 +204,7 @@ mod tests {
         let mut state = AicTokenState::new(addr(1));
 
         state.mint(addr(1), addr(2), 1000).unwrap();
-        state.burn(addr(2), 300).unwrap();
+        state.burn(addr(2), addr(2), 300).unwrap();
 
         assert_eq!(state.balance_of(&addr(2)), 700);
         assert_eq!(state.total_burned, 300);
@@ -225,7 +243,7 @@ mod tests {
 
         state.mint(addr(1), addr(2), 100).unwrap();
 
-        let result = state.burn(addr(2), 200);
+        let result = state.burn(addr(2), addr(2), 200);
         assert!(result.is_err(), "burning more than balance should fail");
 
         // Balance and supply unchanged

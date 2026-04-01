@@ -83,6 +83,12 @@ impl RpcBackend for NodeRpcBackend {
         Ok(node.latest_block_slot())
     }
 
+    fn allows_airdrop(&self) -> bool {
+        self.read_node()
+            .map(|node| node.allows_airdrop())
+            .unwrap_or(false)
+    }
+
     fn request_airdrop(&self, address: Address, amount: u128) -> Result<()> {
         let mut node = self.write_node()?;
         node.seed_account(&address, amount)
@@ -136,7 +142,10 @@ async fn run_p2p_outbound(
                         }
                     }
                     Some(OutboundMessage::BroadcastVote(vote)) => {
-                        let data = bincode::serialize(&vote).unwrap_or_default();
+                        let data = bincode::serialize(&vote).unwrap_or_else(|e| {
+                            tracing::error!("failed to serialize vote: {e}");
+                            Vec::new()
+                        });
                         if let Err(e) = p2p.publish(TOPIC_VOTE, data) {
                             tracing::warn!("failed to broadcast vote: {e}");
                         }
@@ -156,16 +165,20 @@ async fn run_p2p_outbound(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    println!("Aether Node v0.3.0");
-    println!("=================\n");
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    tracing::info!("Aether Node v0.3.0");
+    tracing::info!("=================\n");
 
     // Load chain configuration
     let chain_config = if let Ok(config_path) = env::var("AETHER_CONFIG_PATH") {
-        println!("Loading config from: {config_path}");
+        tracing::info!("Loading config from: {config_path}");
         ChainConfig::from_toml_file(Path::new(&config_path))?
     } else {
         let network = env::var("AETHER_NETWORK").unwrap_or_else(|_| "devnet".to_string());
-        println!("Using {network} preset config");
+        tracing::info!("Using {network} preset config");
         match network.as_str() {
             "mainnet" => ChainConfig::mainnet(),
             "testnet" => ChainConfig::testnet(),
@@ -174,9 +187,10 @@ async fn main() -> Result<()> {
     };
 
     let chain_config = Arc::new(chain_config);
-    println!(
+    tracing::info!(
         "Chain: {} (numeric ID: {})",
-        chain_config.chain.chain_id, chain_config.chain.chain_id_numeric
+        chain_config.chain.chain_id,
+        chain_config.chain.chain_id_numeric
     );
 
     let db_path = env::var("AETHER_NODE_DB_PATH").unwrap_or_else(|_| "./data/node1".to_string());
@@ -262,9 +276,9 @@ async fn main() -> Result<()> {
     let genesis_balance = chain_config.tokens.swr_initial_supply;
     if node.get_account(validator_address)?.is_none() {
         node.seed_account(&validator_address, genesis_balance)?;
-        println!("Genesis: funded validator with {genesis_balance}");
+        tracing::info!("Genesis: funded validator with {genesis_balance}");
     } else {
-        println!("Node already initialized, skipping genesis funding");
+        tracing::info!("Node already initialized, skipping genesis funding");
     }
 
     // Set up P2P outbound channel
@@ -287,16 +301,17 @@ async fn main() -> Result<()> {
     p2p.start(&listen_addr).await?;
     let peer_id = p2p.peer_id_str();
 
-    println!("Validator address: {:?}", validator_address);
-    println!("Peer ID: {}", peer_id);
-    println!("Consensus: VRF + HotStuff + BLS");
-    println!("P2P listening on 0.0.0.0:{p2p_port}");
-    println!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
-    println!(
+    tracing::info!("Validator address: {:?}", validator_address);
+    tracing::info!("Peer ID: {}", peer_id);
+    tracing::info!("Consensus: VRF + HotStuff + BLS");
+    tracing::info!("P2P listening on 0.0.0.0:{p2p_port}");
+    tracing::info!("JSON-RPC listening on 127.0.0.1:{rpc_port}");
+    tracing::info!(
         "Slot duration: {}ms, Epoch: {} slots",
-        chain_config.chain.slot_ms, chain_config.chain.epoch_slots
+        chain_config.chain.slot_ms,
+        chain_config.chain.epoch_slots
     );
-    println!("Press Ctrl-C to stop.\n");
+    tracing::info!("Press Ctrl-C to stop.\n");
 
     // Connect to bootstrap peers if specified
     if let Ok(peers) = env::var("AETHER_BOOTSTRAP_PEERS") {
@@ -304,8 +319,8 @@ async fn main() -> Result<()> {
             let addr = peer_addr.trim();
             if !addr.is_empty() {
                 match p2p.connect_peer(addr) {
-                    Ok(()) => println!("Connecting to peer: {addr}"),
-                    Err(e) => println!("Failed to connect to {addr}: {e}"),
+                    Ok(()) => tracing::info!("Connecting to peer: {addr}"),
+                    Err(e) => tracing::warn!("Failed to connect to {addr}: {e}"),
                 }
             }
         }
@@ -335,8 +350,10 @@ async fn main() -> Result<()> {
                 Err(e) => return Err(anyhow::anyhow!("p2p task failed: {e}")),
             }
         }
+        // TODO: Also handle SIGTERM for graceful shutdown in containerized environments.
+        // Currently only SIGINT (Ctrl-C) is handled.
         _ = tokio::signal::ctrl_c() => {
-            println!("\nReceived Ctrl-C, shutting down...");
+            tracing::info!("Received Ctrl-C, shutting down...");
         }
     }
 

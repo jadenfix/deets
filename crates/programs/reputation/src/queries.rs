@@ -18,10 +18,21 @@ pub fn top_providers(
         .filter(|provider| provider.score >= minimum_score)
         .filter(|provider| provider.hardware_tier >= tier)
         .filter(|provider| provider.supported_models.contains(&model))
-        .filter(|provider| current_slot - provider.last_active_slot <= staleness_threshold)
+        .filter(|provider| {
+            current_slot.saturating_sub(provider.last_active_slot) <= staleness_threshold
+        })
         .collect();
 
-    candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+    candidates.sort_by(|a, b| {
+        b.score.partial_cmp(&a.score).unwrap_or_else(|| {
+            // Treat NaN as worst (lowest score)
+            if b.score.is_nan() {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        })
+    });
     candidates.truncate(limit);
     candidates
 }

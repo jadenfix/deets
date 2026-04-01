@@ -68,7 +68,7 @@ impl PostJobCommand {
 
         let mut builder = client
             .job()
-            .job_id(self.job_id.clone())
+            .job_id(self.job_id.clone())?
             .model_hash(model_hash)
             .input_hash(input_hash)
             .max_fee(self.max_fee)
@@ -140,6 +140,10 @@ fn print_tutorial() {
    aetherctl keys generate --out ~/.aether/keys/tutorial.json
 
 2) Craft the job submission:
+   # Replace the placeholder hashes below with real values:
+   #   --model : SHA-256 hash of the AI model artifact (64 hex chars, 0x-prefixed)
+   #   --input : SHA-256 hash of the input payload (64 hex chars, 0x-prefixed)
+   #   --expires-at : Unix timestamp (seconds) when the job offer expires
    aetherctl job post \
      --job-id hello-aic-job \
      --model 0x{model_hash} \

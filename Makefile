@@ -9,7 +9,7 @@
 # Production: make mainnet-build → make deploy-validator
 # ============================================================================
 
-.PHONY: all build test clean devnet testnet docs
+.PHONY: all build test clean devnet testnet docs chaos validator-deploy
 
 # Default target
 all: build test
@@ -24,8 +24,7 @@ dev:
 
 # Run all tests
 test:
-	cargo test --all
-	cargo test --all --release
+	./cli-test --rust-only
 
 # Run property tests
 proptest:
@@ -33,8 +32,7 @@ proptest:
 
 # Lint and format
 lint:
-	cargo fmt --all -- --check
-	cargo clippy --all -- -D warnings
+	./cli-format
 
 # Format code
 fmt:
@@ -47,7 +45,6 @@ docs:
 # Clean build artifacts
 clean:
 	cargo clean
-	rm -rf target/
 	docker compose -f deploy/docker/docker-compose.yml down -v
 
 # ============================================================================
@@ -97,7 +94,7 @@ loadtest:
 
 # Run chaos tests
 chaos:
-	cd tests/chaos && ./run-chaos-suite.sh
+	./scripts/chaos/run-chaos-suite.sh
 
 # Benchmark parallel execution
 bench-parallel:
@@ -107,17 +104,19 @@ bench-parallel:
 # Deployment (K8s)
 # ============================================================================
 
+# Deploy validator manifests
+validator-deploy:
+	kubectl apply -f deploy/k8s/validator/
+
 # Deploy testnet validator
-testnet-deploy:
-	kubectl apply -f deploy/k8s/testnet/
+testnet-deploy: validator-deploy
 
 # Deploy mainnet validator
-mainnet-deploy:
-	kubectl apply -f deploy/k8s/mainnet/
+mainnet-deploy: validator-deploy
 
 # Deploy monitoring stack
 monitoring:
-	helm install prometheus deploy/k8s/charts/monitoring/ \
+	helm upgrade --install prometheus deploy/helm/monitoring/ \
 		--namespace aether-monitoring --create-namespace
 
 # ============================================================================
@@ -130,7 +129,8 @@ ai-worker-build:
 
 # Generate model hash
 model-hash:
-	cargo run -p aether-models -- hash --model $(MODEL_PATH)
+	@test -n "$(MODEL_PATH)" || (echo "MODEL_PATH is required" >&2; exit 1)
+	shasum -a 256 "$(MODEL_PATH)" | awk '{print $$1}'
 
 # ============================================================================
 # Utilities
@@ -147,4 +147,3 @@ submit-tx:
 # Query block
 query-block:
 	cargo run -p aether-cli -- block --number $(BLOCK_NUM)
-

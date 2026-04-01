@@ -12,6 +12,12 @@ pub struct ForkChoice {
     finalized: HashMap<Slot, H256>,
 }
 
+impl Default for ForkChoice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForkChoice {
     pub fn new() -> Self {
         ForkChoice {
@@ -59,15 +65,28 @@ impl ForkChoice {
             .copied()
     }
 
-    /// Finalize a block at a slot. Once finalized, the canonical choice is permanent.
-    pub fn finalize(&mut self, slot: Slot, block_hash: H256) {
+    /// Finalize a block at a slot. Only blocks that are known candidates
+    /// (or already canonical) can be finalized.
+    pub fn finalize(&mut self, slot: Slot, block_hash: H256) -> bool {
+        // Only finalize blocks we've actually seen
+        let is_known = self
+            .candidates
+            .get(&slot)
+            .map_or(false, |c| c.contains(&block_hash));
+        let is_canonical = self.canonical.get(&slot) == Some(&block_hash);
+
+        if !is_known && !is_canonical {
+            return false; // Reject unknown block hash
+        }
+
         self.finalized.insert(slot, block_hash);
         self.canonical.insert(slot, block_hash);
+        true
     }
 
     /// Check if a slot has competing blocks (a fork).
     pub fn has_fork(&self, slot: Slot) -> bool {
-        self.candidates.get(&slot).map_or(false, |c| c.len() > 1)
+        self.candidates.get(&slot).is_some_and(|c| c.len() > 1)
     }
 
     /// Get all candidate blocks for a slot.
@@ -119,7 +138,7 @@ mod tests {
     fn finalized_block_cannot_be_overridden() {
         let mut fc = ForkChoice::new();
         fc.add_block(1, hash(1));
-        fc.finalize(1, hash(1));
+        assert!(fc.finalize(1, hash(1)));
 
         // New competing block arrives after finalization
         fc.add_block(1, hash(2));
@@ -142,6 +161,14 @@ mod tests {
         let fc = ForkChoice::new();
         assert_eq!(fc.canonical_block(99), None);
         assert!(!fc.has_fork(99));
+    }
+
+    #[test]
+    fn test_finalize_rejects_unknown_hash() {
+        let mut fc = ForkChoice::new();
+        // Try to finalize a hash that was never added
+        assert!(!fc.finalize(1, hash(99)));
+        assert!(!fc.is_finalized(1));
     }
 
     #[test]
