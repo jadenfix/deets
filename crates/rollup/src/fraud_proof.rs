@@ -35,11 +35,24 @@ impl FraudProof {
     }
 }
 
+/// Trait for re-executing L2 transactions to verify fraud proofs.
+///
+/// Implementations bridge to the actual WASM VM or state transition function.
+/// This indirection is required so the rollup crate does not take a hard
+/// dependency on `aether-runtime` while still enforcing re-execution.
+pub trait ReExecutor {
+    /// Execute `tx_data` against the state identified by `pre_state_root`
+    /// and return the resulting post-state root.
+    ///
+    /// Returns `Err` if execution fails (e.g. invalid tx encoding, VM fault).
+    fn re_execute(&self, pre_state_root: &H256, tx_data: &[u8]) -> Result<H256, String>;
+}
+
 /// Verifies fraud proofs against state commitments.
 pub struct FraudProofVerifier {
     /// Bond required to submit a fraud proof (prevents spam).
     pub required_bond: u128,
-    /// Reward for successful challenge (% of sequencer's bond).
+    /// Reward for successful challenge as a percentage of sequencer's bond (0-100).
     pub challenger_reward_pct: u8,
 }
 
@@ -56,18 +69,34 @@ pub enum FraudProofResult {
 }
 
 impl FraudProofVerifier {
-    pub fn new(required_bond: u128, challenger_reward_pct: u8) -> Self {
-        FraudProofVerifier {
+    /// Create a new verifier.
+    ///
+    /// Returns an error if `challenger_reward_pct > 100` to prevent rewards
+    /// that exceed the sequencer's bond.
+    pub fn new(required_bond: u128, challenger_reward_pct: u8) -> Result<Self, String> {
+        if challenger_reward_pct > 100 {
+            return Err(format!(
+                "challenger_reward_pct {} exceeds 100 — would pay out more than bond",
+                challenger_reward_pct
+            ));
+        }
+        Ok(FraudProofVerifier {
             required_bond,
             challenger_reward_pct,
-        }
+        })
     }
 
-    /// Verify a fraud proof.
+    /// Verify a fraud proof by re-executing the disputed transaction.
     ///
-    /// In production, this would re-execute the transaction in a sandboxed
-    /// WASM environment and compare the resulting state root.
-    /// For now, we verify structural consistency.
+    /// # Arguments
+    /// - `proof` — the fraud proof submitted by the challenger.
+    /// - `batch_pre_state_root` — the batch's recorded pre-state root (from chain).
+    /// - `batch_post_state_root` — the batch's recorded post-state root (from chain).
+    /// - `sequencer` — the sequencer who published the batch.
+    /// - `sequencer_bond` — the sequencer's current bond balance.
+    /// - `challenger_bond` — the bond posted by the challenger (must ≥ `required_bond`).
+    /// - `executor` — re-execution engine used to compute the true post-state root.
+    #[allow(clippy::too_many_arguments)]
     pub fn verify(
         &self,
         proof: &FraudProof,
@@ -75,7 +104,19 @@ impl FraudProofVerifier {
         batch_post_state_root: &H256,
         sequencer: &Address,
         sequencer_bond: u128,
+        challenger_bond: u128,
+        executor: &dyn ReExecutor,
     ) -> FraudProofResult {
+        // Challenger must have posted sufficient bond to prevent spam.
+        if challenger_bond < self.required_bond {
+            return FraudProofResult::Invalid {
+                reason: format!(
+                    "challenger bond {} below required {}",
+                    challenger_bond, self.required_bond
+                ),
+            };
+        }
+
         // Pre-state root must match the batch
         if proof.pre_state_root != *batch_pre_state_root {
             return FraudProofResult::Invalid {
@@ -98,11 +139,30 @@ impl FraudProofVerifier {
             };
         }
 
-        // In production: re-execute tx_data starting from pre_state_root
-        // and verify that the result matches correct_post_state_root.
-        // For now, we trust the challenger's computation.
+        // Re-execute the disputed transaction from the pre-state and verify
+        // that the result matches the challenger's claimed correct_post_state_root.
+        // This is the critical check that prevents a challenger from fabricating
+        // a fraud proof by supplying an arbitrary correct_post_state_root.
+        let computed_post_state = match executor.re_execute(&proof.pre_state_root, &proof.tx_data)
+        {
+            Ok(root) => root,
+            Err(reason) => {
+                return FraudProofResult::Invalid {
+                    reason: format!("re-execution failed: {}", reason),
+                }
+            }
+        };
 
-        let reward = sequencer_bond * self.challenger_reward_pct as u128 / 100;
+        if computed_post_state != proof.correct_post_state_root {
+            return FraudProofResult::Invalid {
+                reason: "re-executed post-state root does not match challenger's claim".into(),
+            };
+        }
+
+        // Re-execution confirms the sequencer's post_state_root was wrong.
+        let reward = sequencer_bond
+            .saturating_mul(self.challenger_reward_pct as u128)
+            / 100;
 
         FraudProofResult::Valid {
             slashed_sequencer: *sequencer,
@@ -115,31 +175,59 @@ impl FraudProofVerifier {
 mod tests {
     use super::*;
 
+    fn addr(byte: u8) -> Address {
+        Address::from_slice(&[byte; 20]).unwrap()
+    }
+    fn root(byte: u8) -> H256 {
+        H256::from_slice(&[byte; 32]).unwrap()
+    }
+
     fn make_fraud_proof() -> FraudProof {
         FraudProof {
             batch_id: 1,
             tx_index: 5,
-            pre_state_root: H256::from_slice(&[1u8; 32]).unwrap(),
-            correct_post_state_root: H256::from_slice(&[2u8; 32]).unwrap(),
-            claimed_post_state_root: H256::from_slice(&[3u8; 32]).unwrap(),
-            challenger: Address::from_slice(&[10u8; 20]).unwrap(),
+            pre_state_root: root(1),
+            correct_post_state_root: root(2),
+            claimed_post_state_root: root(3),
+            challenger: addr(10),
             state_proof: vec![0u8; 32],
             tx_data: vec![1, 2, 3],
         }
     }
 
+    /// Minimal re-executor: returns a deterministic root derived from pre-state + tx_data.
+    /// In tests we pre-program the expected result via `expected_result`.
+    struct MockExecutor {
+        result: Result<H256, String>,
+    }
+    impl ReExecutor for MockExecutor {
+        fn re_execute(&self, _pre: &H256, _tx: &[u8]) -> Result<H256, String> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn test_new_rejects_reward_over_100() {
+        assert!(FraudProofVerifier::new(1_000, 101).is_err());
+        assert!(FraudProofVerifier::new(1_000, 100).is_ok());
+    }
+
     #[test]
     fn test_valid_fraud_proof() {
-        let verifier = FraudProofVerifier::new(1_000_000, 50);
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
         let proof = make_fraud_proof();
-        let sequencer = Address::from_slice(&[1u8; 20]).unwrap();
+        let executor = MockExecutor {
+            result: Ok(proof.correct_post_state_root),
+        };
 
         let result = verifier.verify(
             &proof,
             &proof.pre_state_root,
             &proof.claimed_post_state_root,
-            &sequencer,
+            &addr(1),
             1_000_000,
+            1_000_000, // challenger_bond == required_bond
+            &executor,
         );
 
         match result {
@@ -153,18 +241,42 @@ mod tests {
     }
 
     #[test]
-    fn test_reject_pre_state_mismatch() {
-        let verifier = FraudProofVerifier::new(1_000_000, 50);
+    fn test_reject_insufficient_challenger_bond() {
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
         let proof = make_fraud_proof();
-        let wrong_pre = H256::from_slice(&[99u8; 32]).unwrap();
-        let sequencer = Address::from_slice(&[1u8; 20]).unwrap();
+        let executor = MockExecutor {
+            result: Ok(proof.correct_post_state_root),
+        };
 
         let result = verifier.verify(
             &proof,
-            &wrong_pre,
+            &proof.pre_state_root,
             &proof.claimed_post_state_root,
-            &sequencer,
+            &addr(1),
             1_000_000,
+            500_000, // below required_bond
+            &executor,
+        );
+
+        assert!(matches!(result, FraudProofResult::Invalid { .. }));
+    }
+
+    #[test]
+    fn test_reject_pre_state_mismatch() {
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
+        let proof = make_fraud_proof();
+        let executor = MockExecutor {
+            result: Ok(proof.correct_post_state_root),
+        };
+
+        let result = verifier.verify(
+            &proof,
+            &root(99), // wrong pre-state
+            &proof.claimed_post_state_root,
+            &addr(1),
+            1_000_000,
+            1_000_000,
+            &executor,
         );
 
         assert!(matches!(result, FraudProofResult::Invalid { .. }));
@@ -172,18 +284,68 @@ mod tests {
 
     #[test]
     fn test_reject_no_fraud() {
-        let verifier = FraudProofVerifier::new(1_000_000, 50);
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
         let mut proof = make_fraud_proof();
-        // Make correct == claimed → no fraud
         proof.correct_post_state_root = proof.claimed_post_state_root;
-        let sequencer = Address::from_slice(&[1u8; 20]).unwrap();
+        let executor = MockExecutor {
+            result: Ok(proof.correct_post_state_root),
+        };
 
         let result = verifier.verify(
             &proof,
             &proof.pre_state_root,
             &proof.claimed_post_state_root,
-            &sequencer,
+            &addr(1),
             1_000_000,
+            1_000_000,
+            &executor,
+        );
+
+        assert!(matches!(result, FraudProofResult::Invalid { .. }));
+    }
+
+    #[test]
+    fn test_reject_fabricated_correct_state_root() {
+        // Attacker claims correct_post_state_root = root(2) but re-execution says root(9).
+        // This is the core anti-fabrication check.
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
+        let proof = make_fraud_proof(); // correct_post_state_root = root(2)
+        let executor = MockExecutor {
+            result: Ok(root(9)), // re-execution disagrees with challenger
+        };
+
+        let result = verifier.verify(
+            &proof,
+            &proof.pre_state_root,
+            &proof.claimed_post_state_root,
+            &addr(1),
+            1_000_000,
+            1_000_000,
+            &executor,
+        );
+
+        assert!(
+            matches!(result, FraudProofResult::Invalid { reason } if
+                reason.contains("re-executed post-state root does not match challenger's claim"))
+        );
+    }
+
+    #[test]
+    fn test_reject_re_execution_failure() {
+        let verifier = FraudProofVerifier::new(1_000_000, 50).unwrap();
+        let proof = make_fraud_proof();
+        let executor = MockExecutor {
+            result: Err("vm fault: out of gas".into()),
+        };
+
+        let result = verifier.verify(
+            &proof,
+            &proof.pre_state_root,
+            &proof.claimed_post_state_root,
+            &addr(1),
+            1_000_000,
+            1_000_000,
+            &executor,
         );
 
         assert!(matches!(result, FraudProofResult::Invalid { .. }));
