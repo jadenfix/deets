@@ -386,6 +386,17 @@ impl Node {
             }
         }
 
+        // Complete unbonding: return tokens to delegators whose unbonding period
+        // has elapsed. complete_unbonding() returns (address, amount) pairs.
+        let completed = self.staking_state.complete_unbonding(slot);
+        for (addr, amount) in completed {
+            if let Err(e) = self.ledger.credit_account(&addr, amount) {
+                eprintln!("WARNING: failed to credit unbonded tokens to {addr:?}: {e}");
+            } else {
+                println!("Epoch {new_epoch}: returned {amount} unbonded tokens to {addr:?}");
+            }
+        }
+
         // Prune old blocks and receipts from disk to prevent unbounded DB growth.
         let retention = self.chain_config.chain.retention_epochs;
         if retention > 0 && new_epoch > retention {
@@ -1393,5 +1404,46 @@ mod tests {
 
         // Node starts as synced
         assert!(!node.is_syncing());
+    }
+
+    #[test]
+    fn epoch_transition_completes_unbonding_and_credits_account() {
+        use aether_program_staking::Unbonding;
+        use aether_types::Address;
+
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Set up an unbonding entry that completes at slot 0 (already elapsed).
+        let delegator = Address::from(aether_types::H160([0x42u8; 20]));
+        let unbond_amount = 5_000u128;
+        node.staking_state_mut().unbonding.push(Unbonding {
+            address: delegator,
+            amount: unbond_amount,
+            complete_slot: 0,
+        });
+
+        // Seed the ledger account so credit_account has something to update.
+        node.ledger.credit_account(&delegator, 0).ok();
+
+        // Trigger epoch transition; slot=0 means complete_slot<=current_slot.
+        node.process_epoch_transition(1).unwrap();
+
+        // Unbonding queue should be empty — entry was consumed.
+        assert!(node.staking_state().unbonding.is_empty());
+
+        // Delegator's account should have been credited.
+        let account = node.ledger.get_account(&delegator).unwrap().unwrap();
+        assert_eq!(account.balance, unbond_amount);
     }
 }
