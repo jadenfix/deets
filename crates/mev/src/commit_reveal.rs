@@ -119,9 +119,26 @@ impl CommitRevealPool {
     }
 
     /// Get all revealed transactions ready for execution.
-    /// Returns them in commitment order (insertion order).
+    /// Returns them sorted by commit_slot (ascending), then by commitment_hash
+    /// for deterministic ordering across all validators.
     pub fn get_revealed_transactions(&self) -> Vec<&RevealedTransaction> {
-        self.reveals.values().collect()
+        let mut txs: Vec<_> = self.reveals.values().collect();
+        txs.sort_by(|a, b| {
+            let slot_a = self
+                .commitments
+                .get(&a.commitment_hash)
+                .map(|c| c.commit_slot)
+                .unwrap_or(0);
+            let slot_b = self
+                .commitments
+                .get(&b.commitment_hash)
+                .map(|c| c.commit_slot)
+                .unwrap_or(0);
+            slot_a
+                .cmp(&slot_b)
+                .then_with(|| a.commitment_hash.as_bytes().cmp(b.commitment_hash.as_bytes()))
+        });
+        txs
     }
 
     /// Clean up expired commitments.
@@ -309,6 +326,59 @@ mod tests {
         // Cleanup at slot 25 (> 10 + 10 = 20, expired)
         pool.cleanup_expired(25);
         assert_eq!(pool.pending_commitments(), 0);
+    }
+
+    #[test]
+    fn test_revealed_transactions_ordered_by_commit_slot() {
+        let mut pool = CommitRevealPool::new(1, 100);
+
+        // Submit 3 commitments at different slots, reveal in reverse order
+        let mut hashes = vec![];
+        for i in (0..3).rev() {
+            let tx = make_tx(i + 1, 0);
+            let salt = [i + 1; 32];
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot: (i as u64) * 10, // slots 0, 10, 20 but inserted in reverse
+                commit_fee: 1000,
+            })
+            .unwrap();
+            // Reveal immediately after delay
+            pool.reveal(tx, salt, (i as u64) * 10 + 1).unwrap();
+            hashes.push(hash);
+        }
+
+        let revealed = pool.get_revealed_transactions();
+        assert_eq!(revealed.len(), 3);
+
+        // Must be sorted by commit_slot ascending regardless of insertion order
+        let slots: Vec<u64> = revealed
+            .iter()
+            .map(|r| {
+                pool.commitments
+                    .get(&r.commitment_hash)
+                    .unwrap()
+                    .commit_slot
+            })
+            .collect();
+        assert!(
+            slots.windows(2).all(|w| w[0] <= w[1]),
+            "revealed transactions must be ordered by commit_slot, got: {:?}",
+            slots
+        );
+
+        // Run 100 times to verify determinism (HashMap ordering is random)
+        let first_order: Vec<H256> = revealed.iter().map(|r| r.commitment_hash).collect();
+        for _ in 0..100 {
+            let order: Vec<H256> = pool
+                .get_revealed_transactions()
+                .iter()
+                .map(|r| r.commitment_hash)
+                .collect();
+            assert_eq!(first_order, order, "ordering must be deterministic");
+        }
     }
 
     #[test]
