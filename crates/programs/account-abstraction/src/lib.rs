@@ -15,6 +15,22 @@ use aether_types::{Address, H256};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
+/// Trait for account-specific signature validation.
+///
+/// Different accounts may use different signature schemes (multisig,
+/// social recovery, passkeys, etc). The EntryPoint delegates to this
+/// trait rather than hardcoding Ed25519.
+pub trait AccountValidator {
+    /// Validate that `signature` is a valid authorization for the
+    /// operation identified by `op_hash`, sent by `sender`.
+    fn validate_signature(
+        &self,
+        sender: &Address,
+        op_hash: &H256,
+        signature: &[u8],
+    ) -> Result<()>;
+}
+
 /// A user operation (ERC-4337 style pseudo-transaction).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOperation {
@@ -42,10 +58,24 @@ pub struct UserOperation {
 
 impl UserOperation {
     /// Hash the UserOperation for signing.
+    ///
+    /// Excludes the `signature` field so the hash is available before signing.
     pub fn hash(&self) -> H256 {
         use sha2::{Digest, Sha256};
-        let bytes = serde_json::to_vec(self).unwrap_or_default();
-        H256::from_slice(&Sha256::digest(&bytes)).unwrap()
+        let mut hasher = Sha256::new();
+        hasher.update(self.sender.as_bytes());
+        hasher.update(self.nonce.to_le_bytes());
+        hasher.update(&self.call_data);
+        hasher.update(self.call_gas_limit.to_le_bytes());
+        hasher.update(self.verification_gas_limit.to_le_bytes());
+        hasher.update(self.pre_verification_gas.to_le_bytes());
+        hasher.update(self.max_fee_per_gas.to_le_bytes());
+        if let Some(pm) = &self.paymaster {
+            hasher.update(pm.as_bytes());
+        }
+        hasher.update(&self.paymaster_data);
+        // signature intentionally excluded
+        H256::from_slice(&hasher.finalize()).unwrap()
     }
 
     /// Total gas this operation requires.
@@ -103,13 +133,21 @@ impl EntryPoint {
     }
 
     /// Validate a UserOperation before execution.
-    pub fn validate_user_op(&self, op: &UserOperation) -> Result<()> {
+    pub fn validate_user_op(
+        &self,
+        op: &UserOperation,
+        validator: &dyn AccountValidator,
+    ) -> Result<()> {
         op.validate()?;
 
         // Check sender is a registered smart account
         if !self.accounts.contains_key(&op.sender) {
             bail!("sender {:?} is not a registered smart account", op.sender);
         }
+
+        // Validate signature against the operation hash
+        let op_hash = op.hash();
+        validator.validate_signature(&op.sender, &op_hash, &op.signature)?;
 
         // If paymaster is specified, check it's registered and has funds
         if let Some(paymaster) = &op.paymaster {
@@ -118,7 +156,8 @@ impl EntryPoint {
                 .get(paymaster)
                 .ok_or_else(|| anyhow::anyhow!("paymaster not registered"))?;
 
-            let required_gas_cost = op.total_gas() as u128 * op.max_fee_per_gas;
+            let required_gas_cost =
+                (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
             if *deposit < required_gas_cost {
                 bail!(
                     "paymaster deposit {} insufficient for gas cost {}",
@@ -132,11 +171,15 @@ impl EntryPoint {
     }
 
     /// Execute a batch of UserOperations (bundler submission).
-    pub fn handle_ops(&mut self, ops: &[UserOperation]) -> Result<Vec<UserOpResult>> {
+    pub fn handle_ops(
+        &mut self,
+        ops: &[UserOperation],
+        validator: &dyn AccountValidator,
+    ) -> Result<Vec<UserOpResult>> {
         let mut results = Vec::new();
 
         for op in ops {
-            let result = match self.validate_user_op(op) {
+            let result = match self.validate_user_op(op, validator) {
                 Ok(()) => {
                     // Validate and increment nonce to prevent replay
                     let expected_nonce = self.nonces.get(&op.sender).copied().unwrap_or(0);
@@ -156,7 +199,7 @@ impl EntryPoint {
 
                     // Deduct paymaster deposit if applicable
                     if let Some(paymaster) = &op.paymaster {
-                        let cost = op.total_gas() as u128 * op.max_fee_per_gas;
+                        let cost = (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
                         if let Some(deposit) = self.paymasters.get_mut(paymaster) {
                             if *deposit < cost {
                                 return Err(anyhow::anyhow!(
@@ -211,6 +254,20 @@ pub struct UserOpResult {
 mod tests {
     use super::*;
 
+    struct AcceptAll;
+    impl AccountValidator for AcceptAll {
+        fn validate_signature(&self, _: &Address, _: &H256, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct RejectAll;
+    impl AccountValidator for RejectAll {
+        fn validate_signature(&self, _: &Address, _: &H256, _: &[u8]) -> Result<()> {
+            bail!("invalid signature")
+        }
+    }
+
     fn make_user_op(sender_byte: u8) -> UserOperation {
         UserOperation {
             sender: Address::from_slice(&[sender_byte; 20]).unwrap(),
@@ -246,20 +303,41 @@ mod tests {
     }
 
     #[test]
+    fn test_user_op_hash_excludes_signature() {
+        let mut op1 = make_user_op(1);
+        let mut op2 = make_user_op(1);
+        op1.signature = vec![1; 64];
+        op2.signature = vec![2; 64];
+        assert_eq!(op1.hash(), op2.hash(), "hash must not depend on signature");
+    }
+
+    #[test]
     fn test_entrypoint_validates_registered_account() {
         let mut ep = EntryPoint::new();
         let sender = Address::from_slice(&[1u8; 20]).unwrap();
         ep.register_account(sender, H256::from_slice(&[2u8; 32]).unwrap());
 
         let op = make_user_op(1);
-        assert!(ep.validate_user_op(&op).is_ok());
+        assert!(ep.validate_user_op(&op, &AcceptAll).is_ok());
     }
 
     #[test]
     fn test_entrypoint_rejects_unregistered_account() {
         let ep = EntryPoint::new();
         let op = make_user_op(1);
-        assert!(ep.validate_user_op(&op).is_err());
+        assert!(ep.validate_user_op(&op, &AcceptAll).is_err());
+    }
+
+    #[test]
+    fn test_entrypoint_rejects_invalid_signature() {
+        let mut ep = EntryPoint::new();
+        let sender = Address::from_slice(&[1u8; 20]).unwrap();
+        ep.register_account(sender, H256::zero());
+
+        let op = make_user_op(1);
+        let result = ep.validate_user_op(&op, &RejectAll);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid signature"));
     }
 
     #[test]
@@ -269,12 +347,12 @@ mod tests {
         let paymaster = Address::from_slice(&[2u8; 20]).unwrap();
 
         ep.register_account(sender, H256::zero());
-        ep.register_paymaster(paymaster, 100_000_000); // Large deposit
+        ep.register_paymaster(paymaster, 100_000_000);
 
         let mut op = make_user_op(1);
         op.paymaster = Some(paymaster);
 
-        assert!(ep.validate_user_op(&op).is_ok());
+        assert!(ep.validate_user_op(&op, &AcceptAll).is_ok());
     }
 
     #[test]
@@ -284,12 +362,12 @@ mod tests {
         let paymaster = Address::from_slice(&[2u8; 20]).unwrap();
 
         ep.register_account(sender, H256::zero());
-        ep.register_paymaster(paymaster, 1); // Tiny deposit
+        ep.register_paymaster(paymaster, 1);
 
         let mut op = make_user_op(1);
         op.paymaster = Some(paymaster);
 
-        assert!(ep.validate_user_op(&op).is_err());
+        assert!(ep.validate_user_op(&op, &AcceptAll).is_err());
     }
 
     #[test]
@@ -302,7 +380,7 @@ mod tests {
         ep.register_account(s2, H256::zero());
 
         let ops = vec![make_user_op(1), make_user_op(2)];
-        let results = ep.handle_ops(&ops).unwrap();
+        let results = ep.handle_ops(&ops, &AcceptAll).unwrap();
 
         assert_eq!(results.len(), 2);
         assert!(results[0].success);
@@ -310,8 +388,30 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_ops_rejects_bad_signature() {
+        let mut ep = EntryPoint::new();
+        let sender = Address::from_slice(&[1u8; 20]).unwrap();
+        ep.register_account(sender, H256::zero());
+
+        let ops = vec![make_user_op(1)];
+        let results = ep.handle_ops(&ops, &RejectAll).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(!results[0].success);
+        assert!(results[0].error.as_ref().unwrap().contains("signature"));
+    }
+
+    #[test]
     fn test_total_gas() {
         let op = make_user_op(1);
         assert_eq!(op.total_gas(), 100_000 + 50_000 + 10_000);
+    }
+
+    #[test]
+    fn test_total_gas_saturates() {
+        let mut op = make_user_op(1);
+        op.call_gas_limit = u64::MAX;
+        op.verification_gas_limit = 1;
+        assert_eq!(op.total_gas(), u64::MAX);
     }
 }
