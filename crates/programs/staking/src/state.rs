@@ -271,28 +271,47 @@ impl StakingState {
         validator: Address,
         slash_rate: u128, // Basis points (e.g., 500 = 5%)
     ) -> Result<u128, StakingError> {
-        let v = self
+        let validator_idx = self
             .validators
-            .iter_mut()
-            .find(|v| v.address == validator)
+            .iter()
+            .position(|v| v.address == validator)
             .ok_or(StakingError::ValidatorNotFound(validator))?;
 
         // Calculate slash amount
-        let slash_amount = v.staked_amount * slash_rate / 10000;
+        let slash_amount = self.validators[validator_idx].staked_amount * slash_rate / 10000;
 
         // Apply slash
-        v.staked_amount -= slash_amount;
-        v.slash_count += 1;
+        self.validators[validator_idx].staked_amount = self.validators[validator_idx]
+            .staked_amount
+            .saturating_sub(slash_amount);
+        self.validators[validator_idx].slash_count += 1;
 
-        // Also slash delegated amount proportionally
-        let delegated_slash = v.delegated_amount * slash_rate / 10000;
-        v.delegated_amount = v.delegated_amount.saturating_sub(delegated_slash);
+        // Slash each delegation entry so validator aggregate, unbonding, and
+        // reward distribution all operate on the same post-slash balances.
+        let mut delegated_slash = 0u128;
+        for delegation in self
+            .delegations
+            .iter_mut()
+            .filter(|delegation| delegation.validator == validator)
+        {
+            let slash = delegation.amount.saturating_mul(slash_rate) / 10000;
+            let remaining = delegation.amount.saturating_sub(slash);
+            delegated_slash += delegation.amount.saturating_sub(remaining);
+            delegation.amount = remaining;
+        }
+        self.delegations.retain(|delegation| delegation.amount > 0);
+        self.validators[validator_idx].delegated_amount = self
+            .delegations
+            .iter()
+            .filter(|delegation| delegation.validator == validator)
+            .map(|delegation| delegation.amount)
+            .sum();
         let total_slash = slash_amount + delegated_slash;
         self.total_staked = self.total_staked.saturating_sub(total_slash);
 
         // Jail validator if slashed too many times
-        if v.slash_count >= 3 {
-            v.is_active = false;
+        if self.validators[validator_idx].slash_count >= 3 {
+            self.validators[validator_idx].is_active = false;
         }
 
         Ok(total_slash)
@@ -499,6 +518,57 @@ mod tests {
             state.get_validator(&test_address(1)).unwrap().staked_amount,
             950_000_000
         );
+    }
+
+    #[test]
+    fn test_slash_updates_delegation_balances() {
+        let mut state = StakingState::new();
+
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
+            .unwrap();
+        state
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+            )
+            .unwrap();
+
+        let slashed = state.slash(test_address(1), 5000).unwrap();
+        assert_eq!(slashed, 750_000_000);
+        assert_eq!(
+            state
+                .get_validator(&test_address(1))
+                .unwrap()
+                .delegated_amount,
+            250_000_000
+        );
+        assert_eq!(state.delegations[0].amount, 250_000_000);
+
+        let err = state
+            .unbond(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+                1000,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StakingError::InsufficientDelegation {
+                have: 250_000_000,
+                requested: 500_000_000
+            }
+        ));
     }
 
     #[test]

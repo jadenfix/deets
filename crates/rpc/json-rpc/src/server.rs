@@ -70,6 +70,9 @@ pub trait RpcBackend: Send + Sync {
     fn get_latest_block_slot(&self) -> Result<Option<u64>> {
         Ok(None)
     }
+    fn allows_airdrop(&self) -> bool {
+        false
+    }
     fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
         Err(anyhow::anyhow!("airdrop not supported"))
     }
@@ -770,6 +773,13 @@ async fn handle_request_airdrop<B: RpcBackend>(
     }
 
     let backend = backend.read().await;
+    if !backend.allows_airdrop() {
+        return Err(JsonRpcError {
+            code: -32000,
+            message: "airdrop is disabled on this network".to_string(),
+            data: None,
+        });
+    }
     backend
         .request_airdrop(address, amount)
         .map_err(|e| JsonRpcError {
@@ -785,7 +795,10 @@ async fn handle_request_airdrop<B: RpcBackend>(
 mod tests {
     use super::*;
 
-    struct MockBackend;
+    #[derive(Default)]
+    struct MockBackend {
+        allow_airdrop: bool,
+    }
 
     impl RpcBackend for MockBackend {
         fn send_raw_transaction(&self, _tx_bytes: Vec<u8>) -> Result<H256> {
@@ -823,6 +836,18 @@ mod tests {
         fn get_finalized_slot(&self) -> Result<u64> {
             Ok(0)
         }
+
+        fn allows_airdrop(&self) -> bool {
+            self.allow_airdrop
+        }
+
+        fn request_airdrop(&self, _address: Address, _amount: u128) -> Result<()> {
+            if self.allow_airdrop {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("airdrop not supported"))
+            }
+        }
     }
 
     #[tokio::test]
@@ -841,7 +866,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_slot_number() {
-        let backend = Arc::new(RwLock::new(MockBackend));
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             method: "aeth_getSlotNumber".to_string(),
@@ -856,7 +881,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_transaction_payload() {
-        let backend = Arc::new(RwLock::new(MockBackend));
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
         let sender_pubkey = PublicKey::from_bytes(vec![7u8; 32]);
         let sender = sender_pubkey.to_address();
         let req = JsonRpcRequest {
@@ -881,5 +906,37 @@ mod tests {
         let response = process_rpc_request(req, backend).await;
         assert!(response.result.is_some());
         assert!(response.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_airdrop_rejected_when_disabled() {
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_requestAirdrop".to_string(),
+            params: vec![json!(format!("0x{}", "11".repeat(20))), json!("100")],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        let error = response.error.expect("airdrop should be rejected");
+        assert!(error.message.contains("disabled on this network"));
+    }
+
+    #[tokio::test]
+    async fn test_airdrop_allowed_when_backend_enables_it() {
+        let backend = Arc::new(RwLock::new(MockBackend {
+            allow_airdrop: true,
+        }));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_requestAirdrop".to_string(),
+            params: vec![json!(format!("0x{}", "11".repeat(20))), json!("100")],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend).await;
+        assert!(response.error.is_none());
+        assert_eq!(response.result, Some(json!({"success": true})));
     }
 }
