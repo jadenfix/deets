@@ -1,126 +1,61 @@
-# Aether Blockchain - Implementation Roadmap
+# Aether Implementation Roadmap
 
-## Progress Overview
+This roadmap describes the next delivery stages that would bring the current repository from a strong engineering prototype toward a more operationally complete project.
 
-**Current Status**: Phases 1-6 implemented; Phase 7 scaffolded. Active hardening push in progress.
+## Current Baseline
 
----
+The repository already contains:
 
-### Phase 0: Foundation -- COMPLETE
-- [x] Repository structure and Cargo workspace (47+ crates)
-- [x] Core type system (H256, Address, Signature, Transaction, Block, Receipt)
-- [x] eUTxO++ transaction model with R/W conflict detection
-- [x] CI: build, lint, test, Docker, multi-arch
+- a substantial Rust workspace covering node, consensus, runtime, storage, RPC, programs, verifiers, and tooling;
+- AI-mesh services and verification-related components;
+- SDK and web-client workspaces;
+- Docker, Helm, Kubernetes, Terraform, and observability assets; and
+- a GitHub Actions workflow that validates core Rust and container paths.
 
-### Phase 1: Core Ledger & Consensus -- COMPLETE
-- [x] Ed25519 signature verification (ed25519-dalek, batch verify)
-- [x] JSON-RPC server (8 methods, `aeth_*` namespace)
-- [x] ECVRF leader election (structure complete; crypto placeholder being replaced)
-- [x] BLS12-381 vote aggregation (blst-backed, 1.7k verifications/s)
-- [x] HotStuff 2-chain BFT consensus
-- [x] WASM runtime skeleton (gas metering; Wasmtime integration in progress)
-- [x] Parallel scheduler (R/W conflict detection)
-- [x] P2P networking (gossipsub module; libp2p wiring in progress)
+The roadmap below focuses on closing the gap between “implemented in the repository” and “fully repeatable, production-grade delivery.”
 
-### Phase 2: Economics & System Programs -- COMPLETE
-- [x] Staking program (bond/unbond/delegate/slash)
-- [x] Governance program (proposals, voting, quorum, timelock)
-- [x] AMM DEX (constant product x*y=k, LP tokens)
-- [x] AIC token (deflationary, mint/burn)
-- [x] Job escrow (post/accept/submit VCR/challenge/settle)
-- [x] Reputation program
+## 1. CI/CD Completion
 
-### Phase 3: AI Mesh & Verifiable Compute -- PARTIAL
-- [x] TEE attestation types (SEV-SNP, TDX, Nitro)
-- [x] VCR validation structure (quorum consensus)
-- [x] KZG commitment types (structure; pairing implementation in progress)
-- [x] AI worker and coordinator (code exists but disabled in workspace)
-- [ ] Real TEE cert-chain verification (x509)
-- [ ] Real KZG pairing-based proofs
-- [x] VCR validator wired to TEE + KZG verifiers (simulation-grade wiring)
-- [ ] AI mesh workspace members re-enabled in CI
+Priority outcomes:
 
-### Phase 4: Networking, DA & Performance -- COMPLETE
-- [x] Turbine block propagation (tree topology, broadcast + repair)
-- [x] Reed-Solomon erasure coding RS(10,2) -- 167 MB/s encode, 572 MB/s decode
-- [x] Batch signature verification -- Ed25519: 105k sig/s, BLS: 1.7k/s
-- [x] QUIC transport (Quinn + TLS 1.3)
-- [x] Data availability tests (packet loss, Byzantine, stress)
+- add the TypeScript SDK and frontend workspaces to GitHub Actions;
+- add explicit `cargo check --workspace --all-features` coverage if desired separately from lint/test;
+- add documentation link and structure validation;
+- publish versioned build artifacts and container images; and
+- establish a release process that is reproducible from tags rather than manual operator steps.
 
-### Phase 5: SRE & Observability -- PARTIAL
-- [x] Prometheus metrics (60+ across consensus, DA, networking, runtime, AI)
-- [x] Grafana dashboard with SLO tracking
-- [x] Alert rules (10+)
-- [x] Metrics HTTP exporter on port 9090
-- [ ] Helm charts (validator, rpc, indexer, prom/grafana)
-- [ ] Terraform provider modules (AWS/GCP/Azure)
-- [ ] Runbooks (incident triage, rollback, key-loss)
-- [ ] Chaos testing suite
-- [ ] State-sync protocol
+## 2. Protocol Hardening
 
-### Phase 6: Security & Formal Methods -- PARTIAL
-- [x] STRIDE/LINDDUN threat model (23 threats)
-- [x] TLA+ specification (HotStuff safety/liveness)
-- [x] KES key rotation protocol
-- [x] Remote signer architecture design
-- [ ] Coq/Isabelle formal proofs
-- [ ] Full external audit execution
-- [ ] Chaos/fault injection testing
+Priority outcomes:
 
-### Phase 7: Developer Platform & Ecosystem -- SCAFFOLDED
-- [x] Rust SDK (job builder, tutorials)
-- [x] TypeScript SDK (transactions, jobs, explorer hooks)
-- [x] Python SDK (transactions, job tooling)
-- [x] aetherctl CLI (transfer/staking/job flows + tests)
-- [x] Explorer scaffold (mock data; live RPC in progress)
-- [x] Wallet scaffold (demo keys; real signing in progress)
-- [x] Faucet and scorecard automation
-- [x] SDKs wired to real RPC
-- [x] Explorer/wallet connected to live node (with mock fallback)
-- [x] Indexer implementation
-- [x] Load generator implementation
-- [x] Keytool implementation
-- [x] CONTRIBUTING.md
+- continue hardening consensus, slashing, runtime, and state-transition behavior;
+- expand property testing, fuzzing, and long-running soak coverage;
+- validate cross-crate integration between node, RPC, P2P, and storage paths; and
+- document maturity boundaries between local/dev flows and higher-environment expectations.
 
----
+## 3. AI Verification Hardening
 
-## Active Hardening Push
+Priority outcomes:
 
-The `jaden/big-pushg` branch is closing all gaps across phases 1-7:
-- Core wiring: Node + RPC + P2P integration
-- Crypto hardening: Real VRF, KZG, verification pipelines
-- Runtime: Wasmtime integration, host function binding
-- AI mesh: Re-enable workspace members, wire coordinator
-- Interfaces: SDK real RPC calls, explorer/wallet live data
-- Tooling: Indexer, loadgen, keytool
-- Ops: Helm, Terraform modules, runbooks, chaos tests
-- Docs: Reconcile all status documents
+- tighten attestation verification and verifier integration;
+- harden proof-validation boundaries and challenge/settlement paths;
+- define clear criteria for when AI-mesh components are CI-required versus experimental; and
+- ensure operational documentation matches the actual supported workflows for those services.
 
----
+## 4. Deployment and Operations Maturity
 
-## Acceptance Scripts
+Priority outcomes:
 
-| Phase | Script |
-|-------|--------|
-| 1 | `./scripts/run_phase1_acceptance.sh` |
-| 2 | `./scripts/run_phase2_acceptance.sh` |
-| 3 | `./scripts/run_phase3_acceptance.sh` |
-| 4 | `./scripts/run_phase4_acceptance.sh` |
-| 5 | `./scripts/run_phase5_acceptance.sh` |
-| 6 | `./scripts/run_phase6_acceptance.sh` |
-| 7 | `./scripts/run_phase7_acceptance.sh` |
+- validate Compose, Helm, Kubernetes, and Terraform assets against real target environments;
+- define the supported deployment topologies explicitly;
+- add repeatable operational procedures for recovery, rollback, secrets, and key handling; and
+- close the gap between local devnet documentation and multi-environment deployment guidance.
 
-## Branch Strategy
+## 5. Developer Experience
 
-Feature work on `jaden/big-pushg`, weekly integration to `main`.
+Priority outcomes:
 
-## Commit Format
-
-```
-feat(scope): description
-fix(scope): description
-docs(scope): description
-test(scope): description
-```
-
-Scopes: crypto, consensus, ledger, runtime, networking, rpc, programs, ai-mesh, tools, ops, docs.
+- keep setup, contributing, and architecture docs synchronized with the repo;
+- standardize the local command surface across scripts, Make targets, and package scripts;
+- improve cross-language testing guidance for Rust, TypeScript, Python, and UI work; and
+- make project status and roadmap documents evidence-based and easier for external contributors to trust.
