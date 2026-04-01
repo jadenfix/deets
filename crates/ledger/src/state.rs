@@ -522,6 +522,9 @@ impl Ledger {
         }
 
         let transfer_payload = self.decode_transfer_payload(tx)?;
+        if transfer_payload.is_some() && (!tx.inputs.is_empty() || !tx.outputs.is_empty()) {
+            bail!("transfer program transactions cannot mix UTxO inputs/outputs");
+        }
 
         let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
         let total_debit = tx
@@ -1226,6 +1229,56 @@ mod tests {
             matches!(&receipts[1].status, TransactionStatus::Failed { reason } if reason.contains("invalid nonce")),
             "duplicate nonce in same block should be rejected, got: {:?}",
             receipts[1].status
+        );
+    }
+
+    #[test]
+    fn test_overlay_rejects_transfer_with_utxo_mixing() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+        ledger.seed_account(&address, 1_000_000).unwrap();
+
+        let recipient_keypair = Keypair::generate();
+        let recipient = Address::from_slice(&recipient_keypair.to_address()).unwrap();
+
+        let payload = TransferPayload {
+            recipient,
+            amount: 1_000,
+            memo: None,
+        };
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 999_999,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: Some(TRANSFER_PROGRAM_ID),
+            data: bincode::serialize(&payload).unwrap(),
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let (receipts, _overlay) =
+            ledger.apply_block_speculatively(&[tx]).unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("cannot mix")),
+            "transfer+UTxO mixing should be rejected in overlay path, got: {:?}",
+            receipts[0].status
         );
     }
 }
