@@ -134,7 +134,7 @@ impl ParallelScheduler {
                 executor(&batch[0])?;
             } else {
                 // Parallel execution within batch
-                batch.par_iter().try_for_each(|tx| executor(tx))?;
+                batch.par_iter().try_for_each(&executor)?;
             }
         }
 
@@ -173,7 +173,7 @@ impl ParallelScheduler {
         let mut all_results = Vec::with_capacity(batches.len());
 
         for batch in batches {
-            let results: Result<Vec<R>> = batch.par_iter().map(|tx| executor(tx)).collect();
+            let results: Result<Vec<R>> = batch.par_iter().map(&executor).collect();
             all_results.push(results?);
         }
 

@@ -281,7 +281,7 @@ impl HybridConsensus {
         let mut hasher = Sha256::new();
         hasher.update(self.epoch_randomness.as_bytes());
         hasher.update(block_vrf_output);
-        hasher.update(&self.current_epoch.to_le_bytes());
+        hasher.update(self.current_epoch.to_le_bytes());
         self.epoch_randomness = H256::from_slice(&hasher.finalize()).unwrap();
     }
 

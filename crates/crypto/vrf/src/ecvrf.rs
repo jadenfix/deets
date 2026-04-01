@@ -13,7 +13,6 @@ use sha2::{Digest, Sha512};
 ///
 /// Proof structure: Gamma (32 bytes) || c (16 bytes) || s (32 bytes) = 80 bytes
 /// Output: SHA-512(suite_string || 0x03 || Gamma_cofactor) truncated to 32 bytes
-
 const SUITE_STRING: u8 = 0x04; // ECVRF-EDWARDS25519-SHA512-ELL2
 
 #[derive(Clone, Debug)]

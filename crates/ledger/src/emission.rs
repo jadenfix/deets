@@ -13,7 +13,7 @@
 /// - Base fee × gas_used: BURNED (removed from supply)
 /// - 60% of priority fee (tip): to block proposer
 /// - 40% of priority fee (tip): to treasury
-
+///
 /// Default slots per year (500ms slots × 2 per second × 86400 seconds/day × 365 days).
 /// Prefer using EmissionSchedule fields which are derived from ChainConfig.
 pub const DEFAULT_SLOTS_PER_YEAR: u64 = 63_072_000;

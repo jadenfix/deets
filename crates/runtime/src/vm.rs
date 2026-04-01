@@ -9,7 +9,6 @@ use wasmtime::*;
 /// Uses Wasmtime with fuel-based gas metering, deterministic configuration
 /// (no SIMD, no threads, no floating point), and host function bindings
 /// for blockchain state interaction.
-
 pub struct WasmVm {
     engine: Engine,
     gas_limit: u64,
@@ -249,7 +248,7 @@ impl WasmVm {
              val_len: i32|
              -> i32 {
                 // Charge fuel for host function call (base + per-byte)
-                let val_cost = (val_len as u64).checked_mul(20).unwrap_or(u64::MAX);
+                let val_cost = (val_len as u64).saturating_mul(20);
                 let fuel_cost = 5000u64.saturating_add(val_cost);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
@@ -297,7 +296,7 @@ impl WasmVm {
             "emit_log",
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, data_ptr: i32, data_len: i32| -> i32 {
                 // Charge fuel for host function call
-                let log_byte_cost = (data_len as u64).checked_mul(8).unwrap_or(u64::MAX);
+                let log_byte_cost = (data_len as u64).saturating_mul(8);
                 let fuel_cost = 375u64.saturating_add(log_byte_cost);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {

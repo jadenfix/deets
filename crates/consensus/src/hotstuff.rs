@@ -16,8 +16,7 @@ use std::collections::HashMap;
 /// Block B is finalized when:
 ///   1. B has prevote QC (≥2/3 stake)
 ///   2. B's child C has precommit QC (≥2/3 stake)
-///   3. C.parent_hash == B.hash
-///   → B is finalized
+///   3. C.parent_hash == B.hash → B is finalized
 ///
 /// VIEW-CHANGE:
 /// When pacemaker timeout fires:
@@ -403,7 +402,7 @@ impl HotStuffConsensus {
     fn highest_qc(&self) -> (Slot, H256) {
         let mut best_slot = 0;
         let mut best_hash = H256::zero();
-        for ((slot, _, hash), _) in &self.qcs {
+        for (slot, _, hash) in self.qcs.keys() {
             if *slot > best_slot {
                 best_slot = *slot;
                 best_hash = *hash;
