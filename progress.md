@@ -312,3 +312,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - Helm charts, runbooks, chaos testing
 - Coq/Isabelle formal proofs
 - CONTRIBUTING.md (now added)
+
+---
+
+## Agent 2 Cycle Log
+
+- **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
