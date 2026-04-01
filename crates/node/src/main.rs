@@ -122,7 +122,7 @@ async fn run_slot_loop(
 /// P2P outbound loop: reads OutboundMessages from node and publishes to network.
 async fn run_p2p_outbound(
     mut p2p: P2PNetwork,
-    mut outbound_rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    mut outbound_rx: mpsc::Receiver<OutboundMessage>,
     net_tx: mpsc::UnboundedSender<aether_p2p::network::NetworkEvent>,
 ) -> Result<()> {
     loop {
@@ -161,6 +161,20 @@ async fn run_p2p_outbound(
         }
     }
     Ok(())
+}
+
+/// Wait for a SIGTERM signal (used for graceful shutdown in containers).
+#[cfg(unix)]
+async fn sigterm_recv() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sig = signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+    sig.recv().await;
+}
+
+#[cfg(not(unix))]
+async fn sigterm_recv() {
+    // SIGTERM is not available on non-Unix platforms; pend forever.
+    std::future::pending::<()>().await;
 }
 
 #[tokio::main]
@@ -281,8 +295,10 @@ async fn main() -> Result<()> {
         tracing::info!("Node already initialized, skipping genesis funding");
     }
 
-    // Set up P2P outbound channel
-    let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+    // Set up P2P outbound channel with bounded capacity for backpressure.
+    // If the P2P layer can't keep up, senders will drop messages rather than OOMing.
+    const P2P_OUTBOUND_CAPACITY: usize = 4096;
+    let (outbound_tx, outbound_rx) = mpsc::channel(P2P_OUTBOUND_CAPACITY);
     node.set_broadcast_tx(outbound_tx);
 
     // Set up P2P inbound channel
@@ -350,10 +366,11 @@ async fn main() -> Result<()> {
                 Err(e) => return Err(anyhow::anyhow!("p2p task failed: {e}")),
             }
         }
-        // TODO: Also handle SIGTERM for graceful shutdown in containerized environments.
-        // Currently only SIGINT (Ctrl-C) is handled.
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received Ctrl-C, shutting down...");
+            tracing::info!("Received SIGINT, shutting down...");
+        }
+        _ = sigterm_recv() => {
+            tracing::info!("Received SIGTERM, shutting down...");
         }
     }
 
