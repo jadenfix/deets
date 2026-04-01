@@ -112,7 +112,11 @@ impl VcrValidator {
         Ok(())
     }
 
-    /// Verify VCRs from multiple workers (quorum consensus)
+    /// Verify VCRs from multiple workers (quorum consensus).
+    ///
+    /// Only VCRs that agree on the majority output are verified and counted
+    /// toward quorum. Dissenting VCRs are ignored — a single invalid dissenter
+    /// cannot poison a valid quorum. Workers must be unique (Sybil protection).
     pub fn verify_quorum(&self, vcrs: &[VerifiableComputeReceipt]) -> Result<()> {
         if vcrs.len() < self.quorum_size {
             bail!("insufficient quorum: {} < {}", vcrs.len(), self.quorum_size);
@@ -126,24 +130,51 @@ impl VcrValidator {
             }
         }
 
-        // All VCRs should agree on output
-        let output_hash = vcrs[0].output_hash;
-        let mut agreement_count = 0;
-
+        // Sybil protection: reject duplicate worker IDs
+        let mut seen_workers = std::collections::HashSet::new();
         for vcr in vcrs {
-            if vcr.output_hash == output_hash {
-                agreement_count += 1;
+            if !seen_workers.insert(&vcr.worker_id) {
+                bail!("duplicate worker ID in quorum — possible Sybil attack");
             }
         }
 
-        // Check 2/3 consensus
-        if agreement_count * 3 < vcrs.len() * 2 {
-            bail!("no consensus: {} / {} agree", agreement_count, vcrs.len());
+        // Find the majority output hash by counting occurrences
+        let mut counts: std::collections::HashMap<H256, usize> = std::collections::HashMap::new();
+        for vcr in vcrs {
+            *counts.entry(vcr.output_hash).or_insert(0) += 1;
+        }
+        let (&majority_output, &majority_count) = counts
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .unwrap(); // safe: vcrs is non-empty
+
+        // Check 2/3 consensus on the majority output
+        if majority_count * 3 < vcrs.len() * 2 {
+            bail!(
+                "no consensus: {} / {} agree on majority output",
+                majority_count,
+                vcrs.len()
+            );
         }
 
-        // Verify each VCR individually
+        // Only verify VCRs that agree with the majority — dissenters are
+        // ignored so one invalid VCR cannot poison the entire quorum.
+        let mut verified_count = 0;
         for vcr in vcrs {
+            if vcr.output_hash != majority_output {
+                continue;
+            }
             self.verify(vcr)?;
+            verified_count += 1;
+        }
+
+        // Ensure enough verified VCRs meet the quorum threshold
+        if verified_count < self.quorum_size {
+            bail!(
+                "insufficient verified quorum: {} < {}",
+                verified_count,
+                self.quorum_size
+            );
         }
 
         Ok(())
@@ -344,6 +375,69 @@ mod tests {
         vcrs[1].job_id = H256::from_slice(&[1u8; 32]).unwrap();
 
         assert!(validator.verify_quorum(&vcrs).is_err());
+    }
+
+    #[test]
+    fn test_quorum_not_poisoned_by_dissenter() {
+        // A dissenting VCR with an invalid signature should NOT cause the
+        // quorum to fail — only majority-agreeing VCRs are verified.
+        let validator = VcrValidator::new_for_test();
+
+        let mut vcrs = vec![
+            create_test_vcr(&Keypair::generate(), 5), // agrees
+            create_test_vcr(&Keypair::generate(), 5), // agrees
+            create_test_vcr(&Keypair::generate(), 5), // agrees
+        ];
+
+        // Add a dissenter with a corrupted signature
+        let mut bad_vcr = create_test_vcr(&Keypair::generate(), 99);
+        bad_vcr.signature[0] ^= 0xFF;
+        vcrs.push(bad_vcr);
+
+        // Should succeed — the bad dissenter is ignored
+        assert!(
+            validator.verify_quorum(&vcrs).is_ok(),
+            "valid quorum should not be poisoned by invalid dissenter"
+        );
+    }
+
+    #[test]
+    fn test_quorum_rejects_sybil_duplicate_workers() {
+        let validator = VcrValidator::new_for_test();
+        let worker = Keypair::generate();
+
+        // Same worker submits 3 identical VCRs — Sybil attack
+        let vcrs = vec![
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+        ];
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate worker"),
+            "should reject Sybil: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_quorum_finds_true_majority() {
+        // If vcrs[0] is in the minority, the quorum should still find
+        // and use the actual majority output.
+        let validator = VcrValidator::new_for_test();
+
+        let vcrs = vec![
+            create_test_vcr(&Keypair::generate(), 99), // minority (first!)
+            create_test_vcr(&Keypair::generate(), 5),  // majority
+            create_test_vcr(&Keypair::generate(), 5),  // majority
+            create_test_vcr(&Keypair::generate(), 5),  // majority
+        ];
+
+        assert!(
+            validator.verify_quorum(&vcrs).is_ok(),
+            "should succeed using the actual majority, not vcrs[0]"
+        );
     }
 
     #[test]
