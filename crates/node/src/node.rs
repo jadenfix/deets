@@ -1500,6 +1500,7 @@ mod tests {
         let unbond_amount = 5_000u128;
         node.staking_state_mut().unbonding.push(Unbonding {
             address: delegator,
+            validator: Address::from(aether_types::H160([0x01u8; 20])),
             amount: unbond_amount,
             complete_slot: 0,
         });

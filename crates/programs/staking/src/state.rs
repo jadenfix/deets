@@ -86,6 +86,7 @@ pub struct Delegation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Unbonding {
     pub address: Address,
+    pub validator: Address,
     pub amount: u128,
     pub complete_slot: u64,
 }
@@ -257,6 +258,7 @@ impl StakingState {
         // Add to unbonding queue (7 days = 100,800 slots at 500ms/slot)
         self.unbonding.push(Unbonding {
             address: delegator,
+            validator,
             amount,
             complete_slot: current_slot + 100_800,
         });
@@ -340,8 +342,25 @@ impl StakingState {
             .filter(|delegation| delegation.validator == validator)
             .map(|delegation| delegation.amount)
             .sum();
-        let total_slash = slash_amount.saturating_add(delegated_slash);
-        self.total_staked = self.total_staked.saturating_sub(total_slash);
+
+        // Proportionally reduce pending unbonding entries for this validator's delegators.
+        // Without this, a delegator who unbonds before a slash can withdraw the full
+        // pre-slash amount, effectively stealing slashed funds.
+        let mut unbonding_slash = 0u128;
+        for entry in self
+            .unbonding
+            .iter_mut()
+            .filter(|u| u.validator == validator)
+        {
+            let slash = entry.amount.saturating_mul(slash_rate) / 10000;
+            entry.amount = entry.amount.saturating_sub(slash);
+            unbonding_slash = unbonding_slash.saturating_add(slash);
+        }
+        self.unbonding.retain(|u| u.amount > 0);
+
+        let total_slash = slash_amount
+            .saturating_add(delegated_slash)
+            .saturating_add(unbonding_slash);
 
         // Jail validator if slashed too many times
         if self.validators[validator_idx].slash_count >= 3 {
@@ -620,6 +639,7 @@ mod tests {
 
         state.unbonding.push(Unbonding {
             address: test_address(1),
+            validator: test_address(2),
             amount: 100,
             complete_slot: 1000,
         });
@@ -849,6 +869,87 @@ mod tests {
             state.get_total_staked(),
             actual_total,
             "total_staked must equal sum of validator stakes + delegation amounts"
+        );
+    }
+
+    #[test]
+    fn test_slash_reduces_unbonding_queue() {
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(10),
+            )
+            .unwrap();
+        state
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                800_000_000,
+            )
+            .unwrap();
+
+        // Delegator unbonds 800M at slot 100
+        state
+            .unbond(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                800_000_000,
+                100,
+            )
+            .unwrap();
+        assert_eq!(state.unbonding.len(), 1);
+        assert_eq!(state.unbonding[0].amount, 800_000_000);
+
+        // Validator slashed 50%
+        let slashed = state.slash(test_address(1), 5000).unwrap();
+        // Slash covers: validator stake (1B * 50% = 500M) + unbonding (800M * 50% = 400M)
+        assert_eq!(slashed, 900_000_000);
+
+        // Unbonding entry should be reduced proportionally
+        assert_eq!(state.unbonding[0].amount, 400_000_000);
+
+        // Complete unbonding — delegator gets post-slash amount
+        let completed = state.complete_unbonding(200_000);
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].1, 400_000_000);
+    }
+
+    #[test]
+    fn test_slash_removes_zero_unbonding_entries() {
+        let mut state = StakingState::new();
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                0,
+                test_address(10),
+            )
+            .unwrap();
+        state
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                100,
+            )
+            .unwrap();
+
+        state
+            .unbond(test_address(3), test_address(3), test_address(1), 100, 100)
+            .unwrap();
+
+        // 100% slash zeros the unbonding entry and removes it
+        state.slash(test_address(1), 10000).unwrap();
+        assert!(
+            state.unbonding.is_empty(),
+            "zero-amount unbonding entries should be pruned"
         );
     }
 }
