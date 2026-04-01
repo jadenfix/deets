@@ -69,10 +69,12 @@ pub struct Mempool {
     current_slot: u64,
     /// Fee parameters for validating transaction fees.
     fee_params: FeeParams,
+    /// Expected chain ID for replay protection (0 = no validation).
+    expected_chain_id: u64,
 }
 
 impl Mempool {
-    pub fn new(fee_params: FeeParams) -> Self {
+    pub fn new(fee_params: FeeParams, expected_chain_id: u64) -> Self {
         Mempool {
             pending: BinaryHeap::new(),
             by_hash: HashMap::new(),
@@ -83,12 +85,14 @@ impl Mempool {
             current_time: 0,
             current_slot: 0,
             fee_params,
+            expected_chain_id,
         }
     }
 
     /// Create with devnet fee defaults (convenience for tests).
     pub fn with_defaults() -> Self {
-        Self::new(aether_types::ChainConfig::devnet().fees)
+        let config = aether_types::ChainConfig::devnet();
+        Self::new(config.fees, config.chain.chain_id_numeric)
     }
 
     /// Update the current slot (for forced inclusion age tracking).
@@ -103,6 +107,15 @@ impl Mempool {
 
     /// Add a transaction to the mempool with nonce ordering and rate limiting.
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
+        // Reject cross-chain transactions (replay protection)
+        if self.expected_chain_id != 0 && tx.chain_id != self.expected_chain_id {
+            anyhow::bail!(
+                "chain_id mismatch: tx has {}, expected {}",
+                tx.chain_id,
+                self.expected_chain_id
+            );
+        }
+
         tx.verify_signature()
             .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
 
@@ -380,6 +393,36 @@ impl Mempool {
     }
 
     fn evict_lowest_fee(&mut self) {
+        // Prefer evicting queued (future-nonce) txs over ready-to-execute pending txs.
+        let mut worst_queued: Option<(Address, u64, u128)> = None;
+        for (sender, nonces) in &self.queued {
+            for (nonce, tx) in nonces {
+                let dominated = worst_queued
+                    .as_ref()
+                    .map_or(true, |(_, _, f)| tx.fee < *f);
+                if dominated {
+                    worst_queued = Some((*sender, *nonce, tx.fee));
+                }
+            }
+        }
+
+        if let Some((sender, nonce, _)) = worst_queued {
+            if let Some(nonces) = self.queued.get_mut(&sender) {
+                if let Some(tx) = nonces.remove(&nonce) {
+                    let tx_hash = tx.hash();
+                    self.by_hash.remove(&tx_hash);
+                    if let Some(sender_txs) = self.by_sender.get_mut(&sender) {
+                        sender_txs.remove(&tx_hash);
+                    }
+                }
+                if nonces.is_empty() {
+                    self.queued.remove(&sender);
+                }
+            }
+            return;
+        }
+
+        // Fall back to evicting lowest-fee pending tx
         let mut txs: Vec<_> = std::mem::take(&mut self.pending).into_vec();
         txs.sort_by(|a, b| b.cmp(a));
         if let Some(lowest) = txs.pop() {
@@ -423,7 +466,7 @@ mod tests {
         let sender = sender_pubkey.to_address();
         let mut tx = Transaction {
             nonce,
-            chain_id: 1,
+            chain_id: 900, // devnet chain_id_numeric
             sender,
             sender_pubkey,
             inputs: vec![],
@@ -624,5 +667,80 @@ mod tests {
         let result = mempool.add_transaction(tx);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("rate limited"));
+    }
+
+    #[test]
+    fn test_chain_id_mismatch_rejected() {
+        let mut mempool = Mempool::with_defaults();
+        let kp = Keypair::generate();
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+        let sender = sender_pubkey.to_address();
+
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1, // wrong chain_id (devnet expects 900)
+            sender,
+            sender_pubkey,
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21000,
+            fee: 60_000,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(kp.sign(hash.as_bytes()));
+
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("chain_id mismatch"),
+            "wrong chain_id should be rejected"
+        );
+    }
+
+    #[test]
+    fn test_eviction_cleans_queued_map() {
+        let mut mempool = Mempool::with_defaults();
+        let kp = Keypair::generate();
+
+        // Add nonce 0 (pending) and nonce 5 (queued)
+        let tx0 = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let tx5 = create_test_tx_with_keypair(&kp, 5, 60_000);
+        mempool.add_transaction(tx0).unwrap();
+        mempool.add_transaction(tx5).unwrap();
+        assert_eq!(mempool.queued_len(), 1);
+
+        // Evict should remove the queued tx first (lower priority than pending)
+        mempool.evict_lowest_fee();
+        assert_eq!(mempool.queued_len(), 0, "eviction should clean queued map");
+        assert_eq!(mempool.len(), 1, "only pending tx should remain");
+    }
+
+    #[test]
+    fn test_eviction_prefers_lowest_fee_queued() {
+        let mut mempool = Mempool::with_defaults();
+        let kp1 = Keypair::generate();
+        let kp2 = Keypair::generate();
+
+        // kp1: nonce 0 pending, nonce 5 queued with high fee
+        mempool.add_transaction(create_test_tx_with_keypair(&kp1, 0, 60_000)).unwrap();
+        mempool.add_transaction(create_test_tx_with_keypair(&kp1, 5, 200_000)).unwrap();
+
+        // kp2: nonce 0 pending, nonce 3 queued with low fee
+        mempool.add_transaction(create_test_tx_with_keypair(&kp2, 0, 60_000)).unwrap();
+        mempool.add_transaction(create_test_tx_with_keypair(&kp2, 3, 60_000)).unwrap();
+
+        assert_eq!(mempool.queued_len(), 2);
+        assert_eq!(mempool.len(), 4);
+
+        mempool.evict_lowest_fee();
+
+        // Should evict kp2's queued tx (lower fee: 60k < 200k)
+        assert_eq!(mempool.queued_len(), 1);
+        assert_eq!(mempool.len(), 3);
     }
 }
