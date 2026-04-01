@@ -169,7 +169,7 @@ fn test_tc_advances_consensus() {
         signers: vec![],
     };
 
-    consensus.on_timeout_certificate(&tc);
+    consensus.on_timeout_certificate(&tc).unwrap();
     assert_eq!(consensus.current_slot(), 1, "slot should advance after TC");
     assert_eq!(
         *consensus.current_phase(),
