@@ -176,10 +176,8 @@ impl KesKey {
 impl Drop for KesKey {
     fn drop(&mut self) {
         // Zeroize all remaining secret key material
-        for leaf in &mut self.leaves {
-            if let Some(ref mut key_bytes) = leaf {
-                key_bytes.zeroize();
-            }
+        for key_bytes in self.leaves.iter_mut().flatten() {
+            key_bytes.zeroize();
         }
     }
 }
