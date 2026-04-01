@@ -59,7 +59,11 @@ impl AicTokenState {
         }
     }
 
-    /// Mint new tokens
+    /// Mint new tokens.
+    ///
+    /// Only the `mint_authority` can mint. There is currently no supply cap
+    /// enforced at the program level — governance should impose minting limits
+    /// to prevent unchecked inflation.
     pub fn mint(&mut self, caller: Address, to: Address, amount: u128) -> Result<(), String> {
         if caller != self.mint_authority {
             return Err("unauthorized".to_string());

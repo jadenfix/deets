@@ -290,6 +290,11 @@ impl GovernanceState {
     ///
     /// The delegate votes on behalf of the delegator. The delegator's
     /// raw voting power is added to the delegate's effective power.
+    ///
+    /// **Note:** Delegation takes effect immediately in `effective_power`.
+    /// To prevent flash-delegation attacks (delegate → vote → undelegate in
+    /// the same block), proposals record a `power_snapshot` at creation time
+    /// and votes are weighted by that snapshot, not current effective power.
     pub fn delegate(&mut self, delegator: Address, delegate: Address) -> Result<(), String> {
         if delegator == delegate {
             return Err("cannot delegate to self".into());
@@ -402,19 +407,23 @@ impl GovernanceState {
     }
 
     /// Execute a treasury allocation (after proposal passes).
+    ///
+    /// TODO: Currently only decrements the treasury balance. A production
+    /// implementation must transfer `amount` to `recipient` via the ledger.
     pub fn execute_treasury_allocation(
         &mut self,
-        _recipient: &Address,
+        recipient: &Address,
         amount: u128,
     ) -> Result<(), String> {
         if amount > self.treasury_balance {
             return Err(format!(
-                "insufficient treasury: {} < {}",
+                "insufficient treasury balance: have {}, need {}",
                 self.treasury_balance, amount
             ));
         }
         self.treasury_balance -= amount;
-        // In production: transfer `amount` to `recipient` via ledger
+        // TODO: emit event/log for treasury allocation to `recipient`
+        let _ = recipient; // used once ledger integration is complete
         Ok(())
     }
 

@@ -177,8 +177,8 @@ impl JobEscrowState {
             }
         }
 
-        // In production: verify VCR proof
-        // For now: assume valid
+        // TODO(security): Implement actual VCR proof verification before mainnet.
+        // Currently accepts all submitted results without cryptographic validation.
 
         job.status = JobStatus::Verified;
 

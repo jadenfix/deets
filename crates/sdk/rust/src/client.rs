@@ -15,6 +15,7 @@ pub struct AetherClient {
 }
 
 impl AetherClient {
+    /// Create a new client connected to the given RPC endpoint URL.
     pub fn new(endpoint: impl Into<String>) -> Self {
         AetherClient {
             endpoint: endpoint.into(),
@@ -22,6 +23,7 @@ impl AetherClient {
         }
     }
 
+    /// Create a new client with a custom configuration.
     pub fn with_config(endpoint: impl Into<String>, config: ClientConfig) -> Self {
         AetherClient {
             endpoint: endpoint.into(),
@@ -29,22 +31,27 @@ impl AetherClient {
         }
     }
 
+    /// Return the RPC endpoint URL.
     pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
+    /// Return a reference to the client configuration.
     pub fn config(&self) -> &ClientConfig {
         &self.config
     }
 
+    /// Start building a token transfer transaction.
     pub fn transfer(&self) -> TransferBuilder {
         TransferBuilder::new(&self.config)
     }
 
+    /// Start building an AI job submission.
     pub fn job(&self) -> JobBuilder {
         JobBuilder::new(&self.endpoint)
     }
 
+    /// Submit a signed transaction to the network.
     pub async fn submit(&self, tx: Transaction) -> Result<SubmitResponse> {
         tx.verify_signature()?;
         let fee_params = aether_types::ChainConfig::devnet().fees;
@@ -110,6 +117,7 @@ impl AetherClient {
         })
     }
 
+    /// Prepare a job submission payload without sending it.
     pub fn prepare_job_submission(&self, job: JobRequest) -> JobSubmission {
         JobSubmission {
             url: format!("{}/v1/jobs", self.endpoint),
@@ -284,6 +292,7 @@ mod tests {
         let submission = client
             .job()
             .job_id("hello-aic-job")
+            .unwrap()
             .model_hash(model_hash)
             .input_hash(input_hash)
             .max_fee(500_000_000)
