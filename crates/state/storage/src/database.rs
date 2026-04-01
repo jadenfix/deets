@@ -168,7 +168,7 @@ impl Storage {
         let iter = self
             .db
             .iterator_cf(cf_handle, rocksdb::IteratorMode::Start)
-            .map(|item| item.expect("RocksDB iterator corruption — database may need repair"));
+            .filter_map(|item| item.ok());
         Ok(Box::new(iter))
     }
 

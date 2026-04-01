@@ -242,8 +242,23 @@ impl LiquidityPool {
 /// Safe multiplication then division: computes a * b / c without intermediate overflow
 /// when possible, falling back to an error if the product overflows u128.
 fn mul_div(a: u128, b: u128, c: u128) -> Result<u128, String> {
-    a.checked_mul(b)
-        .map(|ab| ab / c)
+    if c == 0 {
+        return Err("division by zero in proportional calculation".to_string());
+    }
+    // Try direct multiplication first
+    if let Some(ab) = a.checked_mul(b) {
+        return Ok(ab / c);
+    }
+    // Overflow: use wider arithmetic via (a/c)*b + (a%c)*b/c
+    let whole = (a / c)
+        .checked_mul(b)
+        .ok_or("overflow in proportional calculation")?;
+    let remainder = (a % c)
+        .checked_mul(b)
+        .ok_or("overflow in proportional calculation")?
+        / c;
+    whole
+        .checked_add(remainder)
         .ok_or_else(|| "overflow in proportional calculation".to_string())
 }
 
