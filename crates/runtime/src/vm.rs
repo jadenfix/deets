@@ -143,7 +143,15 @@ impl WasmVm {
                         if oof {
                             false
                         } else {
-                            // Non-gas error — try simpler entry point with no args
+                            // Non-gas error — try simpler entry point with no args.
+                            // SECURITY: Reset HostState so mutations from the failed
+                            // `execute` call (storage writes, logs, return_data) do not
+                            // leak into the fallback entry point.
+                            if let Ok(mut state) = host_state.lock() {
+                                state.storage.clear();
+                                state.logs.clear();
+                                state.return_data.clear();
+                            }
                             let simple_func =
                                 instance.get_typed_func::<(), i32>(&mut store, "main");
                             match simple_func {
@@ -213,6 +221,11 @@ impl WasmVm {
                     }
                     Ok(_) => return -1,  // Insufficient fuel
                     Err(_) => return -1, // Fuel system unavailable
+                }
+
+                // Enforce key length limit (mirrors storage_write).
+                if key_len as usize > MAX_STORAGE_KEY_LEN {
+                    return -1;
                 }
 
                 let memory = match caller.get_export("memory") {
@@ -373,6 +386,18 @@ impl WasmVm {
             "env",
             "set_return",
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| -> i32 {
+                // Charge fuel proportional to data length (100 base + 1 per byte).
+                let fuel_cost = 100u64.saturating_add(len.max(0) as u64);
+                match caller.get_fuel() {
+                    Ok(fuel) if fuel >= fuel_cost => {
+                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                            return -1;
+                        }
+                    }
+                    Ok(_) => return -1,  // Insufficient fuel
+                    Err(_) => return -1, // Fuel system unavailable
+                }
+
                 // Enforce return data size limit.
                 if len as usize > MAX_RETURN_DATA_LEN {
                     return -1;
