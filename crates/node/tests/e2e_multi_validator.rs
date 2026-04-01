@@ -386,7 +386,7 @@ fn test_e2e_block_rejection() {
         assert!(result.is_ok(), "Duplicate block should be silently ignored");
     }
 
-    // Block with unknown parent should be rejected
+    // Block with unknown parent should be buffered as orphan (not rejected)
     let fake_block = Block::new(
         999,
         H256::from_slice(&[0xFF; 32]).unwrap(),
@@ -400,8 +400,8 @@ fn test_e2e_block_rejection() {
 
     let result = network.nodes[0].on_block_received(fake_block);
     assert!(
-        result.is_err(),
-        "Block with unknown parent should be rejected"
+        result.is_ok(),
+        "Block with unknown parent should be buffered as orphan"
     );
 }
 

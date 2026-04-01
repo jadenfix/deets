@@ -91,10 +91,10 @@ impl Node {
 
         // Warn on asymmetric key configuration
         if validator_key.is_some() != bls_key.is_some() {
-            println!(
-                "WARNING: asymmetric key config — validator_key={}, bls_key={}. Voting will be disabled.",
-                validator_key.is_some(),
-                bls_key.is_some()
+            tracing::warn!(
+                has_validator_key = validator_key.is_some(),
+                has_bls_key = bls_key.is_some(),
+                "Asymmetric key config — voting disabled"
             );
         }
 
@@ -103,10 +103,10 @@ impl Node {
             Self::load_blocks_from_storage(ledger.storage())?;
 
         if !blocks_by_hash.is_empty() {
-            println!(
-                "Recovered {} blocks from disk (tip: slot {:?})",
-                blocks_by_hash.len(),
-                latest_block_slot
+            tracing::info!(
+                block_count = blocks_by_hash.len(),
+                tip_slot = ?latest_block_slot,
+                "Recovered blocks from disk"
             );
         }
 
@@ -236,16 +236,13 @@ impl Node {
         if let Some(ref tx) = self.broadcast_tx {
             match tx.try_send(msg) {
                 Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(msg)) => {
+                Err(mpsc::error::TrySendError::Full(_msg)) => {
                     // Backpressure: P2P layer can't keep up, drop the message
-                    eprintln!(
-                        "WARNING: P2P outbound channel full, dropping {:?}",
-                        std::mem::discriminant(&msg)
-                    );
+                    tracing::warn!("P2P outbound channel full, dropping message");
                 }
                 Err(mpsc::error::TrySendError::Closed(msg)) => {
                     // Channel closed — fall back to buffer so message isn't lost
-                    eprintln!("WARNING: broadcast channel closed");
+                    tracing::warn!("Broadcast channel closed");
                     if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
                         self.outbound_buffer.push(msg);
                     }
@@ -254,7 +251,7 @@ impl Node {
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
             self.outbound_buffer.push(msg);
         } else {
-            eprintln!("CRITICAL: outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
+            tracing::error!("Outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
         }
     }
 
@@ -268,9 +265,11 @@ impl Node {
     pub async fn run(&mut self) -> Result<()> {
         self.running = true;
 
-        println!("Node starting...");
-        println!("Validator: {}", self.validator_key.is_some());
-        println!("Starting slot: {}", self.consensus.current_slot());
+        tracing::info!(
+            validator = self.validator_key.is_some(),
+            starting_slot = self.consensus.current_slot(),
+            "Node starting"
+        );
 
         while self.running {
             self.tick()?;
@@ -290,6 +289,7 @@ impl Node {
 
     fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
+        let _span = tracing::info_span!("process_slot", slot).entered();
 
         // Update mempool with current slot for forced inclusion tracking
         self.mempool.set_current_slot(slot);
@@ -305,14 +305,16 @@ impl Node {
         if self.consensus.is_timed_out() {
             self.consecutive_timeouts += 1;
             if self.consecutive_timeouts >= 100 {
-                eprintln!(
-                    "CIRCUIT BREAKER: {} consecutive timeouts at slot {} — possible network partition or all peers down",
-                    self.consecutive_timeouts, slot
+                tracing::error!(
+                    consecutive_timeouts = self.consecutive_timeouts,
+                    slot,
+                    "CIRCUIT BREAKER — possible network partition or all peers down"
                 );
             }
-            println!(
-                "Slot {}: TIMEOUT ({} consecutive) — advancing via pacemaker",
-                slot, self.consecutive_timeouts
+            tracing::warn!(
+                slot,
+                consecutive = self.consecutive_timeouts,
+                "Slot timeout — advancing via pacemaker"
             );
             self.consensus.on_timeout();
         } else {
@@ -321,19 +323,21 @@ impl Node {
 
         let metrics = self.poh.tick(Instant::now());
         self.last_poh_metrics = Some(metrics.clone());
-        println!(
-            "PoH tick {} ms avg {:.1} jitter {:.1}",
-            metrics.last_duration_ms, metrics.average_duration_ms, metrics.jitter_ms
+        tracing::debug!(
+            last_ms = metrics.last_duration_ms,
+            avg_ms = format_args!("{:.1}", metrics.average_duration_ms),
+            jitter_ms = format_args!("{:.1}", metrics.jitter_ms),
+            "PoH tick"
         );
 
         if let Some(ref keypair) = self.validator_key {
             let pubkey = PublicKey::from_bytes(keypair.public_key());
 
             if self.consensus.is_leader(slot, &pubkey) {
-                println!("Slot {}: I am leader, producing block", slot);
+                tracing::info!(slot, "Leader — producing block");
                 self.produce_block(slot)?;
             } else {
-                println!("Slot {}: Not leader, waiting for block", slot);
+                tracing::debug!(slot, "Not leader — waiting for block");
             }
         }
 
@@ -348,6 +352,8 @@ impl Node {
 
     /// Process epoch transition: distribute staking rewards.
     fn process_epoch_transition(&mut self, new_epoch: u64) -> Result<()> {
+        let _span = tracing::info_span!("epoch_transition", epoch = new_epoch).entered();
+
         let slot = self.consensus.current_slot();
         let total_supply = self.chain_config.tokens.swr_initial_supply;
         let emission = self.emission_schedule.epoch_emission(slot, total_supply);
@@ -361,11 +367,11 @@ impl Node {
             return Ok(());
         }
 
-        println!(
-            "Epoch {} → {}: distributing {} emission rewards",
-            new_epoch - 1,
+        tracing::info!(
+            prev_epoch = new_epoch - 1,
             new_epoch,
-            emission
+            emission,
+            "Distributing emission rewards"
         );
 
         // Credit emission proportionally to each validator based on stake.
@@ -380,7 +386,7 @@ impl Node {
                 let my_share = emission.checked_mul(my_stake).map(|n| n / total_stake).unwrap_or(0);
                 if my_share > 0 {
                     if let Err(e) = self.ledger.credit_account(&my_addr, my_share) {
-                        eprintln!("WARNING: failed to credit emission reward: {e}");
+                        tracing::warn!(err = %e, "Failed to credit emission reward");
                     }
                 }
             }
@@ -391,9 +397,9 @@ impl Node {
         let completed = self.staking_state.complete_unbonding(slot);
         for (addr, amount) in completed {
             if let Err(e) = self.ledger.credit_account(&addr, amount) {
-                eprintln!("WARNING: failed to credit unbonded tokens to {addr:?}: {e}");
+                tracing::warn!(?addr, err = %e, "Failed to credit unbonded tokens");
             } else {
-                println!("Epoch {new_epoch}: returned {amount} unbonded tokens to {addr:?}");
+                tracing::info!(?addr, amount, "Returned unbonded tokens");
             }
         }
 
@@ -403,14 +409,15 @@ impl Node {
             let prune_before_epoch = new_epoch - retention;
             let prune_before_slot = prune_before_epoch * self.chain_config.chain.epoch_slots;
             if let Err(e) = pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
-                eprintln!("WARNING: block pruning failed: {e}");
+                tracing::warn!(err = %e, "Block pruning failed");
             }
             if let Err(e) = pruning::prune_old_receipts(self.ledger.storage(), prune_before_slot) {
-                eprintln!("WARNING: receipt pruning failed: {e}");
+                tracing::warn!(err = %e, "Receipt pruning failed");
             }
-            println!(
-                "Epoch {}: pruned blocks/receipts before slot {}",
-                new_epoch, prune_before_slot
+            tracing::info!(
+                new_epoch,
+                prune_before_slot,
+                "Pruned old blocks/receipts"
             );
         }
 
@@ -449,6 +456,8 @@ impl Node {
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
+        let _span = tracing::info_span!("produce_block", slot).entered();
+
         // Forced inclusion: include txs that have been waiting too long (anti-censorship)
         let forced = self
             .mempool
@@ -457,7 +466,7 @@ impl Node {
         let remaining_capacity = 1000usize.saturating_sub(forced_count);
         let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
         let transactions = if forced_count > 0 {
-            println!("  Forced inclusion: {} txs", forced_count);
+            tracing::info!(forced_count, "Forced inclusion txs");
             let mut all = forced;
             all.extend(regular);
             all
@@ -465,11 +474,7 @@ impl Node {
             regular
         };
 
-        if transactions.is_empty() {
-            println!("  No transactions to include");
-        }
-
-        println!("  Including {} transactions", transactions.len());
+        tracing::info!(tx_count = transactions.len(), "Including transactions");
 
         // Get VRF proof FIRST (before execution, to fail fast if not leader)
         let vrf_proof_crypto = self.consensus.get_leader_proof(slot);
@@ -496,10 +501,10 @@ impl Node {
             .count();
 
         if !transactions.is_empty() {
-            println!(
-                "  {} successful, {} failed",
+            tracing::info!(
                 successful,
-                receipts.len() - successful
+                failed = receipts.len() - successful,
+                "Speculative execution complete"
             );
         }
 
@@ -529,13 +534,12 @@ impl Node {
         block.header.receipts_root = receipts_root;
 
         let block_hash = block.hash();
-        println!("  Block produced: {:?}", block_hash);
-        println!("  State root: {}", state_root);
+        tracing::info!(?block_hash, %state_root, "Block produced");
 
         // Validate our own block BEFORE committing state
         if let Err(e) = self.consensus.validate_block(&block) {
             // Discard overlay — state unchanged
-            println!("  WARNING: Block validation failed: {}", e);
+            tracing::warn!(err = %e, "Self-produced block validation failed");
             return Ok(());
         }
 
@@ -570,14 +574,14 @@ impl Node {
                 .ledger
                 .credit_account(&block.header.proposer, fee_result.proposer_reward)
             {
-                eprintln!("WARNING: failed to credit proposer fee reward: {e}");
+                tracing::warn!(err = %e, "Failed to credit proposer fee reward");
             }
         }
 
         // Record burned fees in ledger (EIP-1559 deflationary mechanism)
         if fee_result.burned > 0 {
             if let Err(e) = self.ledger.record_burned_fees(fee_result.burned) {
-                eprintln!("WARNING: failed to record burned fees: {e}");
+                tracing::warn!(err = %e, "Failed to record burned fees");
             }
         }
 
@@ -610,10 +614,12 @@ impl Node {
 
     /// Create a BLS vote for a block and submit to consensus + broadcast.
     fn vote_on_block(&mut self, block: &Block) -> Result<()> {
+        let _span = tracing::info_span!("vote_on_block", slot = block.header.slot).entered();
+
         let (validator_key, bls_key) = match (&self.validator_key, &self.bls_key) {
             (Some(vk), Some(bk)) => (vk, bk),
             (Some(_), None) => {
-                println!("  WARNING: validator_key set but bls_key missing, cannot vote");
+                tracing::warn!("validator_key set but bls_key missing, cannot vote");
                 return Ok(());
             }
             _ => return Ok(()), // Not a validator
@@ -644,8 +650,8 @@ impl Node {
         };
 
         match self.consensus.add_vote(vote.clone()) {
-            Ok(()) => println!("  Vote created and processed"),
-            Err(e) => println!("  Vote failed: {e}"),
+            Ok(()) => tracing::info!(slot, ?block_hash, "Vote submitted"),
+            Err(e) => tracing::warn!(slot, err = %e, "Vote failed"),
         }
 
         self.broadcast(OutboundMessage::BroadcastVote(vote));
@@ -660,6 +666,12 @@ impl Node {
     /// Handle a block received from the P2P network.
     pub fn on_block_received(&mut self, block: Block) -> Result<()> {
         let block_hash = block.hash();
+        let _span = tracing::info_span!(
+            "on_block_received",
+            slot = block.header.slot,
+            ?block_hash,
+        )
+        .entered();
 
         // Reject if already known (also prevents fee market double-update)
         if self.blocks_by_hash.contains_key(&block_hash) {
@@ -866,9 +878,10 @@ impl Node {
             {
                 (Some(v1), Some(v2), Some(etype)) => (v1, v2, etype),
                 _ => {
-                    println!(
-                        "  SLASH skipped: validator={:?} reason={} — missing proof votes/type",
-                        evidence.validator, evidence.reason
+                    tracing::warn!(
+                        validator = ?evidence.validator,
+                        reason = %evidence.reason,
+                        "Slash skipped — missing proof votes/type"
                     );
                     continue;
                 }
@@ -900,9 +913,11 @@ impl Node {
 
             // Cryptographically verify the proof (BLS signatures + structural checks)
             if let Err(e) = slash_verify::verify_slash_proof(&proof) {
-                println!(
-                    "  SLASH rejected: validator={:?} reason={} — proof verification failed: {}",
-                    evidence.validator, evidence.reason, e
+                tracing::warn!(
+                    validator = ?evidence.validator,
+                    reason = %evidence.reason,
+                    err = %e,
+                    "Slash rejected — proof verification failed"
                 );
                 continue;
             }
@@ -924,13 +939,18 @@ impl Node {
             };
 
             match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
-                Ok(slashed) => println!(
-                    "  SLASH applied: validator={:?} verified_rate={}bps slashed={} reason={}",
-                    evidence.validator, rate_bps, slashed, evidence.reason
+                Ok(slashed) => tracing::warn!(
+                    validator = ?evidence.validator,
+                    rate_bps,
+                    slashed,
+                    reason = %evidence.reason,
+                    "Slash applied"
                 ),
-                Err(e) => println!(
-                    "  SLASH skipped: validator={:?} reason={} err={}",
-                    evidence.validator, evidence.reason, e
+                Err(e) => tracing::warn!(
+                    validator = ?evidence.validator,
+                    reason = %evidence.reason,
+                    err = %e,
+                    "Slash skipped"
                 ),
             }
         }
@@ -941,9 +961,9 @@ impl Node {
         let new_canonical = self.fork_choice.canonical_block(block.header.slot);
 
         if is_fork {
-            println!(
-                "  FORK detected at slot {}: multiple blocks",
-                block.header.slot
+            tracing::warn!(
+                slot = block.header.slot,
+                "Fork detected — multiple blocks at same slot"
             );
 
             // If canonical choice changed, reorg mempool nonces for affected senders
@@ -1059,9 +1079,11 @@ impl Node {
         ) {
             // Double-sign detected! Slash 5% (500 basis points)
             let slashed = self.consensus.slash_validator(&proof.validator, 500);
-            println!(
-                "SLASHING: validator {:?} double-signed at slot {}. Slashed {} (5% of stake)",
-                proof.validator, vote.slot, slashed
+            tracing::warn!(
+                validator = ?proof.validator,
+                slot = vote.slot,
+                slashed,
+                "Double-sign detected — slashed 5% of stake"
             );
         }
 
@@ -1079,17 +1101,17 @@ impl Node {
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(block)) => {
                 if let Err(e) = self.on_block_received(block) {
-                    println!("  Block rejected: {e}");
+                    tracing::debug!(err = %e, "Block rejected");
                 }
             }
             Some(NodeMessage::VoteReceived(vote)) => {
                 if let Err(e) = self.on_vote_received(vote) {
-                    println!("  Vote rejected: {e}");
+                    tracing::debug!(err = %e, "Vote rejected");
                 }
             }
             Some(NodeMessage::TransactionReceived(tx)) => {
                 if let Err(e) = self.mempool.add_transaction(tx) {
-                    println!("  Tx rejected: {e}");
+                    tracing::debug!(err = %e, "Tx rejected");
                 }
             }
             None => {}
@@ -1113,7 +1135,7 @@ impl Node {
 
         for slot in start..=end {
             if self.consensus.check_finality(slot) {
-                println!("✓ FINALIZED: Slot {} via VRF+HotStuff+BLS!", slot);
+                tracing::info!(slot, "Slot finalized via VRF+HotStuff+BLS");
 
                 // Update epoch randomness ONCE per epoch from the first finalized block
                 // of that epoch to ensure deterministic randomness across all nodes.
@@ -1131,8 +1153,10 @@ impl Node {
                 // Finalize in fork choice
                 if let Some(&hash) = self.blocks_by_slot.get(&slot) {
                     if !self.fork_choice.finalize(slot, hash) {
-                        eprintln!(
-                            "WARN: fork_choice: could not finalize unknown block {hash:?} at slot {slot}"
+                        tracing::warn!(
+                            slot,
+                            ?hash,
+                            "fork_choice: could not finalize unknown block"
                         );
                     }
                 }
