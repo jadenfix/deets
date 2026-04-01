@@ -235,7 +235,7 @@ mod tests {
     fn test_chain_id_in_hash() {
         let keypair = Keypair::generate();
         let address = H160::from_slice(&keypair.to_address()).unwrap();
-        let mut tx1 = Transaction {
+        let tx1 = Transaction {
             nonce: 0,
             chain_id: 1,
             sender: address,

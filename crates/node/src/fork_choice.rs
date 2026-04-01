@@ -12,6 +12,12 @@ pub struct ForkChoice {
     finalized: HashMap<Slot, H256>,
 }
 
+impl Default for ForkChoice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ForkChoice {
     pub fn new() -> Self {
         ForkChoice {
@@ -80,7 +86,7 @@ impl ForkChoice {
 
     /// Check if a slot has competing blocks (a fork).
     pub fn has_fork(&self, slot: Slot) -> bool {
-        self.candidates.get(&slot).map_or(false, |c| c.len() > 1)
+        self.candidates.get(&slot).is_some_and(|c| c.len() > 1)
     }
 
     /// Get all candidate blocks for a slot.

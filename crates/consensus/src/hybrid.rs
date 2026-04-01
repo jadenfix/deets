@@ -281,7 +281,7 @@ impl HybridConsensus {
         let mut hasher = Sha256::new();
         hasher.update(self.epoch_randomness.as_bytes());
         hasher.update(block_vrf_output);
-        hasher.update(&self.current_epoch.to_le_bytes());
+        hasher.update(self.current_epoch.to_le_bytes());
         self.epoch_randomness = H256::from_slice(&hasher.finalize()).unwrap();
     }
 
@@ -980,7 +980,7 @@ mod tests {
     #[test]
     fn test_timestamp_validation() {
         let v1 = create_test_validator(1000);
-        let mut consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
+        let consensus = HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, None, None);
 
         // Block with timestamp far in the future should be rejected
         let mut block = Block::new(

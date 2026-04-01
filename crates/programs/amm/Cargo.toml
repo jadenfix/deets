@@ -7,3 +7,5 @@ edition.workspace = true
 aether-types = { path = "../../types" }
 serde.workspace = true
 anyhow.workspace = true
+num-bigint = "0.4"
+num-traits = "0.2"

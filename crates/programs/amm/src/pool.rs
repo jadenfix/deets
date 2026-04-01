@@ -1,4 +1,6 @@
 use aether_types::{Address, H256};
+use num_bigint::BigUint;
+use num_traits::{One, ToPrimitive};
 use serde::{Deserialize, Serialize};
 
 /// Constant Product AMM (x * y = k)
@@ -55,15 +57,17 @@ impl LiquidityPool {
         }
 
         let lp_tokens = if self.lp_token_supply == 0 {
-            // Initial liquidity: use sqrt(a) * sqrt(b) to avoid u128 overflow in a*b
-            let sqrt_a = amount_a.integer_sqrt();
-            let sqrt_b = amount_b.integer_sqrt();
-            let liquidity = sqrt_a
-                .checked_mul(sqrt_b)
+            // Initial liquidity mints sqrt(amount_a * amount_b).
+            let product = BigUint::from(amount_a) * BigUint::from(amount_b);
+            let liquidity = integer_sqrt_biguint(&product)
+                .to_u128()
                 .ok_or("overflow in initial liquidity")?;
 
             if liquidity < 1000 {
                 return Err("insufficient initial liquidity".to_string());
+            }
+            if liquidity < min_lp_tokens {
+                return Err("insufficient LP tokens".to_string());
             }
 
             self.reserve_a = amount_a;
@@ -72,13 +76,23 @@ impl LiquidityPool {
 
             liquidity
         } else {
+            let ratio_lhs = amount_a
+                .checked_mul(self.reserve_b)
+                .ok_or("overflow in liquidity ratio check")?;
+            let ratio_rhs = amount_b
+                .checked_mul(self.reserve_a)
+                .ok_or("overflow in liquidity ratio check")?;
+            if ratio_lhs != ratio_rhs {
+                return Err("liquidity must be added at the current pool ratio".to_string());
+            }
+
             // Proportional liquidity — multiply before dividing for precision
             let liquidity_a = mul_div(amount_a, self.lp_token_supply, self.reserve_a)?;
             let liquidity_b = mul_div(amount_b, self.lp_token_supply, self.reserve_b)?;
 
             let liquidity = liquidity_a.min(liquidity_b);
 
-            if liquidity < min_lp_tokens {
+            if liquidity == 0 || liquidity < min_lp_tokens {
                 return Err("insufficient LP tokens".to_string());
             }
 
@@ -262,26 +276,21 @@ fn mul_div(a: u128, b: u128, c: u128) -> Result<u128, String> {
         .ok_or_else(|| "overflow in proportional calculation".to_string())
 }
 
-trait IntegerSqrt {
-    fn integer_sqrt(self) -> Self;
-}
-
-impl IntegerSqrt for u128 {
-    fn integer_sqrt(self) -> Self {
-        if self < 2 {
-            return self;
-        }
-
-        let mut x = self;
-        let mut y = x.div_ceil(2);
-
-        while y < x {
-            x = y;
-            y = (x + self / x) / 2;
-        }
-
-        x
+fn integer_sqrt_biguint(value: &BigUint) -> BigUint {
+    if value < &BigUint::from(2u8) {
+        return value.clone();
     }
+
+    let two = BigUint::from(2u8);
+    let mut x = value.clone();
+    let mut y = (&x + BigUint::one()) / &two;
+
+    while y < x {
+        x = y.clone();
+        y = (&x + value / &x) / &two;
+    }
+
+    x
 }
 
 #[cfg(test)]
@@ -310,6 +319,36 @@ mod tests {
     }
 
     #[test]
+    fn test_add_initial_liquidity_uses_exact_product_sqrt() {
+        let mut pool = test_pool();
+
+        let lp_tokens = pool.add_liquidity(2_000, 8_000, 0).unwrap();
+
+        assert_eq!(lp_tokens, 4_000);
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_handles_large_balanced_values() {
+        let mut pool = test_pool();
+        let amount = 1u128 << 80;
+
+        let lp_tokens = pool.add_liquidity(amount, amount, 0).unwrap();
+
+        assert_eq!(lp_tokens, amount);
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_respects_min_lp_tokens() {
+        let mut pool = test_pool();
+
+        let result = pool.add_liquidity(10_000, 10_000, 10_001);
+        assert!(result.is_err());
+        assert_eq!(pool.reserve_a, 0);
+        assert_eq!(pool.reserve_b, 0);
+        assert_eq!(pool.lp_token_supply, 0);
+    }
+
+    #[test]
     fn test_add_proportional_liquidity() {
         let mut pool = test_pool();
 
@@ -319,6 +358,19 @@ mod tests {
         assert_eq!(pool.reserve_a, 1500);
         assert_eq!(pool.reserve_b, 3000);
         assert!(lp_tokens > 0);
+    }
+
+    #[test]
+    fn test_add_non_proportional_liquidity_rejected() {
+        let mut pool = test_pool();
+
+        pool.add_liquidity(1_000, 2_000, 0).unwrap();
+        let result = pool.add_liquidity(500, 900, 0);
+
+        assert!(result.is_err());
+        assert_eq!(pool.reserve_a, 1_000);
+        assert_eq!(pool.reserve_b, 2_000);
+        assert_eq!(pool.lp_token_supply, 1_414);
     }
 
     #[test]
