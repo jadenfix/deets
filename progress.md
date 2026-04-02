@@ -594,3 +594,18 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Instrumented rate limiter rejection path with counter.
   - Added `aether-metrics` dependency to `aether-rpc-json` crate.
   - 1 new test (`rpc_metrics_record_requests_and_errors`). All 13 RPC tests pass; clippy clean.
+
+## Agent 3 Cycle 13 Log
+
+- **2026-04-02** — test(node): add proptest property-based tests for fork choice invariants. Tier 5 item. Branch: `test/agent3-fork-choice-proptest`, PR #206 (merged).
+  - Added 7 proptest cases to `crates/node/src/fork_choice.rs`:
+    - canonical_is_always_lowest_hash: deterministic tiebreak invariant
+    - finalized_overrides_tiebreak: finality takes precedence over hash ordering
+    - finalized_slot_rejects_new_blocks: immutability after finalization
+    - committed_slot_rejects_new_blocks: immutability after state commit
+    - candidate_count_bounded: OOM prevention (MAX_CANDIDATES_PER_SLOT cap)
+    - prune_removes_only_old_slots: pruning removes exactly old slots, preserves new
+    - duplicate_add_idempotent: repeated adds don't inflate candidate count
+  - Added `proptest` to `[dev-dependencies]` in `crates/node/Cargo.toml`.
+  - Reviewed open PRs (none pending).
+  - All 22 fork choice tests pass (15 existing + 7 new); full workspace tests pass; clippy clean.
