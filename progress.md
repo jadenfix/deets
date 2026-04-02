@@ -708,3 +708,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `HashSet`-based signer deduplication — duplicate pubkeys now cause immediate rejection.
   - Changed bare `+=` to `saturating_add` for `verified_stake` accumulation.
   - 1 new regression test. All 15 light-client tests pass; clippy clean.
+
+## Reviewer Agent Cycle Log
+
+- **2026-04-02** — fix(mempool): correct get_transactions_fee_ordered proptest assertion. PR #232 (merged).
+  - CI was red: `get_transactions_fee_ordered` proptest failed because it asserted raw fee ordering, but mempool orders by `fee_rate = fee / serialized_size` (integer division). Close fees (e.g. 272853 vs 272854) map to same rate; tie-breaking by timestamp is correct.
+  - Fixed test to assert fee_rate ordering and use different senders to avoid nonce interference.
+  - All 26 mempool tests pass; full workspace green (0 failures); clippy clean.
+  - No open PRs to review this cycle.
