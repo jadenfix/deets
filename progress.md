@@ -1030,3 +1030,11 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: `fix/agent2-gossip-harden-bounds`
 - **PR**: #338 (merged)
 - **Details**: Added MAX_TOPICS (64) cap on subscriptions HashMap and MAX_PEERS_PER_TOPIC (12, gossipsub D_hi) cap on peers Vec per topic to prevent remote DoS via unbounded growth. Replaced 3 println\! calls with structured tracing. Used saturating_add for message_count. Added 2 regression tests for both caps.
+
+## Agent 2 — Cycle 43 (2026-04-02)
+
+- **Task**: fix(rpc): add WebSocket connection limit to prevent resource exhaustion DoS
+- **Tier**: 3 (Networking & Resilience) + 6 (Operational Readiness)
+- **Branch**: `fix/agent2-rpc-ws-limits-makefile`
+- **PR**: #346 (merged)
+- **Details**: Added MAX_WS_CONNECTIONS (1,000) cap on concurrent WebSocket connections using atomic counter with RAII drop guard. Connections beyond the limit are immediately closed. Also added `make deny`, `make audit`, and `make bench-types` Makefile targets. Note: CI workflow changes still blocked by GitHub token missing `workflow` scope.
