@@ -2,6 +2,12 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+/// Maximum number of peers tracked per topic (gossipsub D_hi).
+const MAX_PEERS_PER_TOPIC: usize = 12;
+
+/// Maximum number of topics a single node can subscribe to.
+const MAX_TOPICS: usize = 64;
+
 /// Gossipsub Protocol Implementation
 ///
 /// Features:
@@ -54,23 +60,32 @@ impl GossipManager {
 
     /// Subscribe to a topic
     pub fn subscribe(&mut self, topic: String) {
-        if !self.subscriptions.contains_key(&topic) {
-            self.subscriptions.insert(
-                topic.clone(),
-                TopicInfo {
-                    name: topic.clone(),
-                    peers: vec![],
-                    message_count: 0,
-                },
-            );
-            println!("Subscribed to gossip topic: {}", topic);
+        if self.subscriptions.contains_key(&topic) {
+            return;
         }
+        if self.subscriptions.len() >= MAX_TOPICS {
+            tracing::warn!(
+                topic,
+                "gossip topic cap reached ({}), rejecting subscribe",
+                MAX_TOPICS
+            );
+            return;
+        }
+        self.subscriptions.insert(
+            topic.clone(),
+            TopicInfo {
+                name: topic.clone(),
+                peers: vec![],
+                message_count: 0,
+            },
+        );
+        tracing::info!(topic, "subscribed to gossip topic");
     }
 
     /// Unsubscribe from a topic
     pub fn unsubscribe(&mut self, topic: &str) {
         self.subscriptions.remove(topic);
-        println!("Unsubscribed from gossip topic: {}", topic);
+        tracing::info!(topic, "unsubscribed from gossip topic");
     }
 
     /// Publish a message to a topic
@@ -94,11 +109,11 @@ impl GossipManager {
 
         // Update topic stats
         if let Some(info) = self.subscriptions.get_mut(topic) {
-            info.message_count += 1;
+            info.message_count = info.message_count.saturating_add(1);
         }
 
         // In production: forward to peers via gossipsub
-        println!("Gossip published {} bytes to {}", message.len(), topic);
+        tracing::debug!(bytes = message.len(), topic, "gossip published");
 
         Ok(())
     }
@@ -120,18 +135,23 @@ impl GossipManager {
 
         // Update topic stats
         if let Some(info) = self.subscriptions.get_mut(topic) {
-            info.message_count += 1;
+            info.message_count = info.message_count.saturating_add(1);
         }
 
         Ok(true) // New message
     }
 
-    /// Add peer to topic
+    /// Add peer to topic (capped at D_hi to prevent unbounded growth).
     pub fn add_peer_to_topic(&mut self, topic: &str, peer_id: String) {
         if let Some(info) = self.subscriptions.get_mut(topic) {
-            if !info.peers.contains(&peer_id) {
-                info.peers.push(peer_id);
+            if info.peers.contains(&peer_id) {
+                return;
             }
+            if info.peers.len() >= MAX_PEERS_PER_TOPIC {
+                tracing::debug!(topic, "peer cap reached for topic, rejecting peer");
+                return;
+            }
+            info.peers.push(peer_id);
         }
     }
 
@@ -282,5 +302,24 @@ mod tests {
 
         // New message
         assert!(gossip.handle_message("/aether/tx", msg2).unwrap());
+    }
+
+    #[test]
+    fn test_topic_cap() {
+        let mut gossip = GossipManager::new();
+        for i in 0..MAX_TOPICS + 10 {
+            gossip.subscribe(format!("topic-{}", i));
+        }
+        assert_eq!(gossip.topic_count(), MAX_TOPICS);
+    }
+
+    #[test]
+    fn test_peer_per_topic_cap() {
+        let mut gossip = GossipManager::new();
+        gossip.subscribe("tx".to_string());
+        for i in 0..MAX_PEERS_PER_TOPIC + 5 {
+            gossip.add_peer_to_topic("tx", format!("peer-{}", i));
+        }
+        assert_eq!(gossip.get_topic_peers("tx").len(), MAX_PEERS_PER_TOPIC);
     }
 }
