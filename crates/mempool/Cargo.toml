@@ -18,3 +18,4 @@ aether-metrics = { path = "../metrics" }
 
 [dev-dependencies]
 aether-crypto-primitives = { path = "../crypto/primitives" }
+proptest = "1"

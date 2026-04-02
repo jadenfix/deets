@@ -774,3 +774,187 @@ mod tests {
         assert_eq!(mempool.len(), 3);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_crypto_primitives::Keypair;
+    use aether_types::{PublicKey, Signature};
+    use proptest::prelude::*;
+
+    fn make_signed_tx(kp: &Keypair, nonce: u64, fee: u128, chain_id: u64) -> Transaction {
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+        let sender = sender_pubkey.to_address();
+        let mut tx = Transaction {
+            nonce,
+            chain_id,
+            sender,
+            sender_pubkey,
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21000,
+            fee,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(kp.sign(hash.as_bytes()));
+        tx
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        /// Pool size never exceeds the number of successfully added transactions.
+        #[test]
+        fn pool_size_bounded_by_adds(
+            fees in proptest::collection::vec(50_000u128..500_000, 1..20),
+        ) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+            let mut added = 0usize;
+
+            for (i, fee) in fees.iter().enumerate() {
+                if mempool.add_transaction(make_signed_tx(&kp, i as u64, *fee, 900)).is_ok() {
+                    added += 1;
+                }
+            }
+            prop_assert!(mempool.len() <= added);
+        }
+
+        /// Sequential nonces from one sender all land in pending (none queued).
+        #[test]
+        fn sequential_nonces_all_pending(count in 1usize..15) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+
+            for i in 0..count {
+                mempool.add_transaction(make_signed_tx(&kp, i as u64, 60_000, 900)).unwrap();
+            }
+            prop_assert_eq!(mempool.queued_len(), 0);
+            prop_assert_eq!(mempool.len(), count);
+        }
+
+        /// Nonce gap: submitting nonce 0 then nonce N>1 queues exactly one tx.
+        #[test]
+        fn nonce_gap_queues_future(gap in 2u64..20) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+
+            mempool.add_transaction(make_signed_tx(&kp, 0, 60_000, 900)).unwrap();
+            mempool.add_transaction(make_signed_tx(&kp, gap, 60_000, 900)).unwrap();
+
+            prop_assert_eq!(mempool.len(), 2);
+            prop_assert_eq!(mempool.queued_len(), 1);
+        }
+
+        /// Filling a nonce gap promotes all queued txs for that sender.
+        #[test]
+        fn filling_gap_promotes_all(gap_start in 2u64..8) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+
+            // Add nonce 0
+            mempool.add_transaction(make_signed_tx(&kp, 0, 60_000, 900)).unwrap();
+            // Add nonces gap_start..gap_start+2 (all queued)
+            for n in gap_start..gap_start + 2 {
+                mempool.add_transaction(make_signed_tx(&kp, n, 60_000, 900)).unwrap();
+            }
+            let queued_before = mempool.queued_len();
+            prop_assert!(queued_before > 0);
+
+            // Fill the gap: nonces 1..gap_start
+            for n in 1..gap_start {
+                mempool.add_transaction(make_signed_tx(&kp, n, 60_000, 900)).unwrap();
+            }
+            prop_assert_eq!(mempool.queued_len(), 0, "all queued txs should be promoted");
+        }
+
+        /// get_transactions returns at most max_count items.
+        #[test]
+        fn get_transactions_respects_max_count(
+            n in 1usize..20,
+            max_count in 1usize..10,
+        ) {
+            let mut mempool = Mempool::with_defaults();
+            for _ in 0..n {
+                let kp = Keypair::generate();
+                let _ = mempool.add_transaction(make_signed_tx(&kp, 0, 60_000, 900));
+            }
+            let txs = mempool.get_transactions(max_count, u64::MAX);
+            prop_assert!(txs.len() <= max_count);
+        }
+
+        /// get_transactions returns txs sorted by descending fee (same-size txs).
+        #[test]
+        fn get_transactions_fee_ordered(
+            fees in proptest::collection::vec(50_000u128..500_000, 2..15),
+        ) {
+            // Use the same keypair so all txs have the same serialized size,
+            // ensuring fee_rate ordering matches fee ordering.
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+            // Each tx needs a unique nonce since they share the same sender.
+            for (i, fee) in fees.iter().enumerate() {
+                let _ = mempool.add_transaction(make_signed_tx(&kp, i as u64, *fee, 900));
+            }
+            let txs = mempool.get_transactions(fees.len(), u64::MAX);
+            for w in txs.windows(2) {
+                prop_assert!(w[0].fee >= w[1].fee, "txs should be fee-ordered");
+            }
+        }
+
+        /// Removing a transaction always decreases pool size by exactly 1.
+        #[test]
+        fn remove_decreases_size(
+            count in 2usize..10,
+            remove_idx in 0usize..10,
+        ) {
+            let mut mempool = Mempool::with_defaults();
+            let mut hashes = Vec::new();
+            for _ in 0..count {
+                let kp = Keypair::generate();
+                let tx = make_signed_tx(&kp, 0, 60_000, 900);
+                hashes.push(tx.hash());
+                let _ = mempool.add_transaction(tx);
+            }
+            let before = mempool.len();
+            let idx = remove_idx % hashes.len();
+            mempool.remove_transactions(&[hashes[idx]]);
+            prop_assert_eq!(mempool.len(), before - 1);
+        }
+
+        /// Nonce-too-low txs are always rejected.
+        #[test]
+        fn nonce_too_low_rejected(
+            chain_nonce in 1u64..100,
+            tx_nonce_offset in 1u64..50,
+        ) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+            let sender = PublicKey::from_bytes(kp.public_key().to_vec()).to_address();
+            mempool.set_sender_nonce(sender, chain_nonce);
+
+            let low_nonce = chain_nonce.saturating_sub(tx_nonce_offset);
+            if low_nonce < chain_nonce {
+                let tx = make_signed_tx(&kp, low_nonce, 60_000, 900);
+                let result = mempool.add_transaction(tx);
+                prop_assert!(result.is_err(), "nonce {} < {} should be rejected", low_nonce, chain_nonce);
+            }
+        }
+
+        /// Duplicate transactions are always rejected.
+        #[test]
+        fn duplicate_rejected(fee in 60_000u128..500_000) {
+            let kp = Keypair::generate();
+            let mut mempool = Mempool::with_defaults();
+            let tx = make_signed_tx(&kp, 0, fee, 900);
+            mempool.add_transaction(tx.clone()).unwrap();
+            let result = mempool.add_transaction(tx);
+            prop_assert!(result.is_err(), "duplicate should be rejected");
+        }
+    }
+}
