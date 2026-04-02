@@ -370,11 +370,12 @@ impl StakingState {
             .position(|v| v.address == validator)
             .ok_or(StakingError::ValidatorNotFound(validator))?;
 
-        // Calculate slash amount
-        let slash_amount = self.validators[validator_idx]
-            .staked_amount
-            .saturating_mul(slash_rate)
-            / 10000;
+        // Calculate slash amount using overflow-safe 256-bit intermediate math
+        let slash_amount = mul_div(
+            self.validators[validator_idx].staked_amount,
+            slash_rate,
+            10000,
+        );
 
         // Apply slash
         self.validators[validator_idx].staked_amount = self.validators[validator_idx]
@@ -749,6 +750,34 @@ mod tests {
             0,
             "staked_amount should remain 0 after second slash"
         );
+    }
+
+    #[test]
+    fn test_slash_no_overflow_on_large_validator_stake() {
+        // Regression: saturating_mul(slash_rate) / 10000 silently capped at
+        // u128::MAX for large stakes, producing an incorrect slash amount.
+        // Now uses mul_div() with 256-bit intermediate.
+        let mut state = StakingState::new();
+        let large_stake: u128 = u128::MAX / 2;
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                large_stake,
+                1000,
+                test_address(2),
+            )
+            .unwrap();
+
+        // Slash at 5% (500 bps)
+        let slashed = state.slash(test_address(1), 500).unwrap();
+        let expected = large_stake / 20; // 5%
+        assert!(
+            slashed >= expected - 1 && slashed <= expected + 1,
+            "expected ~{expected}, got {slashed}"
+        );
+        let remaining = state.get_validator(&test_address(1)).unwrap().staked_amount;
+        assert_eq!(remaining, large_stake - slashed);
     }
 
     #[test]
