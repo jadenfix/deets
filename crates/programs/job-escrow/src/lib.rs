@@ -587,3 +587,230 @@ mod tests {
         assert_eq!(state.escrowed_balance_of(&addr(1)), 0);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_addr() -> impl Strategy<Value = Address> {
+        prop::array::uniform20(any::<u8>()).prop_map(|b| Address::from_slice(&b).unwrap())
+    }
+
+    fn arb_h256() -> impl Strategy<Value = H256> {
+        prop::array::uniform32(any::<u8>()).prop_map(|b| H256::from_slice(&b).unwrap())
+    }
+
+    proptest! {
+        /// Duplicate job IDs are rejected — posting the same job_id twice fails.
+        #[test]
+        fn duplicate_job_rejected(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            payment in 1u128..=u128::MAX / 2,
+        ) {
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            let err = state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap_err();
+            prop_assert!(err.contains("already exists"), "expected duplicate-job error, got: {err}");
+        }
+
+        /// Zero payment is always rejected.
+        #[test]
+        fn zero_payment_rejected(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+        ) {
+            let mut state = JobEscrowState::new();
+            let err = state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), 0, 0, 1000)
+                .unwrap_err();
+            prop_assert!(err.contains("non-zero"), "expected payment error, got: {err}");
+        }
+
+        /// Posting a job puts the exact payment amount in requester escrow.
+        #[test]
+        fn post_job_escrow_equals_payment(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+        ) {
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            prop_assert_eq!(state.escrowed_balance_of(&requester), payment);
+        }
+
+        /// Cancel releases the exact escrowed amount; no funds remain.
+        #[test]
+        fn cancel_releases_full_escrow(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+        ) {
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            state.cancel_job(job_id, requester).unwrap();
+            prop_assert_eq!(state.escrowed_balance_of(&requester), 0);
+        }
+
+        /// Third-party cannot cancel another requester's job.
+        #[test]
+        fn non_requester_cannot_cancel(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            stranger in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+        ) {
+            prop_assume!(requester != stranger);
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            let err = state.cancel_job(job_id, stranger).unwrap_err();
+            prop_assert!(
+                err.contains("not job requester"),
+                "expected requester-check error, got: {err}"
+            );
+            // Job must remain Posted.
+            prop_assert_eq!(&state.get_job(&job_id).unwrap().status, &JobStatus::Posted);
+        }
+
+        /// Provider cannot be the same address as the job requester.
+        #[test]
+        fn requester_cannot_self_accept(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+        ) {
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            let err = state.accept_job(job_id, requester).unwrap_err();
+            prop_assert!(
+                err.contains("provider cannot be the same address"),
+                "expected self-accept error, got: {err}"
+            );
+        }
+
+        /// A provider with reputation > MIN_PROVIDER_REPUTATION can always accept.
+        #[test]
+        fn provider_with_ok_reputation_accepted(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            provider in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+            rep in (JobEscrowState::MIN_PROVIDER_REPUTATION + 1)..=1000i32,
+        ) {
+            prop_assume!(requester != provider);
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            *state.provider_reputation.entry(provider).or_insert(0) = rep;
+            state.accept_job(job_id, provider).unwrap();
+            prop_assert_eq!(&state.get_job(&job_id).unwrap().status, &JobStatus::Accepted);
+        }
+
+        /// A provider at or below MIN_PROVIDER_REPUTATION is always blocked.
+        #[test]
+        fn provider_at_floor_reputation_blocked(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            provider in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+            rep in i32::MIN..=JobEscrowState::MIN_PROVIDER_REPUTATION,
+        ) {
+            prop_assume!(requester != provider);
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            *state.provider_reputation.entry(provider).or_insert(0) = rep;
+            let err = state.accept_job(job_id, provider).unwrap_err();
+            prop_assert!(
+                err.contains("too low"),
+                "expected reputation error, got: {err}"
+            );
+        }
+
+        /// Submit after deadline is always rejected.
+        #[test]
+        fn submit_after_deadline_rejected(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            provider in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+            deadline_slots in 1u64..=100,
+        ) {
+            prop_assume!(requester != provider);
+            let mut state = JobEscrowState::new();
+            let post_slot = 100u64;
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, post_slot, deadline_slots)
+                .unwrap();
+            state.accept_job(job_id, provider).unwrap();
+            // Submit one slot past the deadline.
+            let past_deadline = post_slot + deadline_slots + 1;
+            let err = state
+                .submit_result(job_id, provider, H256::zero(), vec![], past_deadline)
+                .unwrap_err();
+            prop_assert!(err.contains("deadline"), "expected deadline error, got: {err}");
+        }
+
+        /// Only the requester can challenge a submitted result.
+        #[test]
+        fn only_requester_can_challenge(
+            job_id in arb_h256(),
+            requester in arb_addr(),
+            provider in arb_addr(),
+            stranger in arb_addr(),
+            payment in 1u128..=1_000_000_000u128,
+        ) {
+            prop_assume!(requester != provider);
+            prop_assume!(requester != stranger);
+            prop_assume!(provider != stranger);
+            let mut state = JobEscrowState::new();
+            state
+                .post_job(job_id, requester, H256::zero(), H256::zero(), payment, 0, 1000)
+                .unwrap();
+            state.accept_job(job_id, provider).unwrap();
+            state
+                .submit_result(job_id, provider, H256::zero(), vec![0xab], 50)
+                .unwrap();
+            // Stranger cannot challenge.
+            let err = state.challenge_job(job_id, stranger).unwrap_err();
+            prop_assert!(err.contains("requester"), "expected requester-only error, got: {err}");
+            // Requester can challenge.
+            state.challenge_job(job_id, requester).unwrap();
+            prop_assert_eq!(&state.get_job(&job_id).unwrap().status, &JobStatus::Disputed);
+        }
+
+        /// total_jobs counter increments exactly once per successful post.
+        #[test]
+        fn total_jobs_counter_monotone(
+            jobs in prop::collection::vec((arb_h256(), arb_addr(), 1u128..=1_000u128), 1..20),
+        ) {
+            let mut state = JobEscrowState::new();
+            let mut expected: u64 = 0;
+            let mut seen_ids = std::collections::HashSet::new();
+            for (job_id, requester, payment) in &jobs {
+                if seen_ids.insert(*job_id) {
+                    state
+                        .post_job(*job_id, *requester, H256::zero(), H256::zero(), *payment, 0, 1000)
+                        .unwrap();
+                    expected += 1;
+                }
+            }
+            prop_assert_eq!(state.total_jobs, expected);
+        }
+    }
+}
