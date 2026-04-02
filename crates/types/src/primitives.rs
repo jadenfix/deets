@@ -23,6 +23,12 @@ impl H256 {
     }
 }
 
+impl From<[u8; 32]> for H256 {
+    fn from(bytes: [u8; 32]) -> Self {
+        H256(bytes)
+    }
+}
+
 impl fmt::Debug for H256 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "0x{}", hex::encode(self.0))

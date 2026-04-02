@@ -154,12 +154,13 @@ impl VrfPosConsensus {
         hasher.update(seed_block_vrf_output);
         let new_randomness = hasher.finalize();
 
-        self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
+        self.epoch_randomness = H256(new_randomness.into());
         self.current_epoch = self.current_epoch.saturating_add(1);
 
-        println!(
-            "Advanced to epoch {}, new randomness: {:?}",
-            self.current_epoch, &self.epoch_randomness
+        tracing::info!(
+            epoch = self.current_epoch,
+            randomness = ?self.epoch_randomness,
+            "Advanced to new epoch"
         );
     }
 
@@ -176,7 +177,7 @@ impl VrfPosConsensus {
             hasher.update(self.current_epoch.to_le_bytes());
             let new_randomness = hasher.finalize();
 
-            self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
+            self.epoch_randomness = H256(new_randomness.into());
             self.current_epoch = self.current_epoch.saturating_add(1);
         }
     }
