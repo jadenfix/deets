@@ -9,7 +9,9 @@
 # Production: make mainnet-build → make deploy-validator
 # ============================================================================
 
-.PHONY: all build test test-ts test-python test-all clean devnet testnet docs chaos validator-deploy
+.PHONY: all build test test-ts test-python test-all clean devnet testnet docs chaos validator-deploy \
+        bench bench-parallel bench-consensus bench-mempool bench-ledger bench-storage bench-merkle \
+        bench-runtime bench-crypto bench-da
 
 # Default target
 all: build test
@@ -107,9 +109,51 @@ loadtest:
 chaos:
 	./scripts/chaos/run-chaos-suite.sh
 
-# Benchmark parallel execution
+# Benchmark parallel execution (legacy alias)
 bench-parallel:
 	cargo bench --package aether-runtime --bench scheduler
+
+# Individual benchmark targets
+bench-consensus:
+	cargo bench --package aether-consensus
+
+bench-mempool:
+	cargo bench --package aether-mempool
+
+bench-ledger:
+	cargo bench --package aether-ledger
+
+bench-storage:
+	cargo bench --package aether-state-storage
+
+bench-merkle:
+	cargo bench --package aether-state-merkle
+
+bench-runtime:
+	cargo bench --package aether-runtime
+
+bench-crypto:
+	cargo bench --package aether-crypto-primitives
+	cargo bench --package aether-crypto-vrf
+
+bench-da:
+	cargo bench --package aether-da-erasure
+	cargo bench --package aether-da-turbine
+
+# Run all benchmark suites across the workspace
+bench:
+	@echo "==> Running all criterion benchmarks"
+	cargo bench --package aether-consensus
+	cargo bench --package aether-mempool
+	cargo bench --package aether-ledger
+	cargo bench --package aether-state-storage
+	cargo bench --package aether-state-merkle
+	cargo bench --package aether-runtime
+	cargo bench --package aether-crypto-primitives
+	cargo bench --package aether-crypto-vrf
+	cargo bench --package aether-da-erasure
+	cargo bench --package aether-da-turbine
+	@echo "==> All benchmarks complete"
 
 # ============================================================================
 # Deployment (K8s)
