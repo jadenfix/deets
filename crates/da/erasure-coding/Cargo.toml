@@ -12,4 +12,9 @@ reed-solomon-erasure = "6"
 
 [dev-dependencies]
 proptest.workspace = true
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "erasure_bench"
+harness = false
 
