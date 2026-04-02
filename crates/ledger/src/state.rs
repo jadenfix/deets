@@ -474,17 +474,34 @@ impl Ledger {
     }
 
     /// Credit an account with a reward (for epoch emissions, proposer rewards).
+    /// This writes immediately — prefer `credit_account_to_batch` when multiple
+    /// credits should be committed atomically.
     pub fn credit_account(&mut self, address: &Address, amount: u128) -> Result<()> {
+        let mut batch = StorageBatch::new();
+        self.credit_account_to_batch(&mut batch, address, amount)?;
+        self.storage.write_batch(batch)?;
+        Ok(())
+    }
+
+    /// Accumulate an account credit into an existing `StorageBatch`.
+    ///
+    /// Use this when multiple credits (e.g. emission rewards + unbonding returns)
+    /// must be committed atomically in a single WriteBatch. The caller is
+    /// responsible for calling `write_batch` on the resulting batch.
+    pub fn credit_account_to_batch(
+        &mut self,
+        batch: &mut StorageBatch,
+        address: &Address,
+        amount: u128,
+    ) -> Result<()> {
         let mut account = self.get_or_create_account(address)?;
         account.balance = account
             .balance
             .checked_add(amount)
             .ok_or_else(|| anyhow!("balance overflow crediting account"))?;
 
-        let mut batch = StorageBatch::new();
-        self.update_account_in_batch(&mut batch, account.clone())?;
-        self.update_state_root_incremental(&account, None, Some(&mut batch))?;
-        self.storage.write_batch(batch)?;
+        self.update_account_in_batch(batch, account.clone())?;
+        self.update_state_root_incremental(&account, None, Some(batch))?;
         Ok(())
     }
 

@@ -459,20 +459,20 @@ impl Node {
             "Distributing emission rewards"
         );
 
+        // ATOMIC EPOCH COMMIT: batch all emission rewards and unbonding returns
+        // into a single WriteBatch so a crash mid-epoch cannot leave some
+        // validators credited and others not.
+        let mut epoch_batch = StorageBatch::new();
+
         // Credit emission proportionally to each validator based on stake.
-        // In production, this would integrate with the staking program's reward pool.
-        // For now, credit each known validator proportionally.
         if let Some(ref keypair) = self.validator_key {
-            // Credit the local validator their proportional share
             let my_pubkey = PublicKey::from_bytes(keypair.public_key());
             let my_addr = my_pubkey.to_address();
             let my_stake = self.consensus.validator_stake(&my_addr);
             if my_stake > 0 {
                 let my_share = emission.checked_mul(my_stake).map(|n| n / total_stake).unwrap_or(0);
                 if my_share > 0 {
-                    if let Err(e) = self.ledger.credit_account(&my_addr, my_share) {
-                        tracing::warn!(err = %e, "Failed to credit emission reward");
-                    }
+                    self.ledger.credit_account_to_batch(&mut epoch_batch, &my_addr, my_share)?;
                 }
             }
         }
@@ -480,12 +480,15 @@ impl Node {
         // Complete unbonding: return tokens to delegators whose unbonding period
         // has elapsed. complete_unbonding() returns (address, amount) pairs.
         let completed = self.staking_state.complete_unbonding(slot);
-        for (addr, amount) in completed {
-            if let Err(e) = self.ledger.credit_account(&addr, amount) {
-                tracing::warn!(?addr, err = %e, "Failed to credit unbonded tokens");
-            } else {
-                tracing::info!(?addr, amount, "Returned unbonded tokens");
-            }
+        for (addr, amount) in &completed {
+            self.ledger.credit_account_to_batch(&mut epoch_batch, addr, *amount)?;
+        }
+
+        // Single atomic write for all epoch credits
+        self.ledger.write_batch(epoch_batch)?;
+
+        for (addr, amount) in &completed {
+            tracing::info!(?addr, amount, "Returned unbonded tokens");
         }
 
         // Prune old blocks and receipts from disk to prevent unbounded DB growth.
@@ -1982,6 +1985,56 @@ mod tests {
         // Delegator's account should have been credited.
         let account = node.ledger.get_account(&delegator).unwrap().unwrap();
         assert_eq!(account.balance, unbond_amount);
+    }
+
+    #[test]
+    fn epoch_transition_credits_are_atomic() {
+        use aether_program_staking::Unbonding;
+        use aether_types::Address;
+
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Set up two unbonding entries that should be credited atomically.
+        let delegator_a = Address::from(aether_types::H160([0xAA; 20]));
+        let delegator_b = Address::from(aether_types::H160([0xBB; 20]));
+        node.staking_state_mut().unbonding.push(Unbonding {
+            address: delegator_a,
+            validator: Address::from(aether_types::H160([0x01; 20])),
+            amount: 1_000,
+            complete_slot: 0,
+        });
+        node.staking_state_mut().unbonding.push(Unbonding {
+            address: delegator_b,
+            validator: Address::from(aether_types::H160([0x01; 20])),
+            amount: 2_000,
+            complete_slot: 0,
+        });
+
+        // Seed accounts
+        node.ledger.credit_account(&delegator_a, 0).ok();
+        node.ledger.credit_account(&delegator_b, 0).ok();
+
+        node.process_epoch_transition(1).unwrap();
+
+        // Both delegators must have been credited (atomic batch).
+        let a = node.ledger.get_account(&delegator_a).unwrap().unwrap();
+        let b = node.ledger.get_account(&delegator_b).unwrap().unwrap();
+        assert_eq!(a.balance, 1_000, "delegator A should receive unbonded tokens");
+        assert_eq!(b.balance, 2_000, "delegator B should receive unbonded tokens");
+
+        // Unbonding queue should be fully drained.
+        assert!(node.staking_state().unbonding.is_empty());
     }
 
     /// Helper: build a minimal vote for a given public key, slot, and block hash byte.
