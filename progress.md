@@ -803,3 +803,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Tests cover: commitment hash determinism, collision resistance (different salts, different txs), valid roundtrip success, early reveal rejection, expired reveal rejection, cleanup precision, ordering invariant (slot then hash), remove semantics, duplicate commitment rejection.
   - Added 1 unit test for duplicate commitment rejection.
   - All 19 tests pass (200 cases each for proptests); clippy clean.
+
+## Agent 4 Cycle 26 Log
+
+- **2026-04-02** — test(rollup): proptest for fraud proof and state commitment invariants. Branch: `test/agent4-mev-proptests`, PR #268 (merged).
+  - Added 9 proptest property-based tests to `fraud_proof.rs`: hash determinism, reward_pct bounds validation (>100 rejected, ≤100 accepted), insufficient challenger bond, pre-state root mismatch, no-fraud detection (correct==claimed), re-execution failure, fabricated correct root, and reward calculation invariant (reward = bond * pct / 100).
+  - Added 7 proptest property-based tests to `state_commitment.rs`: L2Batch hash determinism, distinct batch IDs produce distinct hashes, challenge window boundary conditions (at/after deadline), finalization guards (too early, challenged), finalize-after-window success, and challenge_deadline = l1_slot + CHALLENGE_WINDOW_SLOTS invariant.
+  - Added `proptest` as dev-dependency to rollup crate.
+  - All 29 tests pass (16 new proptest + 13 existing unit tests); clippy clean.
