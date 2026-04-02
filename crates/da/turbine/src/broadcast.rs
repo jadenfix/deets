@@ -34,6 +34,9 @@ impl TurbineBroadcaster {
         let mut result = Vec::with_capacity(shards.len());
 
         for (idx, chunk) in shards.into_iter().enumerate() {
+            let shard_index = u32::try_from(idx)
+                .map_err(|_| anyhow::anyhow!("shard index {idx} exceeds u32::MAX"))?;
+
             let variant = if idx < self.encoder.data_shards {
                 ShredVariant::Data
             } else {
@@ -41,13 +44,13 @@ impl TurbineBroadcaster {
             };
 
             let payload_hash = Shred::hash_payload(&chunk);
-            let msg = Shred::build_signing_message(slot, idx as u32, &payload_hash);
+            let msg = Shred::build_signing_message(slot, shard_index, &payload_hash);
             let signature = Signature::from_bytes(self.signing_key.sign(&msg));
 
             result.push(Shred::new(
                 variant,
                 slot,
-                idx as u32,
+                shard_index,
                 self.protocol_version,
                 0,
                 block_id,
