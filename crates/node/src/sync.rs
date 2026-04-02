@@ -511,6 +511,195 @@ mod tests {
         assert_eq!(sync.buffer_len(), 1);
     }
 
+    #[cfg(test)]
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_block(slot: Slot) -> Block {
+            make_block(slot)
+        }
+
+        proptest! {
+            /// Buffer never exceeds MAX_SYNC_BUFFER regardless of insertion pattern.
+            #[test]
+            fn buffer_bounded(count in 1..2048usize) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 10000);
+                for i in 0..count {
+                    sync.buffer_block(arb_block(i as u64 + 1));
+                }
+                prop_assert!(sync.buffer_len() <= MAX_SYNC_BUFFER);
+            }
+
+            /// drain_ready always returns blocks in strictly ascending slot order.
+            #[test]
+            fn drain_ordered(slots in proptest::collection::vec(1u64..500, 1..100)) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                for s in &slots {
+                    sync.buffer_block(make_block(*s));
+                }
+                let ready = sync.drain_ready();
+                for w in ready.windows(2) {
+                    prop_assert!(w[0].header.slot < w[1].header.slot);
+                }
+            }
+
+            /// drain_ready returns a contiguous sequence starting at next_expected_slot.
+            #[test]
+            fn drain_contiguous(slots in proptest::collection::vec(1u64..200, 1..50)) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                for s in &slots {
+                    sync.buffer_block(make_block(*s));
+                }
+                let ready = sync.drain_ready();
+                if !ready.is_empty() {
+                    // First drained block should be at old next_expected (which was 1)
+                    prop_assert_eq!(ready[0].header.slot, 1);
+                    for w in ready.windows(2) {
+                        prop_assert_eq!(w[1].header.slot, w[0].header.slot + 1);
+                    }
+                }
+            }
+
+            /// Blocks with slot < next_expected are dropped (never returned or buffered).
+            #[test]
+            fn stale_blocks_dropped(next in 5u64..50, stale_count in 1usize..10) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                // Advance next_expected by draining a contiguous chain
+                for i in 1..=next {
+                    sync.buffer_block(make_block(i));
+                }
+                sync.drain_ready();
+                let expected = sync.next_expected();
+                prop_assert_eq!(expected, next + 1);
+
+                // Buffer only strictly stale blocks (slot < expected)
+                for i in 0..stale_count {
+                    let stale_slot = (i as u64) % expected; // always < expected
+                    sync.buffer_block(make_block(stale_slot));
+                }
+                let ready = sync.drain_ready();
+                prop_assert!(ready.is_empty());
+                prop_assert_eq!(sync.buffer_len(), 0);
+            }
+
+            /// check_sync_needed transitions to Syncing only when gap > threshold.
+            #[test]
+            fn sync_threshold(my_slot in 0u64..500, net_slot in 0u64..1000, threshold in 1u64..50) {
+                let mut sync = SyncManager::new(threshold);
+                let needed = sync.check_sync_needed(my_slot, net_slot);
+                if net_slot > my_slot + threshold {
+                    prop_assert!(needed);
+                    prop_assert!(sync.is_syncing());
+                } else {
+                    prop_assert!(!needed);
+                }
+            }
+
+            /// next_request batch is always within [next_expected, target].
+            #[test]
+            fn next_request_in_range(my_slot in 0u64..100, target in 101u64..500) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(my_slot, target);
+                if let Some((from, to)) = sync.next_request() {
+                    prop_assert!(from >= sync.next_expected() || from == sync.next_expected());
+                    prop_assert!(to <= target);
+                    prop_assert!(to >= from);
+                    prop_assert!(to - from <= SYNC_BATCH_SIZE);
+                }
+            }
+
+            /// Parent hash chain validation: blocks with wrong parent stay buffered.
+            #[test]
+            fn parent_hash_rejects_invalid(chain_len in 2usize..10) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                let genesis = H256::zero();
+                sync.set_expected_parent(genesis);
+
+                let chain = make_chain(1, chain_len, genesis);
+                // Buffer first block correctly
+                sync.buffer_block(chain[0].clone());
+
+                // Create a bad block at slot 2 with wrong parent
+                let bad = Block::new(
+                    2,
+                    H256::from([0xFFu8; 32]),
+                    aether_types::Address::from_slice(&[1u8; 20]).unwrap(),
+                    aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+                    vec![],
+                );
+                sync.buffer_block(bad);
+
+                let ready = sync.drain_ready();
+                prop_assert_eq!(ready.len(), 1);
+                prop_assert_eq!(ready[0].header.slot, 1);
+                // Bad block remains buffered
+                prop_assert_eq!(sync.buffer_len(), 1);
+            }
+
+            /// Valid parent hash chain drains fully.
+            #[test]
+            fn valid_chain_drains_fully(chain_len in 1usize..20) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                let genesis = H256::zero();
+                sync.set_expected_parent(genesis);
+
+                let chain = make_chain(1, chain_len, genesis);
+                // Buffer in reverse
+                for block in chain.iter().rev() {
+                    sync.buffer_block(block.clone());
+                }
+                let ready = sync.drain_ready();
+                prop_assert_eq!(ready.len(), chain_len);
+                prop_assert_eq!(sync.buffer_len(), 0);
+            }
+
+            /// mark_synced clears all state.
+            #[test]
+            fn mark_synced_clears(count in 1usize..50) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, 1000);
+                for i in 0..count {
+                    sync.buffer_block(make_block(i as u64 + 1));
+                }
+                for _ in 0..count { sync.record_applied(); }
+                sync.mark_synced();
+                prop_assert_eq!(sync.state(), &SyncState::Synced);
+                prop_assert_eq!(sync.buffer_len(), 0);
+                prop_assert_eq!(sync.blocks_applied(), 0);
+            }
+
+            /// retry_after_stall resumes from next_expected_slot.
+            #[test]
+            fn retry_preserves_position(progress in 1u64..100, target in 101u64..500) {
+                let mut sync = SyncManager::new(10);
+                sync.check_sync_needed(0, target);
+                // Simulate partial progress
+                for i in 1..=progress {
+                    sync.buffer_block(make_block(i));
+                }
+                sync.drain_ready();
+                let expected_before = sync.next_expected();
+
+                // Force stall
+                sync.last_progress = Some(Instant::now() - STALL_TIMEOUT - Duration::from_secs(1));
+                sync.check_stalled();
+                prop_assert_eq!(sync.state(), &SyncState::Stalled);
+
+                sync.retry_after_stall(target);
+                prop_assert!(sync.is_syncing());
+                prop_assert_eq!(sync.next_expected(), expected_before);
+                prop_assert_eq!(sync.sync_range(), Some((expected_before, target)));
+            }
+        }
+    }
+
     #[test]
     fn test_blocks_applied_tracking() {
         let mut sync = SyncManager::new(10);
