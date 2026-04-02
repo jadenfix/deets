@@ -750,6 +750,86 @@ mod tests {
     }
 
     #[test]
+    fn test_memory_growth_beyond_limit_handled_gracefully() {
+        let mut vm = WasmVm::new(10_000_000);
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 10_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Try to grow memory far beyond the 16 MB (256 page) limit.
+        // memory.grow returns -1 on failure per the WASM spec, so the
+        // module should finish without a trap.  We verify no panic and
+        // that execution completes (success or graceful failure).
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (memory (export "memory") 1)
+                (func (export "execute") (param i32 i32) (result i32)
+                    ;; Attempt to grow by 1024 pages (64 MB) — well beyond 16 MB cap
+                    (memory.grow (i32.const 1024))
+                    drop
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"");
+        assert!(
+            result.is_ok(),
+            "memory growth beyond limit must not panic: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_stack_overflow_handled_gracefully() {
+        let mut vm = WasmVm::new(100_000_000);
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 100_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Infinite recursion to blow the 512 KB stack limit.
+        // Wasmtime should trap (not panic) and the VM should report failure.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (func $recurse (result i32)
+                    (call $recurse)
+                )
+                (func (export "execute") (param i32 i32) (result i32)
+                    (call $recurse)
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"");
+        assert!(
+            result.is_ok(),
+            "stack overflow must not panic the VM: {:?}",
+            result.err()
+        );
+        let exec = result.unwrap();
+        assert!(
+            !exec.success,
+            "stack overflow execution must report failure"
+        );
+    }
+
+    #[test]
     fn test_no_entrypoint_returns_failure() {
         let mut vm = WasmVm::new(1_000_000);
         let context = ExecutionContext {
