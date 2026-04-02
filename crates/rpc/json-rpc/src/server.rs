@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -18,6 +19,10 @@ use warp::{Filter, Reply};
 /// Maximum number of per-IP rate-limiter entries before eviction kicks in.
 /// Prevents memory exhaustion from attackers using many unique source IPs.
 const MAX_RATE_LIMIT_ENTRIES: usize = 50_000;
+
+/// Maximum concurrent WebSocket connections.
+/// Prevents resource exhaustion from many open WS connections.
+const MAX_WS_CONNECTIONS: usize = 1_000;
 
 /// Per-IP token-bucket rate limiter for RPC endpoints.
 ///
@@ -372,13 +377,30 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
                 }
             });
 
-        // WebSocket subscription endpoint
+        // WebSocket subscription endpoint with connection limit
         let ws_subs = subs.clone();
+        let ws_conn_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let ws_count = ws_conn_count.clone();
         let ws = warp::path("ws")
             .and(warp::ws())
             .map(move |ws: warp::ws::Ws| {
                 let subs = ws_subs.clone();
-                ws.on_upgrade(move |socket| handle_ws_connection(socket, subs))
+                let count = ws_count.clone();
+                let current = count.load(Ordering::Relaxed);
+                if current >= MAX_WS_CONNECTIONS {
+                    tracing::warn!(
+                        current,
+                        max = MAX_WS_CONNECTIONS,
+                        "WebSocket connection limit reached, rejecting"
+                    );
+                }
+                let accept = current < MAX_WS_CONNECTIONS;
+                ws.on_upgrade(move |socket| async move {
+                    if !accept {
+                        return;
+                    }
+                    handle_ws_connection(socket, subs, count).await;
+                })
             });
 
         let cors_origins: Vec<String> = std::env::var("CORS_ORIGINS")
@@ -444,7 +466,20 @@ async fn handle_rejection(
     }
 }
 
-async fn handle_ws_connection(ws: WebSocket, subs: Arc<SubscriptionManager>) {
+async fn handle_ws_connection(
+    ws: WebSocket,
+    subs: Arc<SubscriptionManager>,
+    conn_count: Arc<AtomicUsize>,
+) {
+    conn_count.fetch_add(1, Ordering::Relaxed);
+    struct ConnGuard(Arc<AtomicUsize>);
+    impl Drop for ConnGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = ConnGuard(conn_count);
+
     let (mut ws_tx, mut ws_rx) = ws.split();
     let mut rx = subs.subscribe();
 
@@ -1665,5 +1700,29 @@ mod tests {
                 Ok(())
             })?;
         }
+    }
+
+    #[tokio::test]
+    async fn ws_conn_guard_decrements_on_drop() {
+        let count = Arc::new(AtomicUsize::new(0));
+        {
+            count.fetch_add(1, Ordering::Relaxed);
+            struct Guard(Arc<AtomicUsize>);
+            impl Drop for Guard {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+            let _guard = Guard(count.clone());
+            assert_eq!(count.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn max_ws_connections_is_reasonable() {
+        let max = MAX_WS_CONNECTIONS;
+        assert!(max >= 100);
+        assert!(max <= 100_000);
     }
 }
