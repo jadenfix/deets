@@ -199,7 +199,7 @@ impl HotStuffConsensus {
             Phase::Prevote => Phase::Precommit,
             Phase::Precommit => Phase::Commit,
             Phase::Commit => {
-                self.current_slot += 1;
+                self.current_slot = self.current_slot.saturating_add(1);
                 self.votes.clear();
                 Phase::Propose
             }
@@ -535,7 +535,7 @@ impl HotStuffConsensus {
         }
 
         // Advance slot (new round = new leader)
-        self.current_slot += 1;
+        self.current_slot = self.current_slot.saturating_add(1);
         self.current_phase = Phase::Propose;
         self.votes.clear();
 

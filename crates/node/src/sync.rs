@@ -128,7 +128,7 @@ impl SyncManager {
                     }
                 }
                 self.expected_parent_hash = Some(block.hash());
-                self.next_expected_slot += 1;
+                self.next_expected_slot = self.next_expected_slot.saturating_add(1);
                 ready.push(block);
             } else if block.header.slot > self.next_expected_slot {
                 remaining.push(block);
@@ -150,7 +150,7 @@ impl SyncManager {
             }
             let block = remaining.remove(0);
             self.expected_parent_hash = Some(block.hash());
-            self.next_expected_slot += 1;
+            self.next_expected_slot = self.next_expected_slot.saturating_add(1);
             ready.push(block);
         }
 

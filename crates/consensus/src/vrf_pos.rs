@@ -155,7 +155,7 @@ impl VrfPosConsensus {
         let new_randomness = hasher.finalize();
 
         self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
-        self.current_epoch += 1;
+        self.current_epoch = self.current_epoch.saturating_add(1);
 
         println!(
             "Advanced to epoch {}, new randomness: {:?}",
@@ -165,7 +165,7 @@ impl VrfPosConsensus {
 
     /// Advance to next slot
     pub fn advance_slot(&mut self) {
-        self.current_slot += 1;
+        self.current_slot = self.current_slot.saturating_add(1);
 
         // Check if we need to advance epoch
         if self.current_slot % self.epoch_length == 0 {
@@ -177,7 +177,7 @@ impl VrfPosConsensus {
             let new_randomness = hasher.finalize();
 
             self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
-            self.current_epoch += 1;
+            self.current_epoch = self.current_epoch.saturating_add(1);
         }
     }
 

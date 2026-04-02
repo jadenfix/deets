@@ -47,8 +47,8 @@ impl Pacemaker {
     /// Advance to the next round due to a timeout.
     /// Doubles the timeout (exponential backoff) up to max.
     pub fn on_timeout(&mut self) {
-        self.consecutive_timeouts += 1;
-        self.current_round += 1;
+        self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
+        self.current_round = self.current_round.saturating_add(1);
         self.current_timeout = std::cmp::min(
             self.base_timeout * 2u32.pow(self.consecutive_timeouts.min(5)),
             self.max_timeout,
@@ -60,7 +60,7 @@ impl Pacemaker {
     /// Resets timeout to base.
     pub fn on_commit(&mut self) {
         self.consecutive_timeouts = 0;
-        self.current_round += 1;
+        self.current_round = self.current_round.saturating_add(1);
         self.current_timeout = self.base_timeout;
         self.round_start = Instant::now();
     }
