@@ -88,6 +88,10 @@ pub struct Node {
     /// Directory to write epoch snapshots, if set. Snapshots are written at each
     /// epoch boundary as `snapshot_<epoch>_<slot>.bin` for fast-sync bootstrapping.
     snapshot_dir: Option<PathBuf>,
+    /// Highest slot we have already voted on.  Prevents honest validators from
+    /// accidentally double-voting when multiple fork blocks arrive at the same
+    /// slot (each triggers `vote_on_block` via `on_block_received`).
+    last_voted_slot: Option<Slot>,
 }
 
 impl Node {
@@ -174,6 +178,7 @@ impl Node {
             orphan_count: 0,
             outbound_drops: 0,
             snapshot_dir: None,
+            last_voted_slot: None,
         })
     }
 
@@ -751,6 +756,21 @@ impl Node {
     fn vote_on_block(&mut self, block: &Block) -> Result<()> {
         let _span = tracing::info_span!("vote_on_block", slot = block.header.slot).entered();
 
+        // SAFETY: never vote twice at the same slot.  When fork blocks arrive
+        // at the same height, `on_block_received` calls this for each one.
+        // Without this guard an honest validator would broadcast conflicting
+        // votes and get slashed for double-signing.
+        if let Some(last) = self.last_voted_slot {
+            if block.header.slot <= last {
+                tracing::debug!(
+                    slot = block.header.slot,
+                    last_voted = last,
+                    "Skipping vote — already voted at this or later slot"
+                );
+                return Ok(());
+            }
+        }
+
         let (validator_key, bls_key) = match (&self.validator_key, &self.bls_key) {
             (Some(vk), Some(bk)) => (vk, bk),
             (Some(_), None) => {
@@ -790,6 +810,7 @@ impl Node {
         }
 
         self.broadcast(OutboundMessage::BroadcastVote(vote));
+        self.last_voted_slot = Some(slot);
 
         Ok(())
     }
@@ -2544,5 +2565,64 @@ mod tests {
                 "get_block_by_slot should fall back to RocksDB after restart"
             );
         }
+    }
+
+    #[test]
+    fn vote_on_block_refuses_duplicate_slot() {
+        // Regression: when two fork blocks arrive at the same slot,
+        // on_block_received calls vote_on_block for each.  Without the
+        // last_voted_slot guard, the honest validator would broadcast
+        // conflicting votes and get falsely slashed for double-signing.
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let bls_key = aether_crypto_bls::BlsKeypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            Some(bls_key),
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Build two blocks at slot 5 with different hashes
+        let vrf = aether_types::VrfProof {
+            output: [0u8; 32],
+            proof: vec![],
+        };
+        let block_a = Block::new(
+            5,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            vrf.clone(),
+            vec![],
+        );
+        let mut block_b = Block::new(
+            5,
+            H256::zero(),
+            Address::from_slice(&[2u8; 20]).unwrap(),
+            vrf,
+            vec![],
+        );
+        // Ensure different hash
+        block_b.header.state_root = H256::from_slice(&[0xBB; 32]).unwrap();
+
+        assert_ne!(block_a.hash(), block_b.hash());
+
+        // Vote on first block should succeed
+        node.vote_on_block(&block_a).unwrap();
+        assert_eq!(node.last_voted_slot, Some(5));
+        let votes_after_first = node.drain_outbound().len();
+        assert_eq!(votes_after_first, 1, "first vote should be broadcast");
+
+        // Vote on second block at same slot should be skipped
+        node.vote_on_block(&block_b).unwrap();
+        let votes_after_second = node.drain_outbound().len();
+        assert_eq!(
+            votes_after_second, 0,
+            "second vote at same slot must be suppressed"
+        );
     }
 }
