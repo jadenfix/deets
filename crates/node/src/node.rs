@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time;
 
-use aether_metrics::{CONSENSUS_METRICS, STORAGE_METRICS};
+use aether_metrics::{CONSENSUS_METRICS, NODE_METRICS, STORAGE_METRICS};
 
 /// Overflow-safe (a * b) / c using 256-bit intermediate product.
 /// Avoids silent truncation when a*b overflows u128 (e.g. emission * stake).
@@ -459,6 +459,7 @@ impl Node {
         let slot = self.consensus.current_slot();
         let _span = tracing::info_span!("process_slot", slot).entered();
         CONSENSUS_METRICS.consensus_rounds.inc();
+        NODE_METRICS.current_slot.set(slot as i64);
 
         // Update mempool with current slot for forced inclusion tracking
         self.mempool.set_current_slot(slot);
@@ -533,11 +534,16 @@ impl Node {
                 next_expected = self.sync_manager.next_expected(),
                 "Sync stalled — retrying"
             );
+            NODE_METRICS.sync_stalls.inc();
             self.sync_manager.retry_after_stall(current_slot);
         }
 
         // Check if sync is needed based on how far behind we are.
         if self.sync_manager.check_sync_needed(my_latest, current_slot) {
+            NODE_METRICS.sync_active.set(1);
+            NODE_METRICS
+                .sync_slot_lag
+                .set((current_slot.saturating_sub(my_latest)) as i64);
             // Set expected parent hash from our latest block for chain continuity.
             if self.sync_manager.blocks_applied() == 0 {
                 if let Some(hash) = self.latest_block_hash_if_set() {
@@ -553,6 +559,9 @@ impl Node {
                     to_slot: to,
                 });
             }
+        } else {
+            NODE_METRICS.sync_active.set(0);
+            NODE_METRICS.sync_slot_lag.set(0);
         }
 
         // Apply any contiguous buffered blocks.
@@ -561,10 +570,16 @@ impl Node {
         for block in ready {
             let slot = block.header.slot;
             match self.on_block_received(block) {
-                Ok(()) => self.sync_manager.record_applied(),
+                Ok(()) => {
+                    self.sync_manager.record_applied();
+                    NODE_METRICS.sync_blocks_applied.inc();
+                }
                 Err(e) => tracing::warn!(slot, err = %e, "Failed to apply sync block"),
             }
         }
+        NODE_METRICS
+            .sync_buffer_size
+            .set(self.sync_manager.buffer_len() as i64);
         if batch_len > 0 {
             if let Some((from, target)) = self.sync_manager.sync_range() {
                 tracing::info!(
