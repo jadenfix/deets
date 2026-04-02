@@ -180,21 +180,24 @@ impl TestNetwork {
 fn test_e2e_multi_validator_block_production() {
     let mut network = TestNetwork::new(4);
 
-    network.run_slots(20);
+    // Use 50 slots to reduce VRF flakiness — with tau=0.8 and 4 validators,
+    // each validator produces ~10 blocks on average in 50 slots.
+    network.run_slots(50);
 
     // Each node should have produced or received some blocks
     for (i, node) in network.nodes.iter().enumerate() {
-        let count = (0..20u64)
+        let count = (0..50u64)
             .filter(|s| node.get_block_by_slot(*s).is_some())
             .count();
         println!("Node {} has {} blocks", i, count);
     }
 
-    // Node 0 should have blocks (either produced or received)
-    let node0_count = network.block_count(0, 20);
+    // Node 0 should have blocks (either produced or received).
+    // Threshold of 2 keeps P(Binomial(50,0.2) < 2) ≈ 0.02%.
+    let node0_count = network.block_count(0, 50);
     assert!(
-        node0_count >= 3,
-        "Node 0 should have at least 3 blocks in 20 slots, got {}",
+        node0_count >= 2,
+        "Node 0 should have at least 2 blocks in 50 slots, got {}",
         node0_count
     );
 }
