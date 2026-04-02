@@ -450,3 +450,179 @@ mod tests {
         assert!(validator.verify(&vcr).is_err());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_crypto_primitives::Keypair;
+    use aether_verifiers_tee::TeeType;
+    use proptest::prelude::*;
+
+    /// Build a valid VCR signed by `worker` with specified output byte.
+    fn make_vcr(worker: &Keypair, output: u8) -> VerifiableComputeReceipt {
+        let report = aether_verifiers_tee::AttestationReport {
+            tee_type: TeeType::Simulation,
+            measurement: vec![1u8; 48],
+            nonce: vec![2u8; 32],
+            timestamp: current_timestamp(),
+            signature: vec![3u8; 64],
+            cert_chain: vec![vec![4u8; 16]],
+        };
+
+        let kzg = aether_crypto_kzg::KzgVerifier::new_insecure_test(16);
+        let mut coeffs = [[0u8; 32]; 2];
+        coeffs[0][0] = 3;
+        coeffs[1][0] = 1;
+        let commitment = kzg.commit(&coeffs).unwrap();
+        let mut z = [0u8; 32];
+        z[0] = 4;
+        let proof = kzg.create_proof(&coeffs, &z).unwrap();
+
+        let mut vcr = VerifiableComputeReceipt {
+            job_id: H256::zero(),
+            worker_id: worker.public_key(),
+            model_hash: H256::zero(),
+            input_hash: H256::zero(),
+            output_hash: H256::from_slice(&[output; 32]).unwrap(),
+            trace_commitment: commitment.commitment,
+            trace_proof: proof.proof,
+            trace_evaluation: proof.evaluation,
+            trace_point: z.to_vec(),
+            tee_attestation: serde_json::to_vec(&report).unwrap(),
+            timestamp: current_timestamp(),
+            signature: Vec::new(),
+        };
+
+        let msg = vcr.signing_message().unwrap();
+        vcr.signature = worker.sign(&msg);
+        vcr
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// A valid VCR always passes single-VCR verification.
+        #[test]
+        fn valid_vcr_always_verifies(output in 1u8..=255u8) {
+            let validator = VcrValidator::new_for_test();
+            let worker = Keypair::generate();
+            let vcr = make_vcr(&worker, output);
+            prop_assert!(validator.verify(&vcr).is_ok());
+        }
+
+        /// Flipping any byte of the signature always causes rejection.
+        #[test]
+        fn tampered_signature_always_rejected(
+            output in 1u8..=255u8,
+            byte_idx in 0usize..64usize,
+            flip in 1u8..=255u8,
+        ) {
+            let validator = VcrValidator::new_for_test();
+            let worker = Keypair::generate();
+            let mut vcr = make_vcr(&worker, output);
+            // ensure the signature is long enough
+            if byte_idx < vcr.signature.len() {
+                vcr.signature[byte_idx] ^= flip;
+                prop_assert!(validator.verify(&vcr).is_err());
+            }
+        }
+
+        /// A short (< 32-byte) worker ID is always rejected.
+        #[test]
+        fn short_worker_id_rejected(len in 0usize..32usize) {
+            let validator = VcrValidator::new_for_test();
+            let worker = Keypair::generate();
+            let mut vcr = make_vcr(&worker, 7);
+            vcr.worker_id = vec![0u8; len];
+            prop_assert!(validator.verify(&vcr).is_err());
+        }
+
+        /// verify_quorum succeeds when all workers agree on the same output.
+        #[test]
+        fn quorum_succeeds_on_unanimous_agreement(n_workers in 3usize..=8usize) {
+            let validator = VcrValidator::new_for_test();
+            let vcrs: Vec<_> = (0..n_workers)
+                .map(|_| make_vcr(&Keypair::generate(), 42))
+                .collect();
+            prop_assert!(validator.verify_quorum(&vcrs).is_ok());
+        }
+
+        /// verify_quorum fails when fewer than quorum_size VCRs are provided.
+        #[test]
+        fn quorum_fails_below_threshold(n in 0usize..=2usize) {
+            let validator = VcrValidator::new_for_test(); // quorum_size = 3
+            let vcrs: Vec<_> = (0..n)
+                .map(|_| make_vcr(&Keypair::generate(), 42))
+                .collect();
+            prop_assert!(validator.verify_quorum(&vcrs).is_err());
+        }
+
+        /// Duplicate worker IDs are rejected as Sybil attacks.
+        #[test]
+        fn quorum_rejects_duplicate_worker_ids(output in 1u8..=255u8) {
+            let validator = VcrValidator::new_for_test();
+            let worker = Keypair::generate();
+            // Three VCRs from the same worker — Sybil attack
+            let vcrs = vec![
+                make_vcr(&worker, output),
+                make_vcr(&worker, output),
+                make_vcr(&worker, output),
+            ];
+            prop_assert!(validator.verify_quorum(&vcrs).is_err());
+        }
+
+        /// signing_message is deterministic: same VCR fields → same bytes.
+        #[test]
+        fn signing_message_is_deterministic(output in 1u8..=255u8) {
+            let worker = Keypair::generate();
+            let vcr = make_vcr(&worker, output);
+            let msg1 = vcr.signing_message().unwrap();
+            let msg2 = vcr.signing_message().unwrap();
+            prop_assert_eq!(msg1, msg2);
+        }
+
+        /// signing_message changes when output_hash changes.
+        #[test]
+        fn signing_message_differs_on_output_change(
+            output1 in 1u8..=127u8,
+            output2 in 128u8..=255u8,
+        ) {
+            let worker = Keypair::generate();
+            let mut vcr = make_vcr(&worker, output1);
+            let msg1 = vcr.signing_message().unwrap();
+            vcr.output_hash = H256::from_slice(&[output2; 32]).unwrap();
+            let msg2 = vcr.signing_message().unwrap();
+            prop_assert_ne!(msg1, msg2);
+        }
+
+        /// Quorum with a dissenter minority (1 of 4 disagrees) still succeeds.
+        #[test]
+        fn quorum_tolerates_single_dissenter(
+            majority_output in 1u8..=100u8,
+            minority_output in 101u8..=200u8,
+        ) {
+            let validator = VcrValidator::new_for_test(); // quorum_size = 3
+            let vcrs = vec![
+                make_vcr(&Keypair::generate(), majority_output),
+                make_vcr(&Keypair::generate(), majority_output),
+                make_vcr(&Keypair::generate(), majority_output),
+                make_vcr(&Keypair::generate(), minority_output), // dissenter
+            ];
+            // 3-of-4 agree — should still satisfy quorum
+            prop_assert!(validator.verify_quorum(&vcrs).is_ok());
+        }
+
+        /// VCR with empty trace_commitment is rejected (KZG verification fails).
+        #[test]
+        fn empty_trace_commitment_rejected(output in 1u8..=255u8) {
+            let validator = VcrValidator::new_for_test();
+            let worker = Keypair::generate();
+            let mut vcr = make_vcr(&worker, output);
+            vcr.trace_commitment = Vec::new();
+            // Must re-sign after mutation so rejection is from KZG, not signature
+            let msg = vcr.signing_message().unwrap();
+            vcr.signature = worker.sign(&msg);
+            prop_assert!(validator.verify(&vcr).is_err());
+        }
+    }
+}
