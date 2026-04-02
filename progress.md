@@ -362,3 +362,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Removed libssl-dev/libssl3 — project uses rustls, openssl is denied in deny.toml
   - Bumped deploy Dockerfiles from rust:1.86 to rust:1.90
   - Code-only rebuilds now skip full dep compilation (~10-15 min → ~1-2 min)
+
+- **2026-04-02** — feat(metrics): wire Prometheus metrics into P2P, ledger, and node. Tier 6 item. Branch: `feat/agent2-wire-prometheus-metrics`, PR #137 (merged).
+  - P2P: instrumented gossipsub publish/poll with NET_METRICS (messages_sent, messages_received, message_size_bytes, peers_connected gauge)
+  - Ledger: instrumented commit_overlay and write_batch with STORAGE_METRICS.write_batch_ms histogram
+  - Node main: spawns Prometheus HTTP exporter on AETHER_METRICS_PORT (default 9090) — all registered metrics now scraped at /metrics
+  - Note: Tier 3 channel backpressure item already complete — all channels bounded with drop-on-full behavior
