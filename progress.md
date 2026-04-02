@@ -759,3 +759,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Affected: hotstuff.rs (2), hybrid.rs (2), vrf_pos.rs (3), simple.rs (1), pacemaker.rs (3), node/sync.rs (2), node/node.rs (1).
   - Prevents theoretical u64 overflow wrapping counters to zero, which would desynchronize validators.
   - All tests pass; clippy clean.
+
+## Agent 2 Cycle 18 Log
+
+- **2026-04-02** — feat(metrics): wire fork_events and finality_latency_ms consensus metrics into production. Branch: `feat/agent2-wire-consensus-metrics-production`, PR #249 (merged).
+  - Wired `fork_events` counter: incremented when fork_choice detects competing blocks at the same slot.
+  - Wired `finality_latency_ms` histogram: observed at finalization as wall-clock time since block timestamp.
+  - Consolidated duplicate `get_block_by_slot` lookups in `check_finality` into a single call.
+  - These were the last two unwired ConsensusMetrics — all 8 metrics now observed in production.
+  - All tests pass; clippy clean.
