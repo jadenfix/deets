@@ -325,6 +325,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - 3 new tests, all 94 consensus tests pass, clippy clean
   - Audit notes: Tier 1 items (block validation, nonce, signatures, double-spend, overflow, WASM gas) all verified as addressed by prior PRs. Remaining: `saturating_mul() / divisor` pattern in staking rewards could silently produce wrong results on u128 overflow (low practical risk, future PR).
 
+- **2026-04-02** — fix(consensus): replace saturating_mul with overflow-safe mul_div in slashing calculations. Tier 1 item (integer overflow in balances). Branch: `fix/agent1-slashing-overflow-safe-mul-div`, PR #125 (merged).
+  - `calculate_slash_amount()` used `stake.saturating_mul(5) / 100` which returned ~1% instead of 5% for stakes near u128::MAX
+  - Added `mul_div()` + `div_256_by_128()` for overflow-safe 256-bit intermediate math (same pattern as PR #123)
+  - Fixed `saturating_mul(10_000)` overflow in node.rs bps conversion (both vote-time and block-evidence paths)
+  - Added regression test `test_calculate_slash_no_overflow_on_large_stakes`
+  - Full audit of Tier 2 items: slashing enforcement, fork choice, epoch transitions all verified correct. All Tier 1+2 items now complete.
+
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
