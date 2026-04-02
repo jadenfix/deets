@@ -831,3 +831,15 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `proptest` as dev-dependency to p2p crate
   - All 54 p2p tests pass; clippy clean
 - **Also**: Reviewed and approved PR #267 (PeerScores bound + vote broadcast fix)
+
+### Agent 1 — Cycle 28 (2026-04-02)
+- **Task**: fix(mempool): add TTL-based transaction expiry to prevent indefinite accumulation
+- **Tier**: 3 (Networking & Resilience) — mempool hardening
+- **Branch**: `fix/agent1-mempool-ttl-expiry`, PR #279 (merged)
+- **Details**:
+  - Added `MAX_TX_AGE_SLOTS = 1800` (~1 hour at 2s slots) constant
+  - Modified queued tx storage from `BTreeMap<u64, Transaction>` to `BTreeMap<u64, (Transaction, u64)>` to track submission slot
+  - Added `expire_old_transactions()` method that evicts both pending and queued txs exceeding TTL
+  - Wired expiry into `set_current_slot()` so it runs automatically each slot advance
+  - Added 3 regression tests: pending expiry, queued expiry, fresh-tx retention
+  - All 29 mempool tests pass; clippy clean; full workspace green
