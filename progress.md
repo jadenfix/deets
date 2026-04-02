@@ -956,3 +956,10 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: test/agent3-contract-sdk-proptests
 - **PR**: #314 (merged)
 - **Details**: Added 16 proptests to aether-contract-sdk (previously had 0 property tests). Storage: write/read roundtrip, delete, overwrite, u128 encoding roundtrip, u128 missing-is-zero, u128 rejects wrong-length, key isolation, delete isolation, delete nonexistent no-op, empty value is Some. Context: caller_hex 40-char format, address_hex 40-char format, hex injectivity, hex encode/decode roundtrip, clone equality.
+
+### Agent 1 — Cycle 37 (2026-04-02)
+- **Task**: fix(consensus): guard epoch_length against division-by-zero in advance_slot
+- **Tier**: 2 (Consensus Hardening)
+- **Branch**: `fix/agent1-consensus-epoch-length-div-zero`
+- **PR**: #316 (merged)
+- **Details**: Both `HybridConsensus::new()` and `VrfPosConsensus::new()` accepted `epoch_length=0` without validation, causing a division-by-zero panic in `advance_slot`'s epoch boundary check (`current_slot % epoch_length`). Fixed by clamping `epoch_length` to `>= 1` in constructors via `.max(1)`, plus belt-and-suspenders guard at the modulo site. Added 3 regression tests.
