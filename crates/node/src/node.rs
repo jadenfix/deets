@@ -1370,7 +1370,7 @@ impl Node {
                 self.consensus
                     .slash_validator(&evidence.validator, u128::from(rate_bps));
 
-                match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
+                match self.staking_state.slash(evidence.validator, u128::from(rate_bps), block.header.slot) {
                     Ok(slashed) => tracing::warn!(
                         validator = ?evidence.validator,
                         rate_bps,
@@ -1559,7 +1559,7 @@ impl Node {
                 // Update staking bond accounting so the slash is reflected in
                 // validator stake queries and reward calculations.
                 let rate_bps = slash_verify::slash_rate_bps(&proof.proof_type);
-                match self.staking_state.slash(proof.validator, u128::from(rate_bps)) {
+                match self.staking_state.slash(proof.validator, u128::from(rate_bps), vote.slot) {
                     Ok(staking_slashed) => tracing::warn!(
                         validator = ?proof.validator,
                         slot = vote.slot,

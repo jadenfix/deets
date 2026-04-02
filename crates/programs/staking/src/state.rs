@@ -84,6 +84,12 @@ pub enum StakingError {
     InsufficientDelegation { have: u128, requested: u128 },
     #[error("arithmetic overflow in balance calculation")]
     Overflow,
+    #[error("validator is jailed until slot {until}, current slot is {current}")]
+    ValidatorJailed { until: u64, current: u64 },
+    #[error("validator is not jailed: {0:?}")]
+    ValidatorNotJailed(Address),
+    #[error("validator stake {have} below minimum {min} required to unjail")]
+    UnjailInsufficientStake { have: u128, min: u128 },
 }
 
 /// Staking Program State
@@ -351,14 +357,21 @@ impl StakingState {
 
     /// Slash a validator for misbehavior.
     ///
-    /// NOTE: `slash_count` increments permanently and jails the validator at 3 slashes,
-    /// but there is currently no `unjail()` mechanism. Once jailed, a validator cannot
-    /// be reactivated. An unjail function (with a cooldown and/or governance vote)
-    /// should be added before mainnet.
+    /// Increments `slash_count` and jails the validator at 3 slashes with a
+    /// cooldown period of 201,600 slots (~14 days). After the cooldown, the
+    /// validator can call `unjail()` to reactivate if they still meet the
+    /// minimum stake requirement.
+    /// Unjail cooldown: 201,600 slots (~14 days at 6s/slot).
+    const UNJAIL_COOLDOWN_SLOTS: u64 = 201_600;
+
+    /// Minimum stake required to unjail (same as registration minimum: 100 SWR).
+    const MIN_STAKE_TO_UNJAIL: u128 = 100_000_000;
+
     pub fn slash(
         &mut self,
         validator: Address,
         slash_rate: u128, // Basis points (e.g., 500 = 5%)
+        current_slot: u64,
     ) -> Result<u128, StakingError> {
         if slash_rate > 10000 {
             return Err(StakingError::InvalidSlashRate(slash_rate));
@@ -431,6 +444,8 @@ impl StakingState {
         // Jail validator if slashed too many times
         if self.validators[validator_idx].slash_count >= 3 {
             self.validators[validator_idx].is_active = false;
+            self.validators[validator_idx].jailed_until =
+                Some(current_slot.saturating_add(Self::UNJAIL_COOLDOWN_SLOTS));
         }
 
         Ok(total_slash)
@@ -516,6 +531,59 @@ impl StakingState {
         // Update total_staked to reflect distributed rewards, preventing
         // epoch-over-epoch divergence between total_staked and actual stakes.
         self.total_staked = self.total_staked.saturating_add(total_distributed);
+    }
+
+    /// Unjail a validator after the cooldown period has elapsed.
+    ///
+    /// Requirements:
+    /// - Validator must be jailed (`is_active == false` and `jailed_until` set)
+    /// - Current slot must be >= `jailed_until`
+    /// - Validator must still have at least the minimum stake
+    ///
+    /// Resets `slash_count` to 0 and reactivates the validator.
+    pub fn unjail(
+        &mut self,
+        caller: Address,
+        validator: Address,
+        current_slot: u64,
+    ) -> Result<(), StakingError> {
+        let v = self
+            .validators
+            .iter_mut()
+            .find(|v| v.address == validator)
+            .ok_or(StakingError::ValidatorNotFound(validator))?;
+
+        if caller != validator {
+            return Err(StakingError::Unauthorized);
+        }
+
+        let jailed_until = v
+            .jailed_until
+            .ok_or(StakingError::ValidatorNotJailed(validator))?;
+
+        if v.is_active {
+            return Err(StakingError::ValidatorNotJailed(validator));
+        }
+
+        if current_slot < jailed_until {
+            return Err(StakingError::ValidatorJailed {
+                until: jailed_until,
+                current: current_slot,
+            });
+        }
+
+        if v.staked_amount < Self::MIN_STAKE_TO_UNJAIL {
+            return Err(StakingError::UnjailInsufficientStake {
+                have: v.staked_amount,
+                min: Self::MIN_STAKE_TO_UNJAIL,
+            });
+        }
+
+        v.is_active = true;
+        v.jailed_until = None;
+        v.slash_count = 0;
+
+        Ok(())
     }
 
     pub fn get_validator(&self, address: &Address) -> Option<&Validator> {
@@ -639,7 +707,7 @@ mod tests {
             .unwrap();
 
         // Slash 5%
-        let slashed = state.slash(test_address(1), 500).unwrap();
+        let slashed = state.slash(test_address(1), 500, 0).unwrap();
 
         assert_eq!(slashed, 50_000_000);
         assert_eq!(
@@ -677,7 +745,7 @@ mod tests {
         assert_eq!(pre_total, 1_500_000_000);
 
         // Slash 10% — should reduce validator stake + delegation
-        let slashed = state.slash(test_address(1), 1000).unwrap();
+        let slashed = state.slash(test_address(1), 1000, 0).unwrap();
 
         // 10% of 1B validator + 10% of 500M delegation = 150M
         assert_eq!(slashed, 150_000_000);
@@ -710,7 +778,7 @@ mod tests {
             )
             .unwrap();
 
-        let slashed = state.slash(test_address(1), 5000).unwrap();
+        let slashed = state.slash(test_address(1), 5000, 0).unwrap();
         assert_eq!(slashed, 750_000_000);
         assert_eq!(
             state
@@ -777,7 +845,7 @@ mod tests {
             .unwrap();
 
         // Slash at 100% (rate = 10000 bps)
-        let slashed = state.slash(test_address(1), 10000).unwrap();
+        let slashed = state.slash(test_address(1), 10000, 0).unwrap();
         assert_eq!(slashed, 1_000_000_000);
         assert_eq!(
             state.get_validator(&test_address(1)).unwrap().staked_amount,
@@ -786,7 +854,7 @@ mod tests {
         );
 
         // Slash again at 5% — should not underflow since staked_amount is already 0
-        let slashed_again = state.slash(test_address(1), 500).unwrap();
+        let slashed_again = state.slash(test_address(1), 500, 0).unwrap();
         assert_eq!(slashed_again, 0, "slashing 0 stake should yield 0");
         assert_eq!(
             state.get_validator(&test_address(1)).unwrap().staked_amount,
@@ -813,7 +881,7 @@ mod tests {
             .unwrap();
 
         // Slash at 5% (500 bps)
-        let slashed = state.slash(test_address(1), 500).unwrap();
+        let slashed = state.slash(test_address(1), 500, 0).unwrap();
         let expected = large_stake / 20; // 5%
         assert!(
             slashed >= expected - 1 && slashed <= expected + 1,
@@ -837,7 +905,7 @@ mod tests {
             )
             .unwrap();
 
-        let result = state.slash(test_address(1), 10_001);
+        let result = state.slash(test_address(1), 10_001, 0);
         assert!(matches!(
             result,
             Err(StakingError::InvalidSlashRate(10_001))
@@ -1041,7 +1109,7 @@ mod tests {
         assert_eq!(state.unbonding[0].amount, 800_000_000);
 
         // Validator slashed 50%
-        let slashed = state.slash(test_address(1), 5000).unwrap();
+        let slashed = state.slash(test_address(1), 5000, 0).unwrap();
         // Slash covers: validator stake (1B * 50% = 500M) + unbonding (800M * 50% = 400M)
         assert_eq!(slashed, 900_000_000);
 
@@ -1080,7 +1148,7 @@ mod tests {
             .unwrap();
 
         // 100% slash zeros the unbonding entry and removes it
-        state.slash(test_address(1), 10000).unwrap();
+        state.slash(test_address(1), 10000, 0).unwrap();
         assert!(
             state.unbonding.is_empty(),
             "zero-amount unbonding entries should be pruned"
@@ -1157,6 +1225,87 @@ mod tests {
             "commission should be ~10% of rewards, got {total_credited}, expected ~{expected_commission}"
         );
     }
+
+    #[test]
+    fn test_unjail_after_cooldown() {
+        let mut state = StakingState::new();
+        let val = test_address(1);
+        state
+            .register_validator(val, val, 1_000_000_000, 1000, test_address(2))
+            .unwrap();
+
+        // Slash 3 times at slot 100 to jail
+        state.slash(val, 100, 100).unwrap();
+        state.slash(val, 100, 100).unwrap();
+        state.slash(val, 100, 100).unwrap();
+
+        assert!(!state.get_validator(&val).unwrap().is_active);
+        let jailed_until = state.get_validator(&val).unwrap().jailed_until.unwrap();
+        assert_eq!(jailed_until, 100 + StakingState::UNJAIL_COOLDOWN_SLOTS);
+
+        // Too early to unjail
+        let err = state.unjail(val, val, 100).unwrap_err();
+        assert!(matches!(err, StakingError::ValidatorJailed { .. }));
+
+        // Unjail after cooldown
+        state.unjail(val, val, jailed_until).unwrap();
+        assert!(state.get_validator(&val).unwrap().is_active);
+        assert!(state.get_validator(&val).unwrap().jailed_until.is_none());
+        assert_eq!(state.get_validator(&val).unwrap().slash_count, 0);
+    }
+
+    #[test]
+    fn test_unjail_requires_caller_match() {
+        let mut state = StakingState::new();
+        let val = test_address(1);
+        state
+            .register_validator(val, val, 1_000_000_000, 1000, test_address(2))
+            .unwrap();
+        state.slash(val, 100, 0).unwrap();
+        state.slash(val, 100, 0).unwrap();
+        state.slash(val, 100, 0).unwrap();
+
+        let err = state
+            .unjail(test_address(99), val, StakingState::UNJAIL_COOLDOWN_SLOTS + 1)
+            .unwrap_err();
+        assert!(matches!(err, StakingError::Unauthorized));
+    }
+
+    #[test]
+    fn test_unjail_requires_minimum_stake() {
+        let mut state = StakingState::new();
+        let val = test_address(1);
+        state
+            .register_validator(val, val, 100_000_000, 1000, test_address(2))
+            .unwrap();
+
+        // Slash 3 times at high rate to reduce stake below minimum
+        state.slash(val, 5000, 0).unwrap(); // 50%
+        state.slash(val, 5000, 0).unwrap(); // 50% of remaining
+        state.slash(val, 5000, 0).unwrap(); // 50% of remaining => 12.5M < 100M min
+
+        assert!(!state.get_validator(&val).unwrap().is_active);
+
+        let err = state
+            .unjail(val, val, StakingState::UNJAIL_COOLDOWN_SLOTS + 1)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StakingError::UnjailInsufficientStake { .. }
+        ));
+    }
+
+    #[test]
+    fn test_unjail_not_jailed_fails() {
+        let mut state = StakingState::new();
+        let val = test_address(1);
+        state
+            .register_validator(val, val, 1_000_000_000, 1000, test_address(2))
+            .unwrap();
+
+        let err = state.unjail(val, val, 0).unwrap_err();
+        assert!(matches!(err, StakingError::ValidatorNotJailed(_)));
+    }
 }
 
 #[cfg(test)]
@@ -1193,7 +1342,7 @@ mod proptests {
             let v = arb_address(1);
             state.register_validator(v, v, stake, 500, arb_address(2)).unwrap();
             let before = state.validators[0].staked_amount;
-            state.slash(v, slash_rate).unwrap();
+            state.slash(v, slash_rate, 0).unwrap();
             let after = state.validators[0].staked_amount;
             prop_assert!(after <= before, "stake must not increase after slash");
             // For any non-zero slash rate on non-zero stake, stake must strictly decrease
@@ -1209,7 +1358,7 @@ mod proptests {
             let v = arb_address(3);
             state.register_validator(v, v, stake, 500, arb_address(4)).unwrap();
             let before = state.validators[0].staked_amount;
-            let slashed = state.slash(v, slash_rate).unwrap();
+            let slashed = state.slash(v, slash_rate, 0).unwrap();
             prop_assert!(
                 slashed <= before,
                 "slash amount ({}) must not exceed pre-slash stake ({})",
@@ -1223,7 +1372,7 @@ mod proptests {
             let mut state = StakingState::new();
             let v = arb_address(5);
             state.register_validator(v, v, stake, 0, arb_address(6)).unwrap();
-            state.slash(v, 10000).unwrap();
+            state.slash(v, 10000, 0).unwrap();
             let after = state.validators[0].staked_amount;
             prop_assert_eq!(after, 0, "100% slash must zero out validator stake");
         }
@@ -1281,7 +1430,7 @@ mod proptests {
             state.register_validator(v, v, stake, 500, arb_address(15)).unwrap();
             state.delegate(d, d, v, delegation).unwrap();
             let before_del = state.delegations[0].amount;
-            state.slash(v, slash_rate).unwrap();
+            state.slash(v, slash_rate, 0).unwrap();
             // Delegation may have been removed if amount became 0, otherwise it decreased
             let after_del = state.delegations.iter()
                 .find(|d2| d2.delegator == d && d2.validator == v)
@@ -1319,7 +1468,7 @@ mod proptests {
             let mut state = StakingState::new();
             let v = arb_address(24);
             state.register_validator(v, v, stake, 500, arb_address(25)).unwrap();
-            let result = state.slash(v, rate);
+            let result = state.slash(v, rate, 0);
             prop_assert!(result.is_err(), "slash rate > 10000 must fail");
         }
     }

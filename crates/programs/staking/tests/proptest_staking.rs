@@ -226,7 +226,7 @@ proptest! {
     ) {
         let before = state.validators[0].staked_amount;
         let total_before = state.total_staked;
-        let slashed = state.slash(val_addr, slash_rate).unwrap();
+        let slashed = state.slash(val_addr, slash_rate, 0).unwrap();
 
         let expected_slash = before * slash_rate / 10000;
         // Allow rounding of 1
@@ -247,7 +247,7 @@ proptest! {
         prop_assume!(delegator != val_addr);
         state.delegate(delegator, delegator, val_addr, del_amount).unwrap();
         let del_before = del_amount;
-        state.slash(val_addr, slash_rate).unwrap();
+        state.slash(val_addr, slash_rate, 0).unwrap();
 
         if let Some(d) = state.delegations.iter().find(|d| d.delegator == delegator) {
             let expected_remaining = del_before - del_before * slash_rate / 10000;
@@ -263,11 +263,11 @@ proptest! {
         (mut state, val_addr, _) in state_with_validator(),
     ) {
         prop_assert!(state.validators[0].is_active);
-        state.slash(val_addr, 100).unwrap(); // 1%
+        state.slash(val_addr, 100, 0).unwrap(); // 1%
         prop_assert!(state.validators[0].is_active);
-        state.slash(val_addr, 100).unwrap();
+        state.slash(val_addr, 100, 0).unwrap();
         prop_assert!(state.validators[0].is_active);
-        state.slash(val_addr, 100).unwrap();
+        state.slash(val_addr, 100, 0).unwrap();
         prop_assert!(!state.validators[0].is_active);
         prop_assert_eq!(state.validators[0].slash_count, 3);
     }
@@ -321,7 +321,7 @@ proptest! {
         (mut state, val_addr, _) in state_with_validator(),
         rate in 10001u128..=20000u128,
     ) {
-        let result = state.slash(val_addr, rate);
+        let result = state.slash(val_addr, rate, 0);
         prop_assert!(result.is_err());
     }
 
@@ -351,7 +351,7 @@ proptest! {
         state.delegate(delegator, delegator, val_addr, del_amount).unwrap();
         state.unbond(delegator, delegator, val_addr, del_amount, slot).unwrap();
         let unbond_before = state.unbonding[0].amount;
-        state.slash(val_addr, slash_rate).unwrap();
+        state.slash(val_addr, slash_rate, 0).unwrap();
         if let Some(u) = state.unbonding.first() {
             prop_assert!(u.amount <= unbond_before,
                 "unbonding increased after slash: {} -> {}", unbond_before, u.amount);
