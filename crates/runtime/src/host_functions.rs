@@ -124,7 +124,7 @@ impl HostFunctions {
     #[allow(clippy::manual_div_ceil)]
     pub fn sha256(&mut self, data: &[u8]) -> Result<H256> {
         let words = (data.len() + 31) / 32;
-        self.charge_gas(60 + 12 * words as u64)?;
+        self.charge_gas(60u64.saturating_add(12u64.saturating_mul(words as u64)))?;
 
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(data);
@@ -134,7 +134,7 @@ impl HostFunctions {
     /// Emit a log event
     /// Cost: 375 gas + 8 gas per byte
     pub fn emit_log(&mut self, topics: Vec<H256>, data: Vec<u8>) -> Result<()> {
-        self.charge_gas(375 + 8 * data.len() as u64)?;
+        self.charge_gas(375u64.saturating_add(8u64.saturating_mul(data.len() as u64)))?;
 
         // In production: store logs for receipts
         tracing::debug!(topics = ?topics, data_len = data.len(), "contract log emitted");
