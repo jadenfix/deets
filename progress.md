@@ -932,3 +932,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **aether-ai-router routing** (5 props): empty providers → None; decision job_id matches request; decision score in [0.0, 1.0]; highest-rep provider wins (all else equal); all-unavailable → None
 
 Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (attestation freshness check requires recent timestamp).
+
+## Agent 3 — Cycle 36 (2026-04-02)
+
+- **Task**: test(ai-mesh): proptest for AI worker invariants
+- **Branch**: test/agent3-ai-mesh-worker-proptests
+- **PR**: #308 (merged)
+- **Details**: Added 10 proptests to aether-ai-worker — worker lifecycle (starts not-running, stop idempotent), job execution (preserves job_id, non-empty output/trace), gas metering (positive, deterministic, formula correctness), input validation (empty model hash/input rejected), config serialization roundtrip.
