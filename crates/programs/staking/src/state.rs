@@ -424,6 +424,10 @@ impl StakingState {
             .saturating_add(delegated_slash)
             .saturating_add(unbonding_slash);
 
+        // Update total_staked to reflect slashed amounts, so reward distribution
+        // and quorum calculations use the correct denominator.
+        self.total_staked = self.total_staked.saturating_sub(total_slash);
+
         // Jail validator if slashed too many times
         if self.validators[validator_idx].slash_count >= 3 {
             self.validators[validator_idx].is_active = false;
@@ -641,6 +645,46 @@ mod tests {
         assert_eq!(
             state.get_validator(&test_address(1)).unwrap().staked_amount,
             950_000_000
+        );
+        // total_staked must be decremented so reward distribution uses correct denominator
+        assert_eq!(
+            state.get_total_staked(),
+            950_000_000,
+            "total_staked must reflect slashed amount"
+        );
+    }
+
+    #[test]
+    fn test_slash_updates_total_staked_with_delegations() {
+        let mut state = StakingState::new();
+
+        state
+            .register_validator(
+                test_address(1),
+                test_address(1),
+                1_000_000_000,
+                1000,
+                test_address(2),
+            )
+            .unwrap();
+
+        // Add a delegation
+        state
+            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .unwrap();
+
+        let pre_total = state.get_total_staked();
+        assert_eq!(pre_total, 1_500_000_000);
+
+        // Slash 10% — should reduce validator stake + delegation
+        let slashed = state.slash(test_address(1), 1000).unwrap();
+
+        // 10% of 1B validator + 10% of 500M delegation = 150M
+        assert_eq!(slashed, 150_000_000);
+        assert_eq!(
+            state.get_total_staked(),
+            1_350_000_000,
+            "total_staked must be decremented by full slash (validator + delegations)"
         );
     }
 
