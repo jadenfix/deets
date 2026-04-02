@@ -233,6 +233,9 @@ impl TestNetwork {
                         OutboundMessage::BroadcastTransaction(tx) => {
                             pending_txs.push((idx, tx));
                         }
+                        OutboundMessage::RequestBlockRange { .. } => {
+                            // Sync requests are ignored in partitioned test harness
+                        }
                     }
                 }
             }
