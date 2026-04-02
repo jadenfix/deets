@@ -11,3 +11,6 @@ bincode.workspace = true
 borsh.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"

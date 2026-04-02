@@ -4,7 +4,7 @@ use crate::error::{CodecError, Result};
 
 /// Serialize a value using Borsh.
 pub fn encode_borsh<T: BorshSerialize>(value: &T) -> Result<Vec<u8>> {
-    value.try_to_vec().map_err(CodecError::from)
+    borsh::to_vec(value).map_err(CodecError::from)
 }
 
 /// Deserialize a value encoded with Borsh.
