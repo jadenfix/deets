@@ -222,12 +222,15 @@ async fn run_p2p_outbound(
                         }
                     }
                     Some(OutboundMessage::BroadcastVote(vote)) => {
-                        let data = bincode::serialize(&vote).unwrap_or_else(|e| {
-                            tracing::error!("failed to serialize vote: {e}");
-                            Vec::new()
-                        });
-                        if let Err(e) = p2p.publish(TOPIC_VOTE, data) {
-                            tracing::warn!("failed to broadcast vote: {e}");
+                        match bincode::serialize(&vote) {
+                            Ok(data) => {
+                                if let Err(e) = p2p.publish(TOPIC_VOTE, data) {
+                                    tracing::warn!("failed to broadcast vote: {e}");
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("failed to serialize vote: {e}");
+                            }
                         }
                     }
                     Some(OutboundMessage::BroadcastTransaction(tx)) => {
