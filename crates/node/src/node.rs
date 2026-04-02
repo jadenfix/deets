@@ -1235,6 +1235,10 @@ impl Node {
         let is_fork = self.fork_choice.add_block(block.header.slot, block_hash);
         let new_canonical = self.fork_choice.canonical_block(block.header.slot);
 
+        if is_fork {
+            CONSENSUS_METRICS.fork_events.inc();
+        }
+
         let is_canonical = new_canonical == Some(block_hash);
 
         // SAFETY: once a block has been durably written to storage at a given slot, we must
@@ -1682,13 +1686,23 @@ impl Node {
         for slot in start..=end {
             if self.consensus.check_finality(slot) {
                 CONSENSUS_METRICS.slots_finalized.inc();
+
                 tracing::info!(slot, "Slot finalized via VRF+HotStuff+BLS");
 
-                // Update epoch randomness from the first finalized block in this
-                // epoch that has a non-zero VRF output. The idempotent guard in
-                // update_epoch_randomness() ensures only the first call per epoch
-                // takes effect, so skipped slots don't stall randomness rotation.
+                // Update epoch randomness and measure finality latency from the
+                // finalized block.
                 if let Some(block) = self.get_block_by_slot(slot) {
+                    // Finality latency: wall-clock time since the block was produced.
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let latency_ms =
+                        now_secs.saturating_sub(block.header.timestamp).saturating_mul(1000);
+                    CONSENSUS_METRICS
+                        .finality_latency_ms
+                        .observe(latency_ms as f64);
+
                     if block.header.vrf_proof.output != [0u8; 32] {
                         self.consensus
                             .update_epoch_randomness(&block.header.vrf_proof.output);
