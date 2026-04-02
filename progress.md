@@ -870,3 +870,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 15 proptest property-based tests to `aether-faucet` (previously had 0 proptests)
   - Covers: GitHub handle format, hex address parsing, amount bounds, token allowlist, grant output invariants
   - All 19 tests (4 existing + 15 new) pass; clippy clean
+
+### Agent 2 — Cycle 30 (2026-04-02)
+- **Task**: fix(ops): add Docker HEALTHCHECK, non-root user, and compose healthchecks
+- **Tier**: 6 (Operational Readiness)
+- **Branch**: `fix/agent2-docker-healthcheck-hardening`, PR #288 (merged)
+- **Details**:
+  - Added HEALTHCHECK instruction to Dockerfile and Dockerfile.validator using /health RPC endpoint
+  - Run containers as non-root `aether` user (UID 1000) for container escape defense
+  - Added healthcheck config to all validators in both docker-compose files
+  - Changed validator-2/3/4 depends_on to service_healthy for proper startup ordering
+  - Removed unnecessary sleep in test-runner (healthcheck ordering makes it redundant)
