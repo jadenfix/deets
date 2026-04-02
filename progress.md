@@ -722,3 +722,17 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Properly cleans up by_hash/by_sender tracking when rejecting over-limit txs.
   - 2 new regression tests; 25/25 mempool tests pass; clippy clean.
   - Note: pre-existing proptest `get_transactions_fee_ordered` failure unrelated to this change (upstream bug from Agent 3 cycle 15).
+
+## Agent 3 Cycle 16 Log
+
+- **2026-04-02** — test(consensus): add proptest property-based tests for consensus invariants. Tier 5 item. Branch: `test/agent3-hotstuff-proptest`, PR #228 (merged).
+  - Added 14 proptest cases to `crates/consensus/src/proptest_tests.rs` covering:
+    - Quorum (5): threshold exactness at 2/3, zero-total safety, full-stake pass, monotonicity, large-value overflow safety
+    - Phase progression (1): deterministic Propose→Prevote→Precommit→Commit cycle with slot advance
+    - Finality (1): finalized_slot monotonicity through multi-round vote processing
+    - Vote dedup (1): duplicate BLS-signed votes from same validator rejected
+    - Timeout certificates (3): duplicate signers, unknown signers, insufficient stake all rejected
+    - Pacemaker (3): round monotonicity on timeout, timeout bounded, advance_to_round idempotency
+    - Slashing (2): double-sign detection across random slots, same-vote not falsely slashed
+  - Added `proptest` to `[dev-dependencies]` in `crates/consensus/Cargo.toml`.
+  - All 67 consensus tests pass; clippy clean.
