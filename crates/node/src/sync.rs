@@ -61,9 +61,9 @@ impl SyncManager {
 
     /// Check if we need to sync based on our latest slot vs network slot.
     pub fn check_sync_needed(&mut self, my_latest_slot: Slot, network_slot: Slot) -> bool {
-        if network_slot > my_latest_slot + self.sync_threshold {
+        if network_slot > my_latest_slot.saturating_add(self.sync_threshold) {
             if !self.is_syncing() {
-                self.next_expected_slot = my_latest_slot + 1;
+                self.next_expected_slot = my_latest_slot.saturating_add(1);
                 self.current_batch_end = 0;
                 self.last_progress = Some(Instant::now());
                 self.blocks_applied = 0;

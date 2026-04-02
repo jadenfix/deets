@@ -198,7 +198,7 @@ impl Node {
         // Fast-forward consensus slot to match the recovered chain tip so the
         // node doesn't re-propose blocks at already-occupied slots after restart.
         if let Some(tip_slot) = latest_block_slot {
-            consensus.skip_to_slot(tip_slot + 1);
+            consensus.skip_to_slot(tip_slot.saturating_add(1));
             tracing::info!(
                 consensus_slot = consensus.current_slot(),
                 "Consensus fast-forwarded to match recovered chain tip"

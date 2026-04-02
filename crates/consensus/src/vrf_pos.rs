@@ -57,7 +57,8 @@ impl VrfPosConsensus {
             .collect();
 
         // Convert f64 tau to integer fraction: multiply by 10000 to preserve 4 decimal places
-        let tau_numerator = (tau * 10000.0).round() as u128;
+        let tau_clamped = if tau.is_finite() { tau.clamp(0.0, 1.0) } else { 0.5 };
+        let tau_numerator = (tau_clamped * 10000.0).round() as u128;
         let tau_denominator = 10000u128;
 
         VrfPosConsensus {
