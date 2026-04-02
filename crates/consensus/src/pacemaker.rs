@@ -86,6 +86,29 @@ impl Pacemaker {
         }
         (round as usize) % validator_count
     }
+
+    /// Jump to at least `round`, resetting the timer.
+    ///
+    /// Used when a validator receives a TimeoutCertificate or a message from a
+    /// future round (e.g. during sync). If `round` is already behind the current
+    /// round this is a no-op.
+    ///
+    /// On a large jump (> 1 step) the consecutive-timeout counter is cleared so
+    /// the node re-enters normal cadence rather than keeping the backed-off
+    /// timeout of a node that was locally stuck.
+    pub fn advance_to_round(&mut self, round: u64) {
+        if round <= self.current_round {
+            return;
+        }
+        let steps = round - self.current_round;
+        self.current_round = round;
+        if steps > 1 {
+            // We caught up via a TC/sync — not a local stall, so reset backoff.
+            self.consecutive_timeouts = 0;
+            self.current_timeout = self.base_timeout;
+        }
+        self.round_start = Instant::now();
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +173,54 @@ mod tests {
         let pm = Pacemaker::new(Duration::from_millis(1));
         std::thread::sleep(Duration::from_millis(5));
         assert!(pm.is_timed_out());
+    }
+
+    #[test]
+    fn test_advance_to_round_noop_when_behind() {
+        let mut pm = Pacemaker::new(Duration::from_millis(500));
+        pm.on_timeout(); // round 1
+        pm.on_timeout(); // round 2
+        pm.advance_to_round(1); // behind current — no-op
+        assert_eq!(pm.current_round(), 2);
+    }
+
+    #[test]
+    fn test_advance_to_round_single_step_preserves_backoff() {
+        let mut pm = Pacemaker::new(Duration::from_millis(500));
+        pm.on_timeout(); // round 1, timeout doubles to 1000ms, consecutive_timeouts=1
+        let prev_timeout = pm.current_timeout();
+        pm.advance_to_round(2); // one step forward
+        assert_eq!(pm.current_round(), 2);
+        // consecutive_timeouts not reset on single-step; timeout was already set
+        // by on_timeout, advance_to_round should NOT reset it for a single step.
+        // (We only clear backoff on large jumps ≥ 2 steps.)
+        assert_eq!(pm.current_timeout(), prev_timeout);
+    }
+
+    #[test]
+    fn test_advance_to_round_large_jump_resets_backoff() {
+        let mut pm = Pacemaker::new(Duration::from_millis(500));
+        // Simulate being stuck for many rounds
+        for _ in 0..5 {
+            pm.on_timeout();
+        }
+        assert!(pm.current_timeout() > Duration::from_millis(500));
+        assert!(pm.consecutive_timeouts > 0);
+
+        // Receive a TC for a far-ahead round — should reset backoff
+        pm.advance_to_round(20);
+        assert_eq!(pm.current_round(), 20);
+        assert_eq!(pm.current_timeout(), Duration::from_millis(500));
+        assert_eq!(pm.consecutive_timeouts, 0);
+    }
+
+    #[test]
+    fn test_advance_to_round_resets_timer() {
+        let mut pm = Pacemaker::new(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(pm.is_timed_out());
+        pm.advance_to_round(10);
+        // Timer should have been reset — not timed out immediately
+        assert!(!pm.is_timed_out());
     }
 }

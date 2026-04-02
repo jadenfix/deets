@@ -75,6 +75,14 @@ pub trait ConsensusEngine: Send + Sync {
     /// Handle a timeout — advance phase/slot to prevent deadlock.
     fn on_timeout(&mut self) {}
 
+    /// Advance the pacemaker to at least `round`.
+    ///
+    /// Called when a validator receives a TimeoutCertificate or a message
+    /// from a future round (e.g. during sync), so it can catch up without
+    /// stepping through each intermediate round one-by-one.
+    /// No-op if `round` ≤ current pacemaker round.
+    fn advance_pacemaker_to_round(&mut self, _round: u64) {}
+
     /// Look up a validator's registered BLS public key by their Ed25519 address.
     fn get_bls_pubkey(&self, _address: &aether_types::Address) -> Option<Vec<u8>> {
         None

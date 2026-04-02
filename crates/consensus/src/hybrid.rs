@@ -725,6 +725,10 @@ impl ConsensusEngine for HybridConsensus {
         self.votes.clear();
     }
 
+    fn advance_pacemaker_to_round(&mut self, round: u64) {
+        self.pacemaker.advance_to_round(round);
+    }
+
     fn get_bls_pubkey(&self, address: &aether_types::Address) -> Option<Vec<u8>> {
         self.bls_pubkeys.get(address).cloned()
     }
