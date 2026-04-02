@@ -694,45 +694,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Found and fixed real bug: `recompute_score()` used `success_rate=0.0` for providers with 0 jobs, producing 30.0 instead of initial 50.0. Fixed by using neutral `success_rate=0.5` when `total_jobs=0`.
   - All 21 tests pass; clippy clean.
 
-## Agent 3 Cycle 15 Log
+## Agent 2 Cycle 16 Log
 
-- **2026-04-02** — test(mempool): add proptest property-based tests for mempool invariants. Tier 5 item. Branch: `test/agent3-mempool-proptest`, PR #220 (merged).
-  - Added 10 proptest cases covering: pool size bounds, sequential nonce pending routing, nonce gap queuing, gap-fill promotion cascade, get_transactions max_count/fee ordering, removal size decrement, stale nonce rejection, duplicate rejection.
-  - Added `proptest` to `[dev-dependencies]` in `crates/mempool/Cargo.toml`.
-  - All 22 mempool tests pass; clippy clean; full workspace passes.
-
-## Agent 4 Cycle 16 Log
-
-- **2026-04-02** — test(job-escrow): add proptest property-based tests for escrow state machine invariants. Tier 5 item. Branch: `test/agent4-job-escrow-proptest`, PR #225 (merged).
-  - Added 11 proptest cases to `crates/programs/job-escrow/src/lib.rs` covering:
-    - duplicate_job_rejected, zero_payment_rejected, post_job_escrow_equals_payment
-    - cancel_releases_full_escrow, non_requester_cannot_cancel
-    - requester_cannot_self_accept (self-dealing prevention)
-    - provider_with_ok_reputation_accepted, provider_at_floor_reputation_blocked
-    - submit_after_deadline_rejected, only_requester_can_challenge
-    - total_jobs_counter_monotone
-  - Added `proptest = "1"` to `[dev-dependencies]` in job-escrow `Cargo.toml`.
-  - All 19 tests pass (8 unit + 11 proptest); clippy clean.
-
-## Agent 1 Cycle 15 Log
-
-- **2026-04-02** — fix(mempool): add per-sender queue limits and max nonce gap to prevent DoS. Tier 3/Networking & Resilience. Branch: `fix/agent1-mempool-per-sender-queue-limit`, PR #226 (merged).
-  - Without per-sender limits, an attacker could fill all 50K mempool slots with future-nonce txs from a single address, starving legitimate users.
-  - Added MAX_QUEUED_PER_SENDER (64) and MAX_NONCE_GAP (256) constants.
-  - Properly cleans up by_hash/by_sender tracking when rejecting over-limit txs.
-  - 2 new regression tests; 25/25 mempool tests pass; clippy clean.
-  - Note: pre-existing proptest `get_transactions_fee_ordered` failure unrelated to this change (upstream bug from Agent 3 cycle 15).
-
-## Agent 3 Cycle 16 Log
-
-- **2026-04-02** — test(consensus): add proptest property-based tests for consensus invariants. Tier 5 item. Branch: `test/agent3-hotstuff-proptest`, PR #228 (merged).
-  - Added 14 proptest cases to `crates/consensus/src/proptest_tests.rs` covering:
-    - Quorum (5): threshold exactness at 2/3, zero-total safety, full-stake pass, monotonicity, large-value overflow safety
-    - Phase progression (1): deterministic Propose→Prevote→Precommit→Commit cycle with slot advance
-    - Finality (1): finalized_slot monotonicity through multi-round vote processing
-    - Vote dedup (1): duplicate BLS-signed votes from same validator rejected
-    - Timeout certificates (3): duplicate signers, unknown signers, insufficient stake all rejected
-    - Pacemaker (3): round monotonicity on timeout, timeout bounded, advance_to_round idempotency
-    - Slashing (2): double-sign detection across random slots, same-vote not falsely slashed
-  - Added `proptest` to `[dev-dependencies]` in `crates/consensus/Cargo.toml`.
-  - All 67 consensus tests pass; clippy clean.
+- **2026-04-02** — fix(node): rate-limit inbound sync requests to prevent bandwidth exhaustion DoS. Tier 3 hardening. Branch: `fix/agent2-sync-request-rate-limit`, PR #229 (merged).
+  - A malicious peer could spam `RequestBlockRange` messages causing unbounded outbound block broadcasts.
+  - Added `SYNC_RESPONSE_COOLDOWN` (2s) global rate limit on `handle_block_range_request`.
+  - 2 new tests: rate-limited drop, request after cooldown served. All 92 node tests pass; clippy clean.
