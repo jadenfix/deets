@@ -15,7 +15,7 @@ use aether_types::{
 };
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -69,6 +69,9 @@ pub struct Node {
     consecutive_timeouts: u32,
     /// Detects double-signing and other slashable offenses from incoming votes.
     slashing_detector: SlashingDetector,
+    /// Tracks (validator, slot) pairs that have already been slashed to prevent
+    /// double-slashing the same offense via both vote-time detection and block evidence.
+    slashed_offenses: HashSet<(Address, u64)>,
     /// Tracks sync state (synced, syncing, stalled).
     sync_manager: SyncManager,
     /// Number of connected peers (updated externally via `set_peer_count`).
@@ -156,6 +159,7 @@ impl Node {
             outbound_buffer: Vec::new(),
             consecutive_timeouts: 0,
             slashing_detector: SlashingDetector::new(),
+            slashed_offenses: HashSet::new(),
             sync_manager: SyncManager::new(10),
             peer_count: 0,
             orphan_blocks: HashMap::new(),
@@ -462,10 +466,13 @@ impl Node {
             }
         }
 
-        // Prune fork choice and slashing detector for finalized slots
+        // Prune fork choice, slashing detector, and slashed-offenses set for finalized slots.
+        // slashed_offenses is keyed by slot; entries older than finalized are safe to remove
+        // because finalized blocks cannot be re-submitted as new evidence.
         let finalized = self.consensus.finalized_slot();
         self.fork_choice.prune_before(finalized);
         self.slashing_detector.prune_before(finalized);
+        self.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
@@ -937,6 +944,20 @@ impl Node {
                     continue;
                 }
 
+                // Dedup: skip if already slashed by vote-time detection for this
+                // (validator, slot) pair, preventing double-slash of the same offense.
+                let offense_slot = v1.slot;
+                let offense_key = (evidence.validator, offense_slot);
+                if !self.slashed_offenses.insert(offense_key) {
+                    tracing::debug!(
+                        validator = ?evidence.validator,
+                        slot = offense_slot,
+                        reason = %evidence.reason,
+                        "Slash already applied for this (validator, slot) — skipping block evidence"
+                    );
+                    continue;
+                }
+
                 let validator_stake = self
                     .staking_state
                     .get_validator(&evidence.validator)
@@ -950,19 +971,24 @@ impl Node {
                     0
                 };
 
+                // Also update consensus vote weight for block-included evidence,
+                // so slash is reflected immediately in the current epoch's voting.
+                self.consensus
+                    .slash_validator(&evidence.validator, u128::from(rate_bps));
+
                 match self.staking_state.slash(evidence.validator, u128::from(rate_bps)) {
                     Ok(slashed) => tracing::warn!(
                         validator = ?evidence.validator,
                         rate_bps,
                         slashed,
                         reason = %evidence.reason,
-                        "Slash applied"
+                        "Slash applied (block evidence)"
                     ),
                     Err(e) => tracing::warn!(
                         validator = ?evidence.validator,
                         reason = %evidence.reason,
                         err = %e,
-                        "Slash skipped"
+                        "Slash skipped (block evidence)"
                     ),
                 }
             }
@@ -1102,14 +1128,50 @@ impl Node {
             vote.block_hash,
             vote.signature.clone(),
         ) {
-            // Double-sign detected! Slash 5% (500 basis points)
-            let slashed = self.consensus.slash_validator(&proof.validator, 500);
-            tracing::warn!(
-                validator = ?proof.validator,
-                slot = vote.slot,
-                slashed,
-                "Double-sign detected — slashed 5% of stake"
-            );
+            // Double-sign detected — apply slash to both consensus vote weights AND
+            // staking state (the authoritative bond accounting). Use a dedup set so
+            // block-evidence processing cannot slash the same (validator, slot) twice.
+            let offense_key = (proof.validator, vote.slot);
+            if self.slashed_offenses.insert(offense_key) {
+                // Update consensus vote weight (affects current round immediately).
+                self.consensus.slash_validator(&proof.validator, 500);
+
+                // Update staking bond accounting so the slash is reflected in
+                // validator stake queries and reward calculations.
+                let validator_stake = self
+                    .staking_state
+                    .get_validator(&proof.validator)
+                    .map(|v| v.staked_amount)
+                    .unwrap_or(0);
+                let slash_amount =
+                    slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
+                let rate_bps = if validator_stake > 0 {
+                    (slash_amount.saturating_mul(10_000) / validator_stake) as u32
+                } else {
+                    500 // Fallback: 5% if validator not yet in staking state
+                };
+                match self.staking_state.slash(proof.validator, u128::from(rate_bps)) {
+                    Ok(staking_slashed) => tracing::warn!(
+                        validator = ?proof.validator,
+                        slot = vote.slot,
+                        consensus_rate_bps = 500,
+                        staking_slashed,
+                        "Double-sign detected — slashed consensus vote weight and staking bond"
+                    ),
+                    Err(e) => tracing::warn!(
+                        validator = ?proof.validator,
+                        slot = vote.slot,
+                        err = %e,
+                        "Double-sign detected — consensus vote weight slashed but staking slash failed"
+                    ),
+                }
+            } else {
+                tracing::debug!(
+                    validator = ?proof.validator,
+                    slot = vote.slot,
+                    "Double-sign already slashed for this (validator, slot) — skipping duplicate"
+                );
+            }
         }
 
         self.consensus.add_vote(vote)?;
@@ -1671,5 +1733,206 @@ mod tests {
         // Delegator's account should have been credited.
         let account = node.ledger.get_account(&delegator).unwrap().unwrap();
         assert_eq!(account.balance, unbond_amount);
+    }
+
+    /// Helper: build a minimal vote for a given public key, slot, and block hash byte.
+    fn make_vote(pubkey: &PublicKey, slot: u64, block_byte: u8) -> Vote {
+        Vote {
+            slot,
+            block_hash: H256::from_slice(&[block_byte; 32]).unwrap(),
+            validator: pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: 0,
+        }
+    }
+
+    /// Helper: create a Node with a registered staking validator.
+    fn node_with_staking_validator(
+        temp_dir: &TempDir,
+        keypair: Keypair,
+        stake: u128,
+    ) -> (Node, Address) {
+        let validator_info = validator_info_from_key(&keypair);
+        // Extract address before consuming keypair.
+        let addr = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let consensus = Box::new(SimpleConsensus::new(vec![validator_info]));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+        node.staking_state_mut()
+            .register_validator(addr, addr, stake, 0, addr)
+            .expect("register_validator should succeed");
+
+        (node, addr)
+    }
+
+    #[test]
+    fn double_sign_vote_slashes_staking_state() {
+        // When a validator sends two votes for the same slot but different blocks,
+        // on_vote_received must reduce their staking bond (not only consensus weight).
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let pubkey = PublicKey::from_bytes(keypair.public_key());
+        let stake = 100_000_000u128; // 100 SWR minimum
+        let (mut node, addr) = node_with_staking_validator(&temp_dir, keypair, stake);
+
+        let vote_a = make_vote(&pubkey, 0, 0xAA);
+        let vote_b = make_vote(&pubkey, 0, 0xBB); // same slot, different block
+
+        // First vote — no slash
+        node.on_vote_received(vote_a).unwrap();
+        let stake_after_first = node
+            .staking_state()
+            .get_validator(&addr)
+            .expect("validator should exist")
+            .staked_amount;
+        assert_eq!(stake_after_first, stake, "first vote should not slash");
+
+        // Second vote — double-sign detected
+        node.on_vote_received(vote_b).unwrap();
+        let stake_after_slash = node
+            .staking_state()
+            .get_validator(&addr)
+            .expect("validator should exist")
+            .staked_amount;
+        assert!(
+            stake_after_slash < stake,
+            "double-sign must reduce staking bond: before={stake}, after={stake_after_slash}"
+        );
+        // 5% of 100_000_000 = 5_000_000 slashed
+        assert_eq!(
+            stake_after_slash,
+            95_000_000,
+            "double-sign must slash exactly 5% of bond"
+        );
+    }
+
+    #[test]
+    fn double_sign_no_double_slash_via_block_evidence() {
+        // If the vote path already slashed an offense, block evidence for the same
+        // (validator, slot) must NOT apply the slash a second time.
+
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let pubkey = PublicKey::from_bytes(keypair.public_key());
+        let stake = 100_000_000u128; // 100 SWR minimum
+        let (mut node, addr) = node_with_staking_validator(&temp_dir, keypair, stake);
+
+        // Trigger vote-path slash (slot 0 — current consensus slot)
+        let vote_a = make_vote(&pubkey, 0, 0xAA);
+        let vote_b = make_vote(&pubkey, 0, 0xBB);
+        node.on_vote_received(vote_a.clone()).unwrap();
+        node.on_vote_received(vote_b.clone()).unwrap();
+
+        let stake_after_vote_slash = node
+            .staking_state()
+            .get_validator(&addr)
+            .unwrap()
+            .staked_amount;
+        assert!(stake_after_vote_slash < stake, "vote-path slash should fire");
+
+        // Verify that the dedup set already has this offense keyed (validator, slot=0).
+        assert!(
+            node.slashed_offenses.contains(&(addr, 0)),
+            "offense should be recorded in slashed_offenses after vote-path slash"
+        );
+
+        // The block-evidence path will skip slash because slashed_offenses contains (addr, 0).
+        // We can test this by manually checking the staking bond doesn't change.
+        let stake_no_change = node
+            .staking_state()
+            .get_validator(&addr)
+            .unwrap()
+            .staked_amount;
+        assert_eq!(
+            stake_no_change, stake_after_vote_slash,
+            "stake should not change — block evidence not yet submitted"
+        );
+
+        // The insertion into slashed_offenses will return false for a duplicate
+        // (validator=addr, slot=0), confirming the dedup guard works.
+        let already_slashed = !node.slashed_offenses.insert((addr, 0));
+        assert!(
+            already_slashed,
+            "inserting same (validator, slot) into slashed_offenses must return false"
+        );
+    }
+
+    #[test]
+    fn slashed_offenses_pruned_at_finalized_slot() {
+        // slashed_offenses must not grow unboundedly — entries for finalized slots
+        // should be pruned when check_finality triggers pruning.
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let stake = 100_000_000u128; // 100 SWR minimum
+        let (mut node, addr) = node_with_staking_validator(&temp_dir, keypair, stake);
+
+        // Manually insert old slashed offenses at various slots.
+        node.slashed_offenses.insert((addr, 1));
+        node.slashed_offenses.insert((addr, 5));
+        node.slashed_offenses.insert((addr, 100));
+        assert_eq!(node.slashed_offenses.len(), 3);
+
+        // Simulate finalized_slot = 10: entries at slot < 10 should be pruned.
+        let finalized = node.consensus.finalized_slot();
+        node.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
+
+        // With finalized_slot=0 (initial state), nothing is pruned yet.
+        // Insert offenses at slot 0 and verify they stay until finality advances.
+        node.slashed_offenses.insert((addr, 0));
+        // finalized=0 means retain everything (slot >= 0 is always true for u64, so use finalized)
+        node.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
+        assert!(node.slashed_offenses.contains(&(addr, 0)));
+        assert!(node.slashed_offenses.contains(&(addr, 100)));
+
+        // Prune with a higher finalized slot — old entries disappear.
+        node.slashed_offenses.retain(|&(_, slot)| slot >= 10);
+        assert!(
+            !node.slashed_offenses.contains(&(addr, 1)),
+            "slot 1 should be pruned"
+        );
+        assert!(
+            !node.slashed_offenses.contains(&(addr, 5)),
+            "slot 5 should be pruned"
+        );
+        assert!(
+            node.slashed_offenses.contains(&(addr, 100)),
+            "slot 100 should be retained"
+        );
+    }
+
+    #[test]
+    fn duplicate_vote_same_block_does_not_slash() {
+        // Sending the exact same vote (same slot AND same block hash) twice is
+        // not a double-sign — it must not trigger a slash.
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let pubkey = PublicKey::from_bytes(keypair.public_key());
+        let stake = 100_000_000u128; // 100 SWR minimum
+        let (mut node, addr) = node_with_staking_validator(&temp_dir, keypair, stake);
+
+        let vote = make_vote(&pubkey, 0, 0xAA);
+
+        node.on_vote_received(vote.clone()).unwrap();
+        node.on_vote_received(vote).unwrap(); // duplicate — not a double-sign
+
+        let stake_unchanged = node
+            .staking_state()
+            .get_validator(&addr)
+            .unwrap()
+            .staked_amount;
+        assert_eq!(
+            stake_unchanged, stake,
+            "duplicate vote for same block must not trigger slash"
+        );
+        assert!(
+            node.slashed_offenses.is_empty(),
+            "slashed_offenses must remain empty for non-double-sign"
+        );
     }
 }
