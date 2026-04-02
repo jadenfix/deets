@@ -172,6 +172,25 @@ impl Storage {
         Ok(Box::new(iter))
     }
 
+    /// Iterate all keys in a column family that start with the given prefix.
+    pub fn prefix_iterator<'a>(
+        &'a self,
+        cf: &str,
+        prefix: &[u8],
+    ) -> Result<DbIterator<'a>> {
+        let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
+        let prefix_owned = prefix.to_vec();
+        let iter = self
+            .db
+            .iterator_cf(
+                cf_handle,
+                rocksdb::IteratorMode::From(prefix, rocksdb::Direction::Forward),
+            )
+            .filter_map(|item| item.ok())
+            .take_while(move |(k, _)| k.starts_with(&prefix_owned));
+        Ok(Box::new(iter))
+    }
+
     /// Delete all keys in a column family that match a prefix.
     /// Used for state pruning (e.g., deleting old blocks/receipts).
     pub fn delete_range(&self, cf: &str, start: &[u8], end: &[u8]) -> Result<()> {
@@ -254,28 +273,79 @@ impl Default for StorageBatch {
 }
 
 /// State pruning utilities.
+///
+/// Blocks are keyed by hash in CF_BLOCKS with a `slot:{N}` → hash index in
+/// CF_METADATA.  Receipts are keyed by tx_hash in CF_RECEIPTS.  Pruning
+/// therefore cannot use `delete_range` on these CFs directly.  Instead we
+/// scan the slot index, load each block to discover its tx hashes, and
+/// delete all related entries in a single atomic WriteBatch.
 pub mod pruning {
     use super::*;
 
-    /// Prune old blocks from storage.
-    ///
-    /// Deletes all block entries with slot numbers below `min_slot`.
-    /// Blocks are keyed by slot number (big-endian u64).
+    /// Prune blocks, their receipts, and slot-index entries for all slots
+    /// below `min_slot`.  Returns the number of blocks pruned.
+    pub fn prune_old_blocks_and_receipts(storage: &Storage, min_slot: u64) -> Result<u64> {
+        let mut batch = StorageBatch::new();
+        let mut pruned = 0u64;
+
+        // Scan CF_METADATA for "slot:" keys.  Keys are UTF-8 strings like "slot:42".
+        for (key_bytes, hash_bytes) in storage.prefix_iterator(CF_METADATA, b"slot:")? {
+            let key_str = match std::str::from_utf8(&key_bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let slot: u64 = match key_str.strip_prefix("slot:").and_then(|s| s.parse().ok()) {
+                Some(s) => s,
+                None => continue,
+            };
+            if slot >= min_slot {
+                // Decimal string keys are not numerically ordered ("slot:9" > "slot:10"),
+                // so we cannot break early — just skip slots above the threshold.
+                continue;
+            }
+
+            // Delete the block from CF_BLOCKS (keyed by hash).
+            batch.delete(CF_BLOCKS, hash_bytes.to_vec());
+
+            // Load the block to find tx hashes for receipt pruning.
+            if let Ok(Some(block_bytes)) = storage.get(CF_BLOCKS, &hash_bytes) {
+                if let Ok(block) = bincode::deserialize::<aether_types::Block>(&block_bytes) {
+                    for tx in &block.transactions {
+                        let tx_hash = tx.hash();
+                        batch.delete(CF_RECEIPTS, tx_hash.as_bytes().to_vec());
+                    }
+                }
+            }
+
+            // Delete the slot index entry itself.
+            batch.delete(CF_METADATA, key_bytes.to_vec());
+            pruned += 1;
+        }
+
+        if pruned > 0 {
+            storage.write_batch(batch)?;
+            storage.compact(CF_BLOCKS)?;
+            storage.compact(CF_RECEIPTS)?;
+        }
+
+        Ok(pruned)
+    }
+
+    // Keep the old function names as thin wrappers so existing callers compile.
+    // Both now route through the combined function.
+
+    /// Prune old blocks (and their receipts) from storage.
     pub fn prune_old_blocks(storage: &Storage, min_slot: u64) -> Result<u64> {
-        let start = 0u64.to_be_bytes();
-        let end = min_slot.to_be_bytes();
-        storage.delete_range(CF_BLOCKS, &start, &end)?;
-        storage.compact(CF_BLOCKS)?;
-        Ok(min_slot)
+        prune_old_blocks_and_receipts(storage, min_slot)
     }
 
     /// Prune old receipts from storage.
-    pub fn prune_old_receipts(storage: &Storage, min_slot: u64) -> Result<u64> {
-        let start = 0u64.to_be_bytes();
-        let end = min_slot.to_be_bytes();
-        storage.delete_range(CF_RECEIPTS, &start, &end)?;
-        storage.compact(CF_RECEIPTS)?;
-        Ok(min_slot)
+    ///
+    /// Receipts are pruned together with their blocks by `prune_old_blocks`.
+    /// This function exists for backward compatibility and is a no-op.
+    pub fn prune_old_receipts(storage: &Storage, _min_slot: u64) -> Result<u64> {
+        let _ = storage;
+        Ok(0)
     }
 }
 
@@ -341,43 +411,84 @@ mod tests {
     }
 
     #[test]
-    fn test_pruning_blocks() {
+    fn test_pruning_blocks_and_receipts() {
+        use aether_types::{
+            Address, Block, BlockHeader, H256, VrfProof,
+        };
+
         let temp_dir = TempDir::new().unwrap();
         let storage = Storage::open(temp_dir.path()).unwrap();
 
-        // Write blocks for slots 0..100
-        for slot in 0u64..100 {
-            let key = slot.to_be_bytes();
-            let value = format!("block_{}", slot);
-            storage.put(CF_BLOCKS, &key, value.as_bytes()).unwrap();
+        // Store 10 blocks using the production key layout:
+        //   CF_BLOCKS: hash → block bytes
+        //   CF_METADATA: "slot:{N}" → hash
+        let mut hashes = Vec::new();
+        for slot in 0u64..10 {
+            let block = Block {
+                header: BlockHeader {
+                    version: 1,
+                    slot,
+                    parent_hash: H256::zero(),
+                    state_root: H256::zero(),
+                    transactions_root: H256::zero(),
+                    receipts_root: H256::zero(),
+                    proposer: Address::from_slice(&[0u8; 20]).unwrap(),
+                    vrf_proof: VrfProof {
+                        output: [0u8; 32],
+                        proof: vec![],
+                    },
+                    timestamp: 0,
+                },
+                transactions: vec![],
+                aggregated_vote: None,
+                slash_evidence: vec![],
+            };
+            let hash = block.hash();
+            let block_bytes = bincode::serialize(&block).unwrap();
+            hashes.push(hash);
+
+            storage
+                .put(CF_BLOCKS, hash.as_bytes(), &block_bytes)
+                .unwrap();
+            let slot_key = format!("slot:{}", slot);
+            storage
+                .put(CF_METADATA, slot_key.as_bytes(), hash.as_bytes())
+                .unwrap();
         }
 
-        // Verify slot 50 exists
+        // Verify slot 3 block exists
         assert!(storage
-            .get(CF_BLOCKS, &50u64.to_be_bytes())
+            .get(CF_BLOCKS, hashes[3].as_bytes())
             .unwrap()
             .is_some());
 
-        // Prune slots < 50
-        pruning::prune_old_blocks(&storage, 50).unwrap();
+        // Prune slots < 5
+        let pruned = pruning::prune_old_blocks(&storage, 5).unwrap();
+        assert_eq!(pruned, 5);
 
-        // Slot 10 should be gone
-        assert!(storage
-            .get(CF_BLOCKS, &10u64.to_be_bytes())
-            .unwrap()
-            .is_none());
+        // Slots 0-4 should be gone
+        for (slot, hash) in hashes.iter().enumerate().take(5) {
+            assert!(
+                storage.get(CF_BLOCKS, hash.as_bytes()).unwrap().is_none(),
+                "slot {} block should be pruned",
+                slot
+            );
+            let key = format!("slot:{}", slot);
+            assert!(
+                storage.get(CF_METADATA, key.as_bytes()).unwrap().is_none(),
+                "slot {} index should be pruned",
+                slot
+            );
+        }
 
-        // Slot 50 should still exist
-        assert!(storage
-            .get(CF_BLOCKS, &50u64.to_be_bytes())
-            .unwrap()
-            .is_some());
-
-        // Slot 99 should still exist
-        assert!(storage
-            .get(CF_BLOCKS, &99u64.to_be_bytes())
-            .unwrap()
-            .is_some());
+        // Slots 5-9 should still exist
+        for (slot, hash) in hashes.iter().enumerate().skip(5) {
+            assert!(
+                storage.get(CF_BLOCKS, hash.as_bytes()).unwrap().is_some(),
+                "slot {} block should still exist",
+                slot
+            );
+        }
     }
 
     #[test]

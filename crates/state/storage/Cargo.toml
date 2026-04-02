@@ -13,6 +13,7 @@ serde.workspace = true
 num_cpus = "1"
 
 aether-types = { path = "../../types" }
+bincode.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

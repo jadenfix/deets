@@ -511,17 +511,15 @@ impl Node {
         if retention > 0 && new_epoch > retention {
             let prune_before_epoch = new_epoch - retention;
             let prune_before_slot = prune_before_epoch * self.chain_config.chain.epoch_slots;
-            if let Err(e) = pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
-                tracing::warn!(err = %e, "Block pruning failed");
+            match pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
+                Ok(pruned) => tracing::info!(
+                    new_epoch,
+                    prune_before_slot,
+                    pruned,
+                    "Pruned old blocks and receipts"
+                ),
+                Err(e) => tracing::warn!(err = %e, "Block/receipt pruning failed"),
             }
-            if let Err(e) = pruning::prune_old_receipts(self.ledger.storage(), prune_before_slot) {
-                tracing::warn!(err = %e, "Receipt pruning failed");
-            }
-            tracing::info!(
-                new_epoch,
-                prune_before_slot,
-                "Pruned old blocks/receipts"
-            );
         }
 
         // Write an epoch snapshot for fast-sync if a snapshot directory is configured.
