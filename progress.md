@@ -338,10 +338,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **2026-04-01** — fix(node): graceful shutdown with WAL flush. Tier 3 item. Branch: `fix/agent2-node-graceful-shutdown`, PR #111 (awaiting review).
   - All tasks (slot loop, P2P, RPC) now respect shutdown signals; Node.shutdown() flushes RocksDB WAL; 5s deadline prevents hangs.
 
-- **2026-04-01** — feat(node): implement active state sync protocol. Tier 3 item. Branch: `fix/agent2-state-sync-active` (pushed, PR creation blocked by gh CLI TLS issue).
+- **2026-04-01** — feat(node): implement active state sync protocol. Tier 3 item. Branch: `fix/agent2-state-sync-active`, PR #115 (awaiting review).
   - Added `/aether/1/sync` gossipsub topic for block range requests
   - SyncManager rewritten: bounded buffer (1024 blocks), stall detection (30s), batch requests (64 slots), contiguous drain
   - Peers respond to sync requests by broadcasting stored blocks (capped at 64/request)
   - During active sync, blocks are buffered for ordered application
   - 11 new sync tests, all 418+ workspace tests pass, clippy clean
-  - NOTE: `gh pr create` failing due to macOS TLS cert issue — PR needs manual creation or next cycle with working gh
