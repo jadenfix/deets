@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use aether_metrics::exporter::start_metrics_exporter;
 use aether_node::{
     create_hybrid_consensus, create_hybrid_consensus_with_all_keys, validator_info_from_keypair,
     GenesisConfig, Node, OutboundMessage, ValidatorKeypair,
@@ -368,6 +369,10 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(9000);
+    let metrics_port: u16 = env::var("AETHER_METRICS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9090);
 
     let mut node = Node::new(
         db_path,
@@ -458,6 +463,13 @@ async fn main() -> Result<()> {
     ));
     let rpc_task = tokio::spawn(async move { rpc_server.run().await });
     let p2p_task = tokio::spawn(run_p2p_outbound(p2p, outbound_rx, net_tx, shutdown_rx));
+    let metrics_addr: std::net::SocketAddr = ([0, 0, 0, 0], metrics_port).into();
+    let metrics_task = tokio::spawn(async move {
+        if let Err(e) = start_metrics_exporter(metrics_addr).await {
+            tracing::error!(err = %e, "Metrics exporter failed");
+        }
+    });
+    tracing::info!("Prometheus metrics on 0.0.0.0:{metrics_port}/metrics");
 
     // Wait for a shutdown signal (SIGINT or SIGTERM)
     tokio::select! {
@@ -479,6 +491,7 @@ async fn main() -> Result<()> {
                 Err(e) => return Err(anyhow::anyhow!("p2p task failed: {e}")),
             }
         }
+        _ = metrics_task => {}
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received SIGINT, initiating graceful shutdown...");
         }
