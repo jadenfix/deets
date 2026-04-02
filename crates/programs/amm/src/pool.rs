@@ -610,3 +610,213 @@ mod tests {
         assert!(pool.is_ok());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use num_bigint::BigUint;
+    use proptest::prelude::*;
+
+    /// Build a pool with some initial liquidity already added.
+    /// `reserve_a` and `reserve_b` are set directly to avoid the ratio constraint
+    /// on secondary liquidity additions.  `lp_token_supply` is set to the geometric
+    /// mean so the proportions remain consistent.
+    fn seeded_pool(ra: u128, rb: u128, fee_bps: u32) -> LiquidityPool {
+        let lp = integer_sqrt_biguint(&(BigUint::from(ra) * BigUint::from(rb)))
+            .to_u128()
+            .unwrap_or(1)
+            .max(1);
+        LiquidityPool {
+            pool_id: H256::zero(),
+            token_a: Address::from_slice(&[1u8; 20]).unwrap(),
+            token_b: Address::from_slice(&[2u8; 20]).unwrap(),
+            reserve_a: ra,
+            reserve_b: rb,
+            lp_token_supply: lp,
+            fee_bps,
+        }
+    }
+
+    /// Reserve sizes: use values up to 2^64 to avoid BigUint overflow in k checks.
+    fn arb_reserve() -> impl Strategy<Value = u128> {
+        // Non-zero, up to ~1e19 (just above u64::MAX) so the product fits in a
+        // reasonable BigUint without hitting u128-return overflow in get_amount_out.
+        1u128..=1_000_000_000_000_000_000u128
+    }
+
+    proptest! {
+        /// Constant product invariant: k must not decrease after a valid A→B swap.
+        #[test]
+        fn invariant_holds_after_swap_a_to_b(
+            ra in arb_reserve(),
+            rb in arb_reserve(),
+            fee_bps in 0u32..=300,
+        ) {
+            let mut pool = seeded_pool(ra, rb, fee_bps);
+            let k_before = BigUint::from(pool.reserve_a) * BigUint::from(pool.reserve_b);
+
+            // Swap at most 10% of reserve_a so the swap succeeds
+            let amount_in = (ra / 10).max(1);
+            if let Ok(_out) = pool.swap_a_to_b(amount_in, 0) {
+                let k_after = BigUint::from(pool.reserve_a) * BigUint::from(pool.reserve_b);
+                prop_assert!(k_after >= k_before,
+                    "k decreased: k_before={k_before}, k_after={k_after}");
+            }
+        }
+
+        /// Constant product invariant: k must not decrease after a valid B→A swap.
+        #[test]
+        fn invariant_holds_after_swap_b_to_a(
+            ra in arb_reserve(),
+            rb in arb_reserve(),
+            fee_bps in 0u32..=300,
+        ) {
+            let mut pool = seeded_pool(ra, rb, fee_bps);
+            let k_before = BigUint::from(pool.reserve_a) * BigUint::from(pool.reserve_b);
+
+            let amount_in = (rb / 10).max(1);
+            if let Ok(_out) = pool.swap_b_to_a(amount_in, 0) {
+                let k_after = BigUint::from(pool.reserve_a) * BigUint::from(pool.reserve_b);
+                prop_assert!(k_after >= k_before,
+                    "k decreased: k_before={k_before}, k_after={k_after}");
+            }
+        }
+
+        /// Swap output is always strictly less than the output reserve.
+        #[test]
+        fn swap_output_less_than_reserve(
+            ra in arb_reserve(),
+            rb in arb_reserve(),
+        ) {
+            let mut pool = seeded_pool(ra, rb, 30);
+            let amount_in = (ra / 10).max(1);
+            if let Ok(out) = pool.swap_a_to_b(amount_in, 0) {
+                prop_assert!(out < rb,
+                    "swap drained the pool: out={out} >= reserve_b={rb}");
+            }
+        }
+
+        /// Reserves stay positive after any swap (pool never fully drained).
+        #[test]
+        fn reserves_remain_positive_after_swap(
+            ra in arb_reserve(),
+            rb in arb_reserve(),
+            amount_in in 1u128..=100_000_000u128,
+        ) {
+            let mut pool = seeded_pool(ra, rb, 30);
+            if pool.swap_a_to_b(amount_in, 0).is_ok() {
+                prop_assert!(pool.reserve_a > 0);
+                prop_assert!(pool.reserve_b > 0);
+            }
+            // Reset and test B→A direction
+            let mut pool2 = seeded_pool(ra, rb, 30);
+            if pool2.swap_b_to_a(amount_in, 0).is_ok() {
+                prop_assert!(pool2.reserve_a > 0);
+                prop_assert!(pool2.reserve_b > 0);
+            }
+        }
+
+        /// Add liquidity always increases (or maintains) both reserves.
+        #[test]
+        fn add_liquidity_increases_reserves(
+            ra in 1_000_000u128..=1_000_000_000u128,
+            rb in 1_000_000u128..=1_000_000_000u128,
+            // Add at the same 1:1 ratio as an initial deposit to avoid ratio mismatch
+            add_a in 1_000u128..=100_000u128,
+        ) {
+            let mut pool = LiquidityPool::new(
+                H256::zero(),
+                Address::from_slice(&[1u8; 20]).unwrap(),
+                Address::from_slice(&[2u8; 20]).unwrap(),
+                30,
+            ).unwrap();
+            // Initial deposit
+            pool.add_liquidity(ra, rb, 0).unwrap();
+            let ra_before = pool.reserve_a;
+            let rb_before = pool.reserve_b;
+
+            // Compute add_b proportionally so the ratio check passes
+            // add_b/add_a == rb/ra  =>  add_b = add_a * rb / ra
+            if ra == 0 { return Ok(()); }
+            let add_b = add_a
+                .checked_mul(rb)
+                .map(|x| x / ra);
+            if let Some(add_b) = add_b {
+                if add_b == 0 { return Ok(()); }
+                // Only assert when add_liquidity succeeds (ratio must match exactly)
+                if let Ok(_lp) = pool.add_liquidity(add_a, add_b, 0) {
+                    prop_assert!(pool.reserve_a >= ra_before);
+                    prop_assert!(pool.reserve_b >= rb_before);
+                }
+            }
+        }
+
+        /// Remove liquidity always decreases both reserves.
+        #[test]
+        fn remove_liquidity_decreases_reserves(
+            ra in 1_000_000u128..=1_000_000_000u128,
+            rb in 1_000_000u128..=1_000_000_000u128,
+        ) {
+            let mut pool = LiquidityPool::new(
+                H256::zero(),
+                Address::from_slice(&[1u8; 20]).unwrap(),
+                Address::from_slice(&[2u8; 20]).unwrap(),
+                30,
+            ).unwrap();
+            pool.add_liquidity(ra, rb, 0).unwrap();
+            let lp = pool.lp_token_supply;
+            let ra_before = pool.reserve_a;
+            let rb_before = pool.reserve_b;
+
+            // Remove half the LP tokens
+            let remove = (lp / 2).max(1);
+            if remove <= lp {
+                if let Ok((out_a, out_b)) = pool.remove_liquidity(remove, 0, 0) {
+                    prop_assert!(pool.reserve_a <= ra_before);
+                    prop_assert!(pool.reserve_b <= rb_before);
+                    prop_assert!(out_a <= ra_before);
+                    prop_assert!(out_b <= rb_before);
+                }
+            }
+        }
+
+        /// Swap output is non-negative and bounded: 0 <= out < reserve_out.
+        #[test]
+        fn swap_output_bounded(
+            ra in arb_reserve(),
+            rb in arb_reserve(),
+            pct in 1u64..=9u64,  // 1-9% of reserve as input
+        ) {
+            let amount_in = ((ra as u64 / 10) * pct).max(1) as u128;
+            let mut pool = seeded_pool(ra, rb, 30);
+            if let Ok(out) = pool.swap_a_to_b(amount_in, 0) {
+                prop_assert!(out > 0, "swap should produce non-zero output");
+                prop_assert!(out < rb, "swap output must be < reserve_out");
+            }
+        }
+
+        /// Two sequential swaps in opposite directions result in
+        /// the first token amount being slightly less than start (fees consumed).
+        #[test]
+        fn round_trip_swap_loses_to_fees(
+            ra in 1_000_000u128..=100_000_000u128,
+            rb in 1_000_000u128..=100_000_000u128,
+            amount_in in 1_000u128..=10_000u128,
+        ) {
+            let mut pool = seeded_pool(ra, rb, 30);
+            // Swap A→B
+            let out_b = match pool.swap_a_to_b(amount_in, 0) {
+                Ok(v) => v,
+                Err(_) => return Ok(()),
+            };
+            // Swap B→A with the B we got back
+            let out_a = match pool.swap_b_to_a(out_b, 0) {
+                Ok(v) => v,
+                Err(_) => return Ok(()),
+            };
+            // Due to fees and integer rounding, we always get back less
+            prop_assert!(out_a < amount_in,
+                "round-trip should lose tokens to fees: in={amount_in} out={out_a}");
+        }
+    }
+}

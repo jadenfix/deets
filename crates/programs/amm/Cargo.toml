@@ -12,3 +12,6 @@ serde.workspace = true
 anyhow.workspace = true
 num-bigint = "0.4"
 num-traits = "0.2"
+
+[dev-dependencies]
+proptest.workspace = true
