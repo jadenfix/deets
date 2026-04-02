@@ -338,6 +338,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added regression test `test_slash_no_overflow_on_large_validator_stake` with u128::MAX/2 stake
   - Also audited governance `saturating_mul` patterns (quorum L221, vote weight L410) — low severity, multipliers are small (≤100), but flagged for future hardening
 
+- **2026-04-02** — fix(amm): use BigUint for swap arithmetic to prevent overflow on large reserves. Tier 1 item (integer overflow in balances). Branch: `fix/agent1-amm-bigint-swap-overflow`, PR #149 (merged).
+  - `swap_a_to_b`/`swap_b_to_a` used `checked_mul` on u128 for constant product invariant (`k = reserve_a * reserve_b`), failing for pools where reserves exceed ~u64::MAX
+  - `get_amount_out` also used `checked_mul` for numerator/denominator, same overflow
+  - Switched all swap arithmetic to BigUint (already a dep via num-bigint), matching how `add_liquidity` already uses BigUint for initial sqrt
+  - Added `check_invariant_big(&BigUint)` replacing `check_invariant(u128)`
+  - 2 regression tests with reserves at 2^100 confirming swaps succeed
+  - All 23 AMM tests pass, clippy clean
+
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
