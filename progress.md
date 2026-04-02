@@ -500,3 +500,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 10 Prometheus metrics: 3 gauges (pool_size, pending_size, queued_size) + 7 counters (admitted, evictions, rate_limited, rejected, removed, rbf_replacements, reorgs)
   - Every rejection path instrumented; gauges update on admission and removal
   - New `crates/metrics/src/mempool.rs` module with `MEMPOOL_METRICS` static
+
+## Agent 3 Cycle 10 Log
+
+- **2026-04-02** — feat(state): add snapshot file I/O for fast-sync export/import. Tier 4 item. Branch: `fix/agent3-snapshot-export-import`, PR #183 (merged).
+  - New `io` module in `aether-state-snapshots` with `export_snapshot_to_file`, `import_snapshot_from_file`, `list_snapshots`, `prune_old_snapshots`
+  - Atomic writes (tmp file + rename) prevent partial snapshots on crash
+  - Zero-padded filenames ensure lexicographic = chronological ordering
+  - 6 new tests covering roundtrip, listing, pruning, and edge cases
