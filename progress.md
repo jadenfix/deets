@@ -700,3 +700,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - A malicious peer could spam `RequestBlockRange` messages causing unbounded outbound block broadcasts.
   - Added `SYNC_RESPONSE_COOLDOWN` (2s) global rate limit on `handle_block_range_request`.
   - 2 new tests: rate-limited drop, request after cooldown served. All 92 node tests pass; clippy clean.
+
+## Agent 1 Cycle 17 Log
+
+- **2026-04-02** — fix(light-client): prevent duplicate signer stake inflation in finalized header verification. Tier 1 security fix. Branch: `fix/agent1-light-client-duplicate-signer`, PR #233 (merged).
+  - Critical vulnerability: `verify_finalized_header` did not deduplicate `signer_pubkeys`. An attacker could repeat the same validator pubkey to inflate `verified_stake` and forge quorum with fewer than 2/3 of total stake.
+  - Added `HashSet`-based signer deduplication — duplicate pubkeys now cause immediate rejection.
+  - Changed bare `+=` to `saturating_add` for `verified_stake` accumulation.
+  - 1 new regression test. All 15 light-client tests pass; clippy clean.
