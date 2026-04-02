@@ -15,7 +15,7 @@ use aether_types::{
 };
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -64,7 +64,7 @@ pub struct Node {
     /// Channel to send outbound messages (blocks, votes, txs) to P2P layer.
     broadcast_tx: Option<mpsc::Sender<OutboundMessage>>,
     /// Collected outbound messages when no broadcast channel is set (for testing).
-    outbound_buffer: Vec<OutboundMessage>,
+    outbound_buffer: VecDeque<OutboundMessage>,
     /// Consecutive timeout counter for circuit breaker.
     consecutive_timeouts: u32,
     /// Detects double-signing and other slashable offenses from incoming votes.
@@ -158,7 +158,7 @@ impl Node {
             receipts: HashMap::new(),
             staking_state: StakingState::new(),
             broadcast_tx: None,
-            outbound_buffer: Vec::new(),
+            outbound_buffer: VecDeque::new(),
             consecutive_timeouts: 0,
             slashing_detector: SlashingDetector::new(),
             slashed_offenses: HashSet::new(),
@@ -249,7 +249,7 @@ impl Node {
 
     /// Drain collected outbound messages (for testing without P2P).
     pub fn drain_outbound(&mut self) -> Vec<OutboundMessage> {
-        std::mem::take(&mut self.outbound_buffer)
+        std::mem::take(&mut self.outbound_buffer).into()
     }
 
     fn broadcast(&mut self, msg: OutboundMessage) {
@@ -263,7 +263,7 @@ impl Node {
                 }
                 match tx.try_send(self.outbound_buffer[0].clone()) {
                     Ok(()) => {
-                        self.outbound_buffer.remove(0);
+                        self.outbound_buffer.pop_front();
                         drained += 1;
                     }
                     Err(_) => break, // Channel full or closed — stop draining
@@ -281,14 +281,14 @@ impl Node {
                 Err(mpsc::error::TrySendError::Closed(msg)) => {
                     tracing::warn!("Broadcast channel closed");
                     if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
-                        self.outbound_buffer.push(msg);
+                        self.outbound_buffer.push_back(msg);
                     } else {
                         self.outbound_drops += 1;
                     }
                 }
             }
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
-            self.outbound_buffer.push(msg);
+            self.outbound_buffer.push_back(msg);
         } else {
             self.outbound_drops += 1;
             tracing::error!(
