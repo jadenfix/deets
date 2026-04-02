@@ -356,3 +356,250 @@ mod tests {
         assert_eq!(proof.hash(), proof.hash());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_address() -> impl Strategy<Value = Address> {
+        prop::array::uniform20(any::<u8>()).prop_map(|b| Address::from_slice(&b).unwrap())
+    }
+
+    fn arb_h256() -> impl Strategy<Value = H256> {
+        prop::array::uniform32(any::<u8>()).prop_map(|b| H256::from_slice(&b).unwrap())
+    }
+
+    /// Mock re-executor that returns a fixed result.
+    struct FixedExecutor(H256);
+    impl ReExecutor for FixedExecutor {
+        fn re_execute(&self, _pre: &H256, _tx: &[u8]) -> Result<H256, String> {
+            Ok(self.0)
+        }
+    }
+
+    /// Mock re-executor that always returns an error.
+    struct FailingExecutor;
+    impl ReExecutor for FailingExecutor {
+        fn re_execute(&self, _pre: &H256, _tx: &[u8]) -> Result<H256, String> {
+            Err("re-execution failed".into())
+        }
+    }
+
+    proptest! {
+        /// FraudProof hash is deterministic.
+        #[test]
+        fn fraud_proof_hash_deterministic(
+            batch_id in any::<u64>(),
+            tx_index in any::<u32>(),
+            pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            challenger in arb_address(),
+        ) {
+            let proof = FraudProof {
+                batch_id,
+                tx_index,
+                pre_state_root: pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![1, 2, 3],
+                tx_data: vec![4, 5, 6],
+            };
+            prop_assert_eq!(proof.hash(), proof.hash());
+        }
+
+        /// FraudProofVerifier::new rejects reward_pct > 100.
+        #[test]
+        fn verifier_rejects_reward_above_100(pct in 101u8..=255u8) {
+            let result = FraudProofVerifier::new(1_000_000, pct);
+            prop_assert!(result.is_err(), "reward_pct > 100 must be rejected");
+        }
+
+        /// FraudProofVerifier::new accepts reward_pct in [0, 100].
+        #[test]
+        fn verifier_accepts_valid_reward_pct(pct in 0u8..=100u8) {
+            let result = FraudProofVerifier::new(1_000_000, pct);
+            prop_assert!(result.is_ok(), "reward_pct <= 100 must be accepted");
+        }
+
+        /// Insufficient challenger bond always produces Invalid.
+        #[test]
+        fn insufficient_bond_always_invalid(
+            required in 1u128..1_000_000u128,
+            posted in 0u128..999_999u128,
+            pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+        ) {
+            prop_assume!(posted < required);
+            prop_assume!(correct != claimed);
+            let verifier = FraudProofVerifier::new(required, 50).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let executor = FixedExecutor(correct);
+            let result = verifier.verify(&proof, &pre, &claimed, &sequencer, 1_000_000, posted, &executor);
+            prop_assert!(matches!(result, FraudProofResult::Invalid { .. }),
+                "insufficient bond must yield Invalid");
+        }
+
+        /// Pre-state root mismatch always produces Invalid.
+        #[test]
+        fn pre_state_mismatch_invalid(
+            proof_pre in arb_h256(),
+            batch_pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+        ) {
+            prop_assume!(proof_pre != batch_pre);
+            prop_assume!(correct != claimed);
+            let verifier = FraudProofVerifier::new(0, 50).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: proof_pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let executor = FixedExecutor(correct);
+            let result = verifier.verify(&proof, &batch_pre, &claimed, &sequencer, 1_000_000, 1_000_000, &executor);
+            prop_assert!(matches!(result, FraudProofResult::Invalid { .. }),
+                "pre-state mismatch must yield Invalid");
+        }
+
+        /// Correct == claimed (no fraud) always produces Invalid.
+        #[test]
+        fn no_fraud_always_invalid(
+            pre in arb_h256(),
+            state in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+        ) {
+            let verifier = FraudProofVerifier::new(0, 50).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: pre,
+                correct_post_state_root: state, // same as claimed
+                claimed_post_state_root: state,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let executor = FixedExecutor(state);
+            let result = verifier.verify(&proof, &pre, &state, &sequencer, 1_000_000, 1_000_000, &executor);
+            prop_assert!(matches!(result, FraudProofResult::Invalid { .. }),
+                "correct == claimed must yield Invalid (no fraud)");
+        }
+
+        /// Re-execution failure always produces Invalid.
+        #[test]
+        fn re_execution_failure_invalid(
+            pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+        ) {
+            prop_assume!(correct != claimed);
+            let verifier = FraudProofVerifier::new(0, 50).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let result = verifier.verify(&proof, &pre, &claimed, &sequencer, 1_000_000, 1_000_000, &FailingExecutor);
+            prop_assert!(matches!(result, FraudProofResult::Invalid { .. }),
+                "re-execution failure must yield Invalid");
+        }
+
+        /// Fabricated correct_post_state_root (re-exec disagrees) always Invalid.
+        #[test]
+        fn fabricated_correct_root_invalid(
+            pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            actual in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+        ) {
+            prop_assume!(correct != claimed);
+            prop_assume!(actual != correct); // re-exec disagrees with challenger
+            let verifier = FraudProofVerifier::new(0, 50).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let executor = FixedExecutor(actual); // returns different from correct
+            let result = verifier.verify(&proof, &pre, &claimed, &sequencer, 1_000_000, 1_000_000, &executor);
+            prop_assert!(matches!(result, FraudProofResult::Invalid { .. }),
+                "fabricated correct root must yield Invalid");
+        }
+
+        /// Valid fraud proof yields challenger_reward = sequencer_bond * pct / 100.
+        #[test]
+        fn valid_fraud_reward_correct(
+            pre in arb_h256(),
+            correct in arb_h256(),
+            claimed in arb_h256(),
+            sequencer in arb_address(),
+            challenger in arb_address(),
+            pct in 0u8..=100u8,
+            bond in 0u128..1_000_000_000u128,
+        ) {
+            prop_assume!(correct != claimed);
+            let verifier = FraudProofVerifier::new(0, pct).unwrap();
+            let proof = FraudProof {
+                batch_id: 1,
+                tx_index: 0,
+                pre_state_root: pre,
+                correct_post_state_root: correct,
+                claimed_post_state_root: claimed,
+                challenger,
+                state_proof: vec![],
+                tx_data: vec![],
+            };
+            let executor = FixedExecutor(correct);
+            let result = verifier.verify(&proof, &pre, &claimed, &sequencer, bond, 1_000_000_000, &executor);
+            let expected_reward = bond.saturating_mul(pct as u128) / 100;
+            match result {
+                FraudProofResult::Valid { challenger_reward, slashed_sequencer } => {
+                    prop_assert_eq!(challenger_reward, expected_reward,
+                        "reward must be bond * pct / 100");
+                    prop_assert_eq!(slashed_sequencer, sequencer,
+                        "slashed sequencer must match");
+                }
+                FraudProofResult::Invalid { reason } => {
+                    prop_assert!(false, "expected Valid, got Invalid: {}", reason);
+                }
+            }
+        }
+    }
+}

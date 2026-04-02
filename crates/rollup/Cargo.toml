@@ -13,3 +13,6 @@ bincode.workspace = true
 sha2.workspace = true
 
 aether-types = { path = "../types" }
+
+[dev-dependencies]
+proptest.workspace = true
