@@ -95,6 +95,14 @@ pub struct Node {
     /// accidentally double-voting when multiple fork blocks arrive at the same
     /// slot (each triggers `vote_on_block` via `on_block_received`).
     last_voted_slot: Option<Slot>,
+    /// Tracks which block hash has been durably committed to storage for each slot.
+    /// When a fork block arrives and fork-choice would switch canonical, we must NOT
+    /// commit the new canonical on top of the already-committed old canonical — doing
+    /// so would leave stale effects from the old block in storage (e.g. UTXOs created
+    /// by old-canonical txs that the new canonical didn't spend).  The first block
+    /// committed at a slot wins; competing blocks are kept in memory for vote/QC
+    /// purposes but their state is not written to disk until the chain is replayed.
+    committed_at_slot: HashMap<Slot, H256>,
 }
 
 impl Node {
@@ -183,6 +191,7 @@ impl Node {
             outbound_drops: 0,
             snapshot_dir: None,
             last_voted_slot: None,
+            committed_at_slot: HashMap::new(),
         })
     }
 
@@ -630,6 +639,7 @@ impl Node {
         let finalized = self.consensus.finalized_slot();
         self.fork_choice.prune_before(finalized);
         self.slashing_detector.prune_before(finalized);
+        self.committed_at_slot.retain(|&slot, _| slot >= finalized);
         self.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
     }
 
@@ -1076,7 +1086,34 @@ impl Node {
 
         let is_canonical = new_canonical == Some(block_hash);
 
-        if is_canonical {
+        // SAFETY: once a block has been durably written to storage at a given slot, we must
+        // NOT write a competing block's state on top of it.  Doing so would leave stale effects
+        // from the first-committed block (e.g. UTXOs it created but the new canonical did not
+        // spend) permanently in storage, silently corrupting the UTXO set.
+        //
+        // The first canonical block committed at a slot wins.  Any subsequent fork block that
+        // fork-choice would prefer (lower hash) is kept in memory for vote/QC purposes but its
+        // overlay is discarded.  The correct resolution is to wait for the chain to grow: when
+        // a descendant of the fork block arrives and becomes canonical, the state from the
+        // finalized ancestor path will be applied from a clean base.
+        let already_committed_at_slot = self
+            .committed_at_slot
+            .get(&block.header.slot)
+            .is_some_and(|&h| h != block_hash);
+
+        let should_commit = is_canonical && !already_committed_at_slot;
+
+        if already_committed_at_slot && is_canonical {
+            tracing::warn!(
+                slot = block.header.slot,
+                committed = ?self.committed_at_slot.get(&block.header.slot),
+                incoming = ?block_hash,
+                "Fork block would be canonical but a different block is already committed at this \
+                 slot — skipping state commit to prevent UTXO set corruption"
+            );
+        }
+
+        if should_commit {
             // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
             // Fee distribution is folded in so proposer rewards are never lost if the process
             // crashes after the overlay commit but before the credit write.
@@ -1095,6 +1132,8 @@ impl Node {
                 fee_result.burned,
             )?;
             self.ledger.write_batch(batch)?;
+            // Record that this block's state is now durably committed at this slot.
+            self.committed_at_slot.insert(block.header.slot, block_hash);
 
             // Lock this slot against future fork-choice reorgs — state is now
             // committed and we have no rollback mechanism.
@@ -1247,8 +1286,12 @@ impl Node {
         // Store block in hash map (all blocks, including non-canonical)
         self.blocks_by_hash.insert(block_hash, block.clone());
 
-        // Only update slot->hash map and tip for canonical blocks
-        if is_canonical {
+        // Only update slot->hash map and tip for blocks whose state was actually committed.
+        // If a fork block is preferred by fork-choice but we skipped its commit (to prevent
+        // UTXO-set corruption from double-committing at the same slot), keep the previously
+        // committed block as the chain tip — building on an uncommitted state would produce
+        // blocks with an incorrect state_root.
+        if should_commit {
             self.blocks_by_slot.insert(block.header.slot, block_hash);
             self.latest_block_hash = block_hash;
             self.latest_block_slot = Some(block.header.slot);
@@ -2748,5 +2791,110 @@ mod tests {
                 "consensus must resume past recovered tip"
             );
         }
+    }
+
+    /// Regression: when two competing blocks arrive at the same slot and fork-choice
+    /// switches canonical (lower hash wins), the second block's overlay must NOT be
+    /// committed on top of the already-committed first block's state.  Doing so would
+    /// leave stale effects from the first block (e.g. UTXOs it created) permanently in
+    /// storage, silently corrupting the UTXO set.
+    ///
+    /// Expected behavior: the first-committed block remains the chain tip; the
+    /// fork block is buffered in memory but its state is not written to disk.
+    #[test]
+    fn fork_block_does_not_double_commit_state() {
+        let temp_dir = TempDir::new().unwrap();
+        // Phase 1: use a producer node to get a valid block with the correct state_root.
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let block_a = {
+            let consensus = Box::new(SimpleConsensus::new(validators.clone()));
+            let mut producer = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+            producer.process_slot().unwrap();
+            let slot = producer.latest_block_slot().expect("node should produce a block");
+            producer.get_block_by_slot(slot).expect("block must exist")
+        };
+
+        // Build a competing block at the same slot by copying block_a and changing
+        // only the VRF output field.  This produces a different hash while keeping
+        // all other header fields identical (same state_root, same proposer, same
+        // slot) so it will pass speculative execution and the proposer check.
+        let mut block_b = block_a.clone();
+        block_b.header.vrf_proof.output = {
+            let mut alt = block_a.header.vrf_proof.output;
+            alt[0] ^= 0xFF; // flip a bit to get a different output (and hash)
+            alt
+        };
+
+        // Phase 2: fresh receiving node that accepts both blocks via on_block_received.
+        let temp_dir2 = TempDir::new().unwrap();
+        let consensus2 = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir2.path(),
+            consensus2,
+            None,
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let hash_a = block_a.hash();
+        let hash_b = block_b.hash();
+        assert_ne!(hash_a, hash_b, "test blocks must have different hashes");
+
+        // Fork-choice picks the block with the lower hash byte-for-byte.
+        // Make `first_block` the one with the HIGHER hash so it arrives first and is
+        // committed, while `second_block` (lower hash) would be preferred by
+        // fork-choice — this is the scenario that triggers the bug without the fix.
+        let (first_block, second_block) = if hash_a.as_bytes() > hash_b.as_bytes() {
+            (block_a, block_b) // a=high arrives first, b=low arrives second
+        } else {
+            (block_b, block_a) // b=high arrives first, a=low arrives second
+        };
+        let first_hash = first_block.hash();
+        let second_hash = second_block.hash();
+
+        // Verify test setup: second block has lower hash (fork-choice prefers it)
+        assert!(
+            second_hash.as_bytes() < first_hash.as_bytes(),
+            "second block must have a lower hash so fork-choice would switch canonical"
+        );
+
+        let test_slot = first_block.header.slot;
+
+        // Receive the first block — it should be committed and become the chain tip.
+        node.on_block_received(first_block).unwrap();
+        assert_eq!(
+            node.latest_block_hash, first_hash,
+            "first block should become chain tip"
+        );
+        assert_eq!(
+            node.committed_at_slot.get(&test_slot),
+            Some(&first_hash),
+            "first block state must be recorded as committed at its slot"
+        );
+
+        // Receive the competing block (lower hash — fork-choice prefers it).
+        // Without the fix, this would write the second block's state on top of the
+        // first, corrupting the UTXO set.  With the fix it must be skipped.
+        node.on_block_received(second_block).unwrap();
+
+        // Chain tip must still be the first (committed) block.
+        assert_eq!(
+            node.latest_block_hash, first_hash,
+            "chain tip must not change after fork block arrives at an already-committed slot"
+        );
+        assert_eq!(
+            node.committed_at_slot.get(&test_slot),
+            Some(&first_hash),
+            "committed_at_slot must still record the first block, not the fork"
+        );
     }
 }
