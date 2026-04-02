@@ -34,6 +34,9 @@ pub use chain_config::{
 };
 pub use consensus::{EpochInfo, ValidatorInfo, Vote};
 pub use primitives::{Address, Epoch, PublicKey, Signature, Slot, H160, H256};
+#[cfg(test)]
+mod proptest_tests;
+
 pub use transaction::{
     BlobTransaction, Transaction, TransactionReceipt, TransactionStatus, TransferPayload, UtxoId,
     UtxoOutput, BLOB_RETENTION_SLOTS, MAX_BLOBS_PER_TX, MAX_BLOB_SIZE, TRANSFER_PROGRAM_ID,
