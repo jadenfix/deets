@@ -775,3 +775,7 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 17 proptest cases covering registration, delegation, unbonding, slashing, reward distribution.
   - Includes stake conservation invariant checker validating total_staked consistency.
   - All tests pass (200 cases each); clippy clean.
+- **2026-04-02** — fix(node): remove unwrap/expect panics from production block root computation. Branch: `fix/agent2-node-remove-production-panics`, PR #254 (merged).
+  - Replaced H256::from_slice().unwrap() with direct [u8;32] array conversion in compute_transactions_root and compute_receipts_root.
+  - Replaced bincode::serialize().expect() with unwrap_or_default() to avoid validator crash on serialization failure.
+  - 4 panic sites removed from production block production/validation paths.
