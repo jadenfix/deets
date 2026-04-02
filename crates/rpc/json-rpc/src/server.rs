@@ -15,6 +15,10 @@ use tokio::sync::{broadcast, Mutex, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::{Filter, Reply};
 
+/// Maximum number of per-IP rate-limiter entries before eviction kicks in.
+/// Prevents memory exhaustion from attackers using many unique source IPs.
+const MAX_RATE_LIMIT_ENTRIES: usize = 50_000;
+
 /// Per-IP token-bucket rate limiter for RPC endpoints.
 ///
 /// Each IP gets `max_tokens` tokens, refilled at `refill_rate` tokens/sec.
@@ -47,6 +51,19 @@ impl RateLimiter {
         let max = self.max_tokens as f64;
         let rate = self.refill_rate;
 
+        // Evict oldest entries when the map exceeds the size cap to prevent
+        // memory exhaustion from many unique source IPs.
+        if state.len() >= MAX_RATE_LIMIT_ENTRIES && !state.contains_key(&ip) {
+            // Find and remove the entry with the oldest last_refill.
+            if let Some(oldest_ip) = state
+                .iter()
+                .min_by_key(|(_, b)| b.last_refill)
+                .map(|(ip, _)| *ip)
+            {
+                state.remove(&oldest_ip);
+            }
+        }
+
         let bucket = state.entry(ip).or_insert(TokenBucket {
             tokens: max,
             last_refill: now,
@@ -68,6 +85,12 @@ impl RateLimiter {
         let mut state = self.state.lock().await;
         let now = Instant::now();
         state.retain(|_, bucket| now.duration_since(bucket.last_refill) < max_age);
+    }
+
+    /// Returns the number of tracked IPs (for testing/metrics).
+    #[cfg(test)]
+    async fn len(&self) -> usize {
+        self.state.lock().await.len()
     }
 }
 
@@ -1344,6 +1367,38 @@ mod tests {
         assert!(
             err_after > err_before,
             "error counter should increment on failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_bounded_size() {
+        // Use a small cap to verify eviction logic works.
+        // We can't override the const, so we just verify that after
+        // inserting MAX_RATE_LIMIT_ENTRIES + extra IPs, the map doesn't
+        // exceed the cap.
+        let limiter = RateLimiter::new(10, 1.0);
+
+        // Insert MAX_RATE_LIMIT_ENTRIES unique IPs
+        for i in 0..MAX_RATE_LIMIT_ENTRIES {
+            let octets = (i as u32).to_be_bytes();
+            let ip = IpAddr::V4(std::net::Ipv4Addr::new(
+                octets[0].wrapping_add(1),
+                octets[1],
+                octets[2],
+                octets[3],
+            ));
+            limiter.check(ip).await;
+        }
+        assert_eq!(limiter.len().await, MAX_RATE_LIMIT_ENTRIES);
+
+        // Insert 100 more unique IPs — map should not grow beyond cap
+        for i in 0..100u32 {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::new(254, 254, i as u8, 1));
+            limiter.check(ip).await;
+        }
+        assert!(
+            limiter.len().await <= MAX_RATE_LIMIT_ENTRIES,
+            "rate limiter map must not exceed MAX_RATE_LIMIT_ENTRIES"
         );
     }
 }
