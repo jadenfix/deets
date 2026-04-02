@@ -1,6 +1,7 @@
 use aether_metrics::NET_METRICS;
 use aether_types::{Block, Transaction};
 use anyhow::Result;
+use libp2p::connection_limits::{self, ConnectionLimits};
 use libp2p::futures::StreamExt;
 use libp2p::{
     gossipsub::{self, IdentTopic, MessageAuthenticity, ValidationMode},
@@ -32,6 +33,15 @@ const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
 const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
 const MAX_SYNC_MSG_SIZE: usize = 1024; // 1 KB (slot range requests are small)
 
+/// Maximum total established connections (inbound + outbound).
+const MAX_ESTABLISHED_TOTAL: u32 = 256;
+/// Maximum established inbound connections. Limits DoS via connection flooding.
+const MAX_ESTABLISHED_INBOUND: u32 = 128;
+/// Maximum established outbound connections.
+const MAX_ESTABLISHED_OUTBOUND: u32 = 128;
+/// Maximum established connections per single peer (prevents resource hogging).
+const MAX_ESTABLISHED_PER_PEER: u32 = 4;
+
 /// Events emitted by the P2P network to the node.
 #[derive(Debug)]
 pub enum NetworkEvent {
@@ -50,6 +60,7 @@ struct AetherBehaviour {
     gossipsub: gossipsub::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
+    connection_limits: connection_limits::Behaviour,
 }
 
 /// Production P2P network using libp2p.
@@ -110,10 +121,17 @@ impl P2PNetwork {
             keypair.public(),
         ));
 
+        let limits = ConnectionLimits::default()
+            .with_max_established(Some(MAX_ESTABLISHED_TOTAL))
+            .with_max_established_incoming(Some(MAX_ESTABLISHED_INBOUND))
+            .with_max_established_outgoing(Some(MAX_ESTABLISHED_OUTBOUND))
+            .with_max_established_per_peer(Some(MAX_ESTABLISHED_PER_PEER));
+
         let behaviour = AetherBehaviour {
             gossipsub,
             kademlia,
             identify,
+            connection_limits: connection_limits::Behaviour::new(limits),
         };
 
         let swarm = SwarmBuilder::with_existing_identity(keypair)
@@ -553,6 +571,24 @@ mod tests {
         assert!(shred <= global_max);
         assert!(vote < tx);
         assert!(tx < block);
+    }
+
+    #[test]
+    fn test_connection_limits_configured() {
+        // Verify connection limits are sane production values (use runtime values)
+        let total = MAX_ESTABLISHED_TOTAL;
+        let inbound = MAX_ESTABLISHED_INBOUND;
+        let outbound = MAX_ESTABLISHED_OUTBOUND;
+        let per_peer = MAX_ESTABLISHED_PER_PEER;
+        assert!(total >= inbound);
+        assert!(total >= outbound);
+        assert!(per_peer > 0 && per_peer <= 8);
+        // Verify the network can be created with limits wired into the swarm
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let network = P2PNetwork::new_random().unwrap();
+            assert_eq!(network.peer_count(), 0);
+        });
     }
 
     #[test]
