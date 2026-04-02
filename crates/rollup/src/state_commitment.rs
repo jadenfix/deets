@@ -49,7 +49,7 @@ pub const CHALLENGE_WINDOW_SLOTS: u64 = 1_209_600;
 impl StateCommitment {
     pub fn new(batch: L2Batch, current_l1_slot: u64) -> Self {
         StateCommitment {
-            challenge_deadline: current_l1_slot + CHALLENGE_WINDOW_SLOTS,
+            challenge_deadline: current_l1_slot.saturating_add(CHALLENGE_WINDOW_SLOTS),
             batch,
             challenged: false,
             finalized: false,
@@ -112,6 +112,16 @@ mod tests {
         assert!(commitment.try_finalize(1500).is_err()); // Too early
         assert!(commitment.try_finalize(after_window).is_ok());
         assert!(commitment.finalized);
+    }
+
+    #[test]
+    fn challenge_deadline_saturates_near_max_slot() {
+        // With bare addition, current_l1_slot near u64::MAX would overflow.
+        // With saturating_add, deadline clamps to u64::MAX.
+        let commitment = StateCommitment::new(make_batch(1), u64::MAX - 100);
+        assert_eq!(commitment.challenge_deadline, u64::MAX);
+        // Should not be past window at any reasonable slot
+        assert!(!commitment.is_past_challenge_window(u64::MAX - 50));
     }
 
     #[test]

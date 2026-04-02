@@ -22,7 +22,7 @@ pub fn validate_shred(
     aether_crypto_primitives::verify(proposer_pubkey, &msg, shred.signature.as_bytes())
         .map_err(|e| anyhow::anyhow!("invalid shred signature: {}", e))?;
 
-    if shred.slot + max_slot_age < current_slot {
+    if shred.slot.saturating_add(max_slot_age) < current_slot {
         bail!("stale shred");
     }
 
@@ -105,6 +105,19 @@ mod tests {
         let key = Keypair::generate();
         let shred = make_signed_shred(&key, 1);
         assert!(validate_shred(&shred, 20, 5, &key.public_key()).is_err());
+    }
+
+    #[test]
+    fn staleness_check_does_not_overflow() {
+        // With bare addition, slot=u64::MAX and max_slot_age=100 would overflow
+        // and wrap around, incorrectly marking a future shred as stale.
+        // With saturating_add, this saturates to u64::MAX which is >= current_slot,
+        // so the shred is correctly considered fresh.
+        let key = Keypair::generate();
+        let shred = make_signed_shred(&key, u64::MAX - 50);
+        // current_slot is close to MAX but shred.slot + max_slot_age would overflow
+        let result = validate_shred(&shred, u64::MAX - 40, 100, &key.public_key());
+        assert!(result.is_ok(), "near-max slot shred should not be falsely stale");
     }
 
     #[test]
