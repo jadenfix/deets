@@ -1347,31 +1347,7 @@ impl Node {
                     continue;
                 }
 
-                let validator_stake = self
-                    .staking_state
-                    .get_validator(&evidence.validator)
-                    .map(|v| v.staked_amount)
-                    .unwrap_or(0);
-                let slash_amount =
-                    slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
-                // Convert slash amount to basis points without overflow:
-                // rate_bps = (slash_amount * 10_000) / validator_stake
-                // Since slash_amount <= 10% of validator_stake, result <= 1000 bps.
-                let rate_bps = if validator_stake > 0 {
-                    // Use checked arithmetic; saturating_mul could silently
-                    // produce u128::MAX for very large stakes.
-                    let bps_u128 = slash_amount
-                        .checked_mul(10_000)
-                        .map(|n| n / validator_stake)
-                        .unwrap_or_else(|| {
-                            // Fallback: divide first to avoid overflow
-                            // (slash_amount / validator_stake) * 10_000
-                            (slash_amount / validator_stake).saturating_mul(10_000)
-                        });
-                    bps_u128 as u32
-                } else {
-                    0
-                };
+                let rate_bps = slash_verify::slash_rate_bps(&proof.proof_type);
 
                 // Also update consensus vote weight for block-included evidence,
                 // so slash is reflected immediately in the current epoch's voting.
@@ -1561,24 +1537,7 @@ impl Node {
 
                 // Update staking bond accounting so the slash is reflected in
                 // validator stake queries and reward calculations.
-                let validator_stake = self
-                    .staking_state
-                    .get_validator(&proof.validator)
-                    .map(|v| v.staked_amount)
-                    .unwrap_or(0);
-                let slash_amount =
-                    slash_verify::calculate_slash_amount(validator_stake, &proof.proof_type);
-                let rate_bps = if validator_stake > 0 {
-                    let bps_u128 = slash_amount
-                        .checked_mul(10_000)
-                        .map(|n| n / validator_stake)
-                        .unwrap_or_else(|| {
-                            (slash_amount / validator_stake).saturating_mul(10_000)
-                        });
-                    bps_u128 as u32
-                } else {
-                    500 // Fallback: 5% if validator not yet in staking state
-                };
+                let rate_bps = slash_verify::slash_rate_bps(&proof.proof_type);
                 match self.staking_state.slash(proof.validator, u128::from(rate_bps)) {
                     Ok(staking_slashed) => tracing::warn!(
                         validator = ?proof.validator,

@@ -219,6 +219,19 @@ fn verify_vote_signature(vote: &Vote) -> anyhow::Result<()> {
     }
 }
 
+/// Return the slash rate in basis points for a given offense type.
+///
+/// This avoids the lossy roundtrip of computing an absolute slash amount and
+/// then converting back to bps (which silently yields 0 when
+/// `slash_amount * 10_000` overflows u128).
+pub fn slash_rate_bps(proof_type: &SlashType) -> u32 {
+    match proof_type {
+        SlashType::DoubleSign => 500,      // 5%
+        SlashType::SurroundVote => 500,    // 5%
+        SlashType::Downtime { .. } => 0,   // Downtime is variable; handled separately
+    }
+}
+
 /// Calculate how much stake to slash.
 /// Uses overflow-safe mul_div to avoid silent truncation on large u128 stakes.
 pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
@@ -456,6 +469,13 @@ mod tests {
 
         let proof = detect_surround_vote(&vote_a, 10, &vote_b, 20);
         assert!(proof.is_none());
+    }
+
+    #[test]
+    fn test_slash_rate_bps() {
+        assert_eq!(slash_rate_bps(&SlashType::DoubleSign), 500);
+        assert_eq!(slash_rate_bps(&SlashType::SurroundVote), 500);
+        assert_eq!(slash_rate_bps(&SlashType::Downtime { missing_slots: 100 }), 0);
     }
 
     #[test]
