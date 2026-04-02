@@ -723,3 +723,19 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 10 proptest cases to `crates/runtime/src/vm.rs`: gas metering bounds, return code semantics, arbitrary input safety, fuel exhaustion, random bytes rejection, storage write bounds, oversized module rejection, deterministic execution.
   - Added `proptest` dev-dependency to aether-runtime.
   - All 40 runtime tests pass; clippy clean.
+
+## Agent 4 Cycle 18 Log
+
+- **2026-04-02** — test(da): add proptest property-based tests for Reed-Solomon erasure coding invariants. Tier 5 testing. Branch: `test/agent4-merkle-proptest-v2`, PR #240 (merged).
+  - Added 9 proptest cases to `crates/da/erasure-coding/src/decoder.rs`:
+    - roundtrip_full_shards: encode+decode returns original data for any (k, r, data)
+    - recover_with_one_missing_shard: any single lost shard is recoverable when r>=1
+    - too_many_missing_shards_fails: losing r+1 shards always returns Err
+    - shard_count_is_k_plus_r: encoded output has exactly k+r shards
+    - all_shards_same_length: all shards have identical byte length
+    - trailing_zeros_preserved: length-prefix encoding never strips trailing zeros
+    - encoding_is_deterministic: same input always produces identical shards
+    - different_data_different_shards: distinct inputs produce distinct shards
+    - decoder_config_correct: shard_config() returns (k, r) faithfully
+  - Added `proptest` to `[dev-dependencies]` in erasure-coding Cargo.toml.
+  - All 16 tests pass (7 existing + 9 new proptest); clippy clean.
