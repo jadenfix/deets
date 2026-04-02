@@ -1015,22 +1015,32 @@ mod proptests {
             prop_assert!(txs.len() <= max_count);
         }
 
-        /// get_transactions returns txs sorted by descending fee (same-size txs).
+        /// get_transactions returns txs sorted by descending fee_rate.
+        /// fee_rate = fee / serialized_size (integer division), so txs
+        /// with close fees may share the same rate. Ties are broken by
+        /// insertion timestamp (FIFO), which is correct pool behaviour.
         #[test]
         fn get_transactions_fee_ordered(
             fees in proptest::collection::vec(50_000u128..500_000, 2..15),
         ) {
-            // Use the same keypair so all txs have the same serialized size,
-            // ensuring fee_rate ordering matches fee ordering.
-            let kp = Keypair::generate();
             let mut mempool = Mempool::with_defaults();
-            // Each tx needs a unique nonce since they share the same sender.
-            for (i, fee) in fees.iter().enumerate() {
-                let _ = mempool.add_transaction(make_signed_tx(&kp, i as u64, *fee, 900));
+            // Different sender per tx → nonce 0 each, identical serialized size.
+            let mut tx_sizes = Vec::new();
+            for fee in fees.iter() {
+                let kp = Keypair::generate();
+                let tx = make_signed_tx(&kp, 0, *fee, 900);
+                let size = bincode::serialize(&tx).unwrap().len() as u128;
+                tx_sizes.push(size);
+                let _ = mempool.add_transaction(tx);
             }
             let txs = mempool.get_transactions(fees.len(), u64::MAX);
+            // Verify fee_rate is non-increasing (the actual ordering key).
             for w in txs.windows(2) {
-                prop_assert!(w[0].fee >= w[1].fee, "txs should be fee-ordered");
+                let size0 = bincode::serialize(&w[0]).unwrap().len() as u128;
+                let size1 = bincode::serialize(&w[1]).unwrap().len() as u128;
+                let rate0 = w[0].fee / size0;
+                let rate1 = w[1].fee / size1;
+                prop_assert!(rate0 >= rate1, "txs should be fee_rate-ordered");
             }
         }
 
