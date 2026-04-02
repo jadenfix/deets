@@ -1,5 +1,5 @@
 use aether_types::{Slot, H256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Maximum number of candidate blocks tracked per slot.
 /// Prevents OOM from an attacker spamming unique block hashes for a single slot.
@@ -14,6 +14,12 @@ pub struct ForkChoice {
     canonical: HashMap<Slot, H256>,
     /// Finalized blocks (immutable once set).
     finalized: HashMap<Slot, H256>,
+    /// Slots whose canonical block has been committed to storage.
+    /// Once committed, the canonical block for that slot is locked —
+    /// a late-arriving fork cannot switch it without a full state rollback
+    /// (which we don't support). This prevents state corruption from
+    /// applying two competing blocks' overlays at the same slot.
+    committed: HashSet<Slot>,
 }
 
 impl Default for ForkChoice {
@@ -28,14 +34,17 @@ impl ForkChoice {
             candidates: HashMap::new(),
             canonical: HashMap::new(),
             finalized: HashMap::new(),
+            committed: HashSet::new(),
         }
     }
 
     /// Record a new block candidate for a slot. Returns true if this is a new fork
     /// (competing block for an already-occupied slot).
     pub fn add_block(&mut self, slot: Slot, block_hash: H256) -> bool {
-        // Reject new blocks for finalized slots — finalization is irreversible
-        if self.finalized.contains_key(&slot) {
+        // Reject new blocks for finalized or committed slots — once state is
+        // committed to storage, switching canonical blocks would corrupt state
+        // (both overlays applied without rollback).
+        if self.finalized.contains_key(&slot) || self.committed.contains(&slot) {
             return false;
         }
 
@@ -106,11 +115,18 @@ impl ForkChoice {
         self.finalized.contains_key(&slot)
     }
 
+    /// Mark a slot as having its canonical block's state committed to storage.
+    /// After this, no fork-choice reorg is allowed for this slot.
+    pub fn mark_committed(&mut self, slot: Slot) {
+        self.committed.insert(slot);
+    }
+
     /// Prune data for slots before `min_slot` to bound memory.
     pub fn prune_before(&mut self, min_slot: Slot) {
         self.candidates.retain(|&s, _| s >= min_slot);
         self.canonical.retain(|&s, _| s >= min_slot);
         self.finalized.retain(|&s, _| s >= min_slot);
+        self.committed.retain(|s| *s >= min_slot);
     }
 }
 
@@ -275,5 +291,54 @@ mod tests {
         assert!(!is_fork, "blocks at finalized slots should be rejected");
         assert_eq!(fc.candidates_for(3).len(), 1);
         assert_eq!(fc.canonical_block(3), Some(hash(0x01)));
+    }
+
+    #[test]
+    fn test_committed_slot_rejects_late_fork() {
+        let mut fc = ForkChoice::new();
+        // Block arrives and state is committed
+        fc.add_block(5, hash(0xFF));
+        fc.mark_committed(5);
+
+        // Late-arriving fork with lower hash would normally win tiebreak,
+        // but must be rejected because state is already committed
+        let is_fork = fc.add_block(5, hash(0x01));
+        assert!(!is_fork, "blocks at committed slots should be rejected");
+        assert_eq!(fc.candidates_for(5).len(), 1);
+        assert_eq!(
+            fc.canonical_block(5),
+            Some(hash(0xFF)),
+            "committed canonical block must not change"
+        );
+    }
+
+    #[test]
+    fn test_uncommitted_slot_allows_tiebreak() {
+        let mut fc = ForkChoice::new();
+        // Block arrives but state is NOT committed yet
+        fc.add_block(5, hash(0xFF));
+        // Another block arrives before commit — tiebreak should work
+        let is_fork = fc.add_block(5, hash(0x01));
+        assert!(is_fork);
+        assert_eq!(
+            fc.canonical_block(5),
+            Some(hash(0x01)),
+            "lower hash should win when slot is not yet committed"
+        );
+    }
+
+    #[test]
+    fn test_prune_clears_committed() {
+        let mut fc = ForkChoice::new();
+        fc.add_block(1, hash(0x01));
+        fc.mark_committed(1);
+        fc.add_block(5, hash(0x05));
+        fc.mark_committed(5);
+
+        fc.prune_before(3);
+        // Slot 1 committed status should be pruned
+        // Slot 5 should remain committed
+        assert_eq!(fc.canonical_block(1), None);
+        assert_eq!(fc.canonical_block(5), Some(hash(0x05)));
     }
 }
