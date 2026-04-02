@@ -35,10 +35,14 @@ pub struct SyncRequest {
 }
 
 /// Maximum message sizes to prevent OOM from malicious peers.
-const MAX_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4MB
-const MAX_VOTE_SIZE: usize = 4 * 1024; // 4KB
-const MAX_TX_SIZE: usize = 128 * 1024; // 128KB
-const MAX_SYNC_SIZE: usize = 1024; // 1KB
+/// These MUST match the per-topic limits in `aether_p2p::network` (the first
+/// defense layer).  Keeping them in sync avoids silent drops where one layer
+/// accepts a message the other rejects.
+const MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2 MB — matches gossipsub max_transmit_size
+const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
+const MAX_TX_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_SYNC_SIZE: usize = 1024; // 1 KB
 
 /// Deserialize with a bincode size limit to prevent DoS via deeply nested structures.
 fn deserialize_bounded<T: serde::de::DeserializeOwned>(data: &[u8], max_size: usize) -> Option<T> {
@@ -73,6 +77,11 @@ pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
                     to_slot: req.to_slot,
                 }
             })
+        }
+        // Shreds are size-checked but forwarded raw to the DA layer (no deserialization here).
+        NetworkEvent::ShredReceived(data) if data.len() <= MAX_SHRED_SIZE => {
+            tracing::trace!("shred received ({} bytes), forwarding to DA layer", data.len());
+            None // DA layer handles shred reassembly separately
         }
         NetworkEvent::PeerConnected(_) => Some(NodeMessage::PeerConnected),
         NetworkEvent::PeerDisconnected(_) => Some(NodeMessage::PeerDisconnected),
@@ -161,7 +170,55 @@ mod tests {
 
     #[test]
     fn test_decode_shred_event_returns_none() {
+        // Shreds are size-checked but not decoded into NodeMessage (DA layer handles them)
         let event = NetworkEvent::ShredReceived(vec![1, 2, 3]);
         assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_oversized_shred_rejected() {
+        let oversized = vec![0u8; MAX_SHRED_SIZE + 1];
+        let event = NetworkEvent::ShredReceived(oversized);
+        assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_oversized_block_rejected() {
+        // A block payload exceeding MAX_BLOCK_SIZE (2 MB) must be dropped
+        let oversized = vec![0u8; MAX_BLOCK_SIZE + 1];
+        let event = NetworkEvent::BlockReceived(oversized);
+        assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_oversized_vote_rejected() {
+        let oversized = vec![0u8; MAX_VOTE_SIZE + 1];
+        let event = NetworkEvent::VoteReceived(oversized);
+        assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_oversized_tx_rejected() {
+        let oversized = vec![0u8; MAX_TX_SIZE + 1];
+        let event = NetworkEvent::TransactionReceived(oversized);
+        assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_oversized_sync_rejected() {
+        let oversized = vec![0u8; MAX_SYNC_SIZE + 1];
+        let event = NetworkEvent::SyncRequestReceived(oversized);
+        assert!(decode_network_event(event).is_none());
+    }
+
+    #[test]
+    fn test_limits_match_p2p_layer() {
+        // These limits must stay in sync with aether_p2p::network constants.
+        // If the P2P layer changes, update these too.
+        assert_eq!(MAX_BLOCK_SIZE, 2 * 1024 * 1024, "block limit out of sync with p2p");
+        assert_eq!(MAX_VOTE_SIZE, 8 * 1024, "vote limit out of sync with p2p");
+        assert_eq!(MAX_TX_SIZE, 64 * 1024, "tx limit out of sync with p2p");
+        assert_eq!(MAX_SHRED_SIZE, 64 * 1024, "shred limit out of sync with p2p");
+        assert_eq!(MAX_SYNC_SIZE, 1024, "sync limit out of sync with p2p");
     }
 }
