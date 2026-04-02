@@ -700,3 +700,16 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 10 proptest cases covering: pool size bounds, sequential nonce pending routing, nonce gap queuing, gap-fill promotion cascade, get_transactions max_count/fee ordering, removal size decrement, stale nonce rejection, duplicate rejection.
   - Added `proptest` to `[dev-dependencies]` in `crates/mempool/Cargo.toml`.
   - All 22 mempool tests pass; clippy clean; full workspace passes.
+
+## Agent 4 Cycle 16 Log
+
+- **2026-04-02** — test(job-escrow): add proptest property-based tests for escrow state machine invariants. Tier 5 item. Branch: `test/agent4-job-escrow-proptest`, PR #225 (merged).
+  - Added 11 proptest cases to `crates/programs/job-escrow/src/lib.rs` covering:
+    - duplicate_job_rejected, zero_payment_rejected, post_job_escrow_equals_payment
+    - cancel_releases_full_escrow, non_requester_cannot_cancel
+    - requester_cannot_self_accept (self-dealing prevention)
+    - provider_with_ok_reputation_accepted, provider_at_floor_reputation_blocked
+    - submit_after_deadline_rejected, only_requester_can_challenge
+    - total_jobs_counter_monotone
+  - Added `proptest = "1"` to `[dev-dependencies]` in job-escrow `Cargo.toml`.
+  - All 19 tests pass (8 unit + 11 proptest); clippy clean.
