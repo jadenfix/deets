@@ -49,7 +49,7 @@ pub struct LightClientVerifier {
 impl LightClientVerifier {
     /// Create a new light client verifier with the initial validator set.
     pub fn new(validators: Vec<ValidatorEntry>) -> Self {
-        let total_stake: u128 = validators.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = validators.iter().fold(0u128, |acc, v| acc.saturating_add(v.stake));
         let validators_map: HashMap<Vec<u8>, ValidatorEntry> = validators
             .into_iter()
             .map(|v| (v.pubkey.as_bytes().to_vec(), v))
@@ -174,7 +174,7 @@ impl LightClientVerifier {
 
     /// Update the validator set (on epoch boundary).
     pub fn update_validators(&mut self, validators: Vec<ValidatorEntry>) {
-        self.total_stake = validators.iter().map(|v| v.stake).sum();
+        self.total_stake = validators.iter().fold(0u128, |acc, v| acc.saturating_add(v.stake));
         self.validators = validators
             .into_iter()
             .map(|v| (v.pubkey.as_bytes().to_vec(), v))
