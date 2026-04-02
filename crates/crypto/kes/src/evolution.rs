@@ -422,3 +422,146 @@ mod tests {
         assert_eq!(root, vk.root());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Small period counts (2–16) for fast proptest runs.
+    fn arb_max_periods() -> impl Strategy<Value = u32> {
+        2u32..=16u32
+    }
+
+    proptest! {
+        /// sign/verify roundtrip: signing a message at any valid period always verifies.
+        #[test]
+        fn sign_verify_roundtrip(
+            seed in prop::array::uniform32(any::<u8>()),
+            max_periods in arb_max_periods(),
+            message in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let mut key = KesKey::from_seed(seed, max_periods);
+            let vk = key.verification_key();
+            let actual_max = key.max_periods();
+            // Sign at period 0 (safe; always valid)
+            let sig = key.sign(0, &message).unwrap();
+            prop_assert!(sig.verify(&vk, &message),
+                "sign/verify roundtrip must succeed (max_periods={})", actual_max);
+        }
+
+        /// Wrong message fails verification.
+        #[test]
+        fn wrong_message_fails(
+            seed in prop::array::uniform32(any::<u8>()),
+            msg1 in prop::collection::vec(any::<u8>(), 1..64),
+            msg2 in prop::collection::vec(any::<u8>(), 1..64),
+        ) {
+            prop_assume!(msg1 != msg2);
+            let mut key = KesKey::from_seed(seed, 4);
+            let vk = key.verification_key();
+            let sig = key.sign(0, &msg1).unwrap();
+            prop_assert!(!sig.verify(&vk, &msg2),
+                "signature on msg1 must not verify against msg2");
+        }
+
+        /// Wrong verification key fails.
+        #[test]
+        fn wrong_vk_fails(
+            seed1 in prop::array::uniform32(any::<u8>()),
+            seed2 in prop::array::uniform32(any::<u8>()),
+            message in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            prop_assume!(seed1 != seed2);
+            let mut key1 = KesKey::from_seed(seed1, 4);
+            let key2 = KesKey::from_seed(seed2, 4);
+            let wrong_vk = key2.verification_key();
+            let sig = key1.sign(0, &message).unwrap();
+            prop_assert!(!sig.verify(&wrong_vk, &message),
+                "signature with key1 must not verify under key2's vk");
+        }
+
+        /// Period regression is rejected: sign at p then attempt p-1 fails.
+        #[test]
+        fn period_regression_rejected(
+            seed in prop::array::uniform32(any::<u8>()),
+            period in 1u32..8u32,
+        ) {
+            let mut key = KesKey::from_seed(seed, 16);
+            key.sign(period, b"advance").unwrap();
+            let result = key.sign(period - 1, b"regress");
+            prop_assert!(result.is_err(), "regression to period {} from {} must fail",
+                period - 1, period);
+        }
+
+        /// Period out-of-range is rejected.
+        #[test]
+        fn period_out_of_range_rejected(
+            seed in prop::array::uniform32(any::<u8>()),
+            max_periods in arb_max_periods(),
+        ) {
+            let mut key = KesKey::from_seed(seed, max_periods);
+            let actual_max = key.max_periods();
+            let result = key.sign(actual_max, b"oob");
+            prop_assert!(result.is_err(), "sign at max_periods={} must fail (out-of-range)", actual_max);
+        }
+
+        /// Forward secrecy: past leaf keys are None after evolving forward.
+        #[test]
+        fn forward_secrecy_erases_past_keys(
+            seed in prop::array::uniform32(any::<u8>()),
+            target in 1u32..8u32,
+        ) {
+            let mut key = KesKey::from_seed(seed, 16);
+            key.sign(target, b"evolve").unwrap();
+            for i in 0..target {
+                prop_assert!(key.leaves[i as usize].is_none(),
+                    "leaf key at period {} must be erased after evolving to {}", i, target);
+            }
+            // Current period's key must still be present
+            prop_assert!(key.leaves[target as usize].is_some(),
+                "leaf key at current period {} must still exist", target);
+        }
+
+        /// Deterministic key generation: same seed always gives same verification key.
+        #[test]
+        fn deterministic_from_seed(
+            seed in prop::array::uniform32(any::<u8>()),
+            max_periods in arb_max_periods(),
+        ) {
+            let k1 = KesKey::from_seed(seed, max_periods);
+            let k2 = KesKey::from_seed(seed, max_periods);
+            prop_assert_eq!(k1.verification_key(), k2.verification_key(),
+                "same seed must produce same verification key");
+        }
+
+        /// Tampered leaf_pubkey in signature fails verification.
+        #[test]
+        fn tampered_leaf_pubkey_fails(
+            seed in prop::array::uniform32(any::<u8>()),
+            tamper_byte in any::<u8>(),
+            message in prop::collection::vec(any::<u8>(), 1..64),
+        ) {
+            let mut key = KesKey::from_seed(seed, 4);
+            let vk = key.verification_key();
+            let mut sig = key.sign(0, &message).unwrap();
+            // Flip one byte in the leaf pubkey
+            sig.leaf_pubkey[0] = sig.leaf_pubkey[0].wrapping_add(tamper_byte.saturating_add(1));
+            prop_assert!(!sig.verify(&vk, &message),
+                "tampered leaf_pubkey must fail verification");
+        }
+
+        /// max_periods() is always a power of two >= 2.
+        #[test]
+        fn max_periods_is_power_of_two(
+            seed in prop::array::uniform32(any::<u8>()),
+            max_periods in 2u32..=32u32,
+        ) {
+            let key = KesKey::from_seed(seed, max_periods);
+            let actual = key.max_periods();
+            prop_assert!(actual >= 2, "max_periods must be >= 2");
+            prop_assert!(actual.is_power_of_two(), "max_periods must be a power of two");
+            prop_assert!(actual >= max_periods, "max_periods must cover requested count");
+        }
+    }
+}

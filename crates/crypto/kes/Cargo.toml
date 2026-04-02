@@ -14,3 +14,6 @@ rand.workspace = true
 sha2.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
