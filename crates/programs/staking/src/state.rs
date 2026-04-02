@@ -1114,3 +1114,169 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const MIN_STAKE: u128 = 100_000_000; // 100 SWR
+
+    fn arb_address(seed: u8) -> Address {
+        Address::from_slice(&[seed; 20]).unwrap()
+    }
+
+    /// Generate a stake amount in [MIN_STAKE, 10^18].
+    fn arb_stake() -> impl Strategy<Value = u128> {
+        MIN_STAKE..=1_000_000_000_000_000_000u128
+    }
+
+    /// Generate a valid commission rate in bps [0, 10000].
+    fn arb_commission() -> impl Strategy<Value = u16> {
+        0u16..=10000u16
+    }
+
+    /// Generate a valid slash rate in bps [1, 10000].
+    fn arb_slash_rate() -> impl Strategy<Value = u128> {
+        1u128..=10000u128
+    }
+
+    proptest! {
+        /// After a valid slash, the validator's staked_amount decreases.
+        #[test]
+        fn slash_reduces_validator_stake(stake in arb_stake(), slash_rate in arb_slash_rate()) {
+            let mut state = StakingState::new();
+            let v = arb_address(1);
+            state.register_validator(v, v, stake, 500, arb_address(2)).unwrap();
+            let before = state.validators[0].staked_amount;
+            state.slash(v, slash_rate).unwrap();
+            let after = state.validators[0].staked_amount;
+            prop_assert!(after <= before, "stake must not increase after slash");
+            // For any non-zero slash rate on non-zero stake, stake must strictly decrease
+            if stake > 0 && slash_rate > 0 {
+                prop_assert!(after < before, "positive slash_rate must strictly reduce stake");
+            }
+        }
+
+        /// Slash amount never exceeds the validator's pre-slash staked_amount.
+        #[test]
+        fn slash_amount_bounded_by_stake(stake in arb_stake(), slash_rate in arb_slash_rate()) {
+            let mut state = StakingState::new();
+            let v = arb_address(3);
+            state.register_validator(v, v, stake, 500, arb_address(4)).unwrap();
+            let before = state.validators[0].staked_amount;
+            let slashed = state.slash(v, slash_rate).unwrap();
+            prop_assert!(
+                slashed <= before,
+                "slash amount ({}) must not exceed pre-slash stake ({})",
+                slashed, before
+            );
+        }
+
+        /// Slashing with rate 10000 (100%) reduces stake to 0.
+        #[test]
+        fn full_slash_zeroes_stake(stake in arb_stake()) {
+            let mut state = StakingState::new();
+            let v = arb_address(5);
+            state.register_validator(v, v, stake, 0, arb_address(6)).unwrap();
+            state.slash(v, 10000).unwrap();
+            let after = state.validators[0].staked_amount;
+            prop_assert_eq!(after, 0, "100% slash must zero out validator stake");
+        }
+
+        /// Delegation increases the validator's delegated_amount by the delegated amount.
+        #[test]
+        fn delegation_increases_delegated_amount(
+            stake in arb_stake(),
+            delegation in arb_stake(),
+        ) {
+            let mut state = StakingState::new();
+            let v = arb_address(7);
+            let d = arb_address(8);
+            state.register_validator(v, v, stake, 500, arb_address(9)).unwrap();
+            let before = state.validators[0].delegated_amount;
+            state.delegate(d, d, v, delegation).unwrap();
+            let after = state.validators[0].delegated_amount;
+            prop_assert_eq!(
+                after,
+                before + delegation,
+                "delegated_amount must increase by the delegation amount"
+            );
+        }
+
+        /// After unbonding all delegations and completing unbond, delegated_amount is 0.
+        #[test]
+        fn undelegate_all_zeroes_delegated_amount(
+            stake in arb_stake(),
+            delegation in arb_stake(),
+        ) {
+            let mut state = StakingState::new();
+            let v = arb_address(10);
+            let d = arb_address(11);
+            state.register_validator(v, v, stake, 500, arb_address(12)).unwrap();
+            state.delegate(d, d, v, delegation).unwrap();
+            state.unbond(d, d, v, delegation, 0).unwrap();
+            // After unbond, delegated_amount on validator should be 0
+            let val_delegated = state.validators[0].delegated_amount;
+            prop_assert_eq!(val_delegated, 0, "delegated_amount should be 0 after full unbond");
+            // And the delegation record should be gone
+            let del_count = state.delegations.iter().filter(|d2| d2.delegator == d && d2.validator == v).count();
+            prop_assert_eq!(del_count, 0, "delegation record should be removed after full unbond");
+        }
+
+        /// A slashed delegator's amount is also reduced (slash propagates to delegations).
+        #[test]
+        fn slash_propagates_to_delegations(
+            stake in arb_stake(),
+            delegation in arb_stake(),
+            slash_rate in arb_slash_rate(),
+        ) {
+            let mut state = StakingState::new();
+            let v = arb_address(13);
+            let d = arb_address(14);
+            state.register_validator(v, v, stake, 500, arb_address(15)).unwrap();
+            state.delegate(d, d, v, delegation).unwrap();
+            let before_del = state.delegations[0].amount;
+            state.slash(v, slash_rate).unwrap();
+            // Delegation may have been removed if amount became 0, otherwise it decreased
+            let after_del = state.delegations.iter()
+                .find(|d2| d2.delegator == d && d2.validator == v)
+                .map(|d2| d2.amount)
+                .unwrap_or(0);
+            prop_assert!(
+                after_del <= before_del,
+                "delegation amount ({}) must not exceed pre-slash amount ({})",
+                after_del, before_del
+            );
+        }
+
+        /// Registering a duplicate validator returns an error.
+        #[test]
+        fn register_duplicate_validator_fails(stake in arb_stake(), comm in arb_commission()) {
+            let mut state = StakingState::new();
+            let v = arb_address(20);
+            state.register_validator(v, v, stake, comm, arb_address(21)).unwrap();
+            let result = state.register_validator(v, v, stake, comm, arb_address(21));
+            prop_assert!(result.is_err(), "duplicate registration must fail");
+        }
+
+        /// Registering with stake below minimum returns an error.
+        #[test]
+        fn register_below_min_stake_fails(stake in 0u128..(MIN_STAKE)) {
+            let mut state = StakingState::new();
+            let v = arb_address(22);
+            let result = state.register_validator(v, v, stake, 500, arb_address(23));
+            prop_assert!(result.is_err(), "stake below minimum must fail");
+        }
+
+        /// Slashing with rate > 10000 returns an error.
+        #[test]
+        fn slash_with_invalid_rate_fails(stake in arb_stake(), rate in 10001u128..=u128::MAX) {
+            let mut state = StakingState::new();
+            let v = arb_address(24);
+            state.register_validator(v, v, stake, 500, arb_address(25)).unwrap();
+            let result = state.slash(v, rate);
+            prop_assert!(result.is_err(), "slash rate > 10000 must fail");
+        }
+    }
+}

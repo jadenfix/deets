@@ -11,3 +11,6 @@ aether-types = { path = "../../types" }
 serde.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
