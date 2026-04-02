@@ -550,22 +550,20 @@ impl Ledger {
         // Clone the merkle tree for speculative root computation
         let mut spec_tree = self.merkle_tree.clone();
 
-        for (tx, is_valid) in transactions.iter().zip(batch_results.into_iter()) {
-            if !is_valid {
-                receipts.push(TransactionReceipt {
-                    tx_hash: tx.hash(),
-                    block_hash: H256::zero(),
-                    slot: 0,
-                    status: TransactionStatus::Failed {
-                        reason: "invalid signature".to_string(),
-                    },
-                    gas_used: 0,
-                    logs: vec![],
-                    state_root: spec_tree.root(),
-                });
-                continue;
+        // Reject block entirely if ANY transaction has an invalid signature.
+        // A valid block must never contain invalid-signature transactions —
+        // allowing them as Failed receipts would let malicious proposers stuff
+        // blocks with garbage, wasting block space and network bandwidth.
+        for (tx, is_valid) in transactions.iter().zip(batch_results.iter()) {
+            if !*is_valid {
+                bail!(
+                    "block contains transaction with invalid signature: tx_hash={}",
+                    tx.hash()
+                );
             }
+        }
 
+        for (tx, _is_valid) in transactions.iter().zip(batch_results.into_iter()) {
             // Validate chain_id to prevent cross-chain replay attacks
             if let Some(expected_id) = expected_chain_id {
                 if tx.chain_id != expected_id {
@@ -936,22 +934,17 @@ impl Ledger {
         let batch_results = ed25519::verify_batch(&batch_inputs)
             .map_err(|e| anyhow!("batch signature verification failed: {e:?}"))?;
 
-        for (tx, is_valid) in transactions.iter().zip(batch_results.into_iter()) {
-            if !is_valid {
-                receipts.push(TransactionReceipt {
-                    tx_hash: tx.hash(),
-                    block_hash: H256::zero(),
-                    slot: 0,
-                    status: TransactionStatus::Failed {
-                        reason: "invalid signature".to_string(),
-                    },
-                    gas_used: 0,
-                    logs: vec![],
-                    state_root: self.state_root(),
-                });
-                continue;
+        // Reject block entirely if ANY transaction has an invalid signature.
+        for (tx, is_valid) in transactions.iter().zip(batch_results.iter()) {
+            if !*is_valid {
+                bail!(
+                    "block contains transaction with invalid signature: tx_hash={}",
+                    tx.hash()
+                );
             }
+        }
 
+        for tx in transactions.iter() {
             match self.apply_transaction_validated(tx) {
                 Ok(receipt) => receipts.push(receipt),
                 Err(e) => {
@@ -1078,19 +1071,20 @@ mod tests {
         let mut invalid_tx = tx.clone();
         invalid_tx.signature = Signature::from_bytes(vec![0; 64]);
 
-        let receipts = ledger
+        // Block containing an invalid-signature tx must be rejected entirely —
+        // a valid block should never include garbage transactions.
+        let err = ledger
             .apply_block_transactions(&[tx.clone(), invalid_tx])
-            .unwrap();
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("invalid signature"),
+            "expected invalid signature error, got: {err}"
+        );
 
-        assert_eq!(receipts.len(), 2);
+        // A block with only valid transactions should succeed
+        let receipts = ledger.apply_block_transactions(&[tx]).unwrap();
+        assert_eq!(receipts.len(), 1);
         assert!(matches!(receipts[0].status, TransactionStatus::Success));
-        assert!(matches!(
-            receipts[1].status,
-            TransactionStatus::Failed { .. }
-        ));
-        if let TransactionStatus::Failed { reason } = &receipts[1].status {
-            assert!(reason.contains("invalid signature"));
-        }
     }
 
     #[test]
