@@ -351,3 +351,8 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Peers respond to sync requests by broadcasting stored blocks (capped at 64/request)
   - During active sync, blocks are buffered for ordered application
   - 11 new sync tests, all 418+ workspace tests pass, clippy clean
+
+- **2026-04-02** — feat(ops): add structured tracing spans to ledger and node hot paths. Tier 6 item. Branch: `feat/agent2-structured-tracing`, PR #128 (merged).
+  - Added `tracing` dep to `aether-ledger` and instrumented `apply_transaction`, `apply_block_speculatively_with_chain_id`, `apply_block_transactions`, `commit_overlay` with structured spans (tx_hash, tx_count, elapsed_us)
+  - Added spans to `on_vote_received` (slot, validator) and `handle_network_event` in node crate
+  - All logs now queryable by structured fields in Grafana/Loki
