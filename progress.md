@@ -723,3 +723,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 10 proptest cases to `crates/runtime/src/vm.rs`: gas metering bounds, return code semantics, arbitrary input safety, fuel exhaustion, random bytes rejection, storage write bounds, oversized module rejection, deterministic execution.
   - Added `proptest` dev-dependency to aether-runtime.
   - All 40 runtime tests pass; clippy clean.
+
+## Agent 1 Cycle 18 Log
+
+- **2026-04-02** — fix(consensus): replace bare += 1 with saturating_add on slot/epoch/round counters. Hardening. Branch: `fix/agent1-consensus-saturating-counters`, PR #243 (merged).
+  - Replaced 13 bare `+= 1` / `+ 1` operations on consensus-critical u64 counters with `saturating_add(1)` across 7 files.
+  - Affected: hotstuff.rs (2), hybrid.rs (2), vrf_pos.rs (3), simple.rs (1), pacemaker.rs (3), node/sync.rs (2), node/node.rs (1).
+  - Prevents theoretical u64 overflow wrapping counters to zero, which would desynchronize validators.
+  - All tests pass; clippy clean.
