@@ -858,8 +858,8 @@ impl Node {
         // vice versa), corrupting the node on restart.
         // Fee distribution is also folded in so proposer rewards are never lost if
         // the process crashes after the overlay commit but before the credit write.
-        let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
-        let gas_used: u64 = transactions.iter().map(|tx| tx.gas_limit).sum();
+        let total_fees: u128 = transactions.iter().fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
+        let gas_used: u64 = transactions.iter().fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
         let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
         let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
@@ -1258,8 +1258,8 @@ impl Node {
             // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
             // Fee distribution is folded in so proposer rewards are never lost if the process
             // crashes after the overlay commit but before the credit write.
-            let total_fees: u128 = block.transactions.iter().map(|tx| tx.fee).sum();
-            let gas_used: u64 = block.transactions.iter().map(|tx| tx.gas_limit).sum();
+            let total_fees: u128 = block.transactions.iter().fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
+            let gas_used: u64 = block.transactions.iter().fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
             let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
             let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
@@ -3543,5 +3543,18 @@ mod tests {
             msg.contains("slot monotonicity violation"),
             "error must mention slot monotonicity, got: {msg}"
         );
+    }
+
+    #[test]
+    fn test_fee_gas_aggregation_saturates_instead_of_overflowing() {
+        // Verify that fee/gas aggregation uses saturating arithmetic.
+        // With bare .sum(), these would panic in debug or wrap in release.
+        let fees: Vec<u128> = vec![u128::MAX / 2 + 1, u128::MAX / 2 + 1];
+        let total_fees: u128 = fees.iter().fold(0u128, |acc, &f| acc.saturating_add(f));
+        assert_eq!(total_fees, u128::MAX);
+
+        let gas_limits: Vec<u64> = vec![u64::MAX / 2 + 1, u64::MAX / 2 + 1];
+        let total_gas: u64 = gas_limits.iter().fold(0u64, |acc, &g| acc.saturating_add(g));
+        assert_eq!(total_gas, u64::MAX);
     }
 }

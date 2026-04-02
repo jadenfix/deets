@@ -95,9 +95,9 @@ impl GenesisConfig {
             })
             .collect();
 
-        let total_stake: u128 = validator_set.iter().map(|v| v.stake).sum();
+        let total_stake: u128 = validator_set.iter().fold(0u128, |acc, v| acc.saturating_add(v.stake));
         let total_supply: u128 =
-            self.accounts.iter().map(|a| a.balance).sum::<u128>() + total_stake;
+            self.accounts.iter().fold(0u128, |acc, a| acc.saturating_add(a.balance)).saturating_add(total_stake);
 
         // Compute genesis state root from accounts
         let state_root = self.compute_state_root();

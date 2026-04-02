@@ -403,8 +403,7 @@ impl StakingState {
             .delegations
             .iter()
             .filter(|delegation| delegation.validator == validator)
-            .map(|delegation| delegation.amount)
-            .sum();
+            .fold(0u128, |acc, delegation| acc.saturating_add(delegation.amount));
 
         // Proportionally reduce pending unbonding entries for this validator's delegators.
         // Without this, a delegator who unbonds before a slash can withdraw the full
