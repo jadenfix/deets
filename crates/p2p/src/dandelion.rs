@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+/// Maximum number of tracked transactions to prevent unbounded memory growth.
+const MAX_TRACKED_TXS: usize = 50_000;
+
 /// Dandelion++ transaction propagation for sender privacy.
 ///
 /// Without Dandelion++, an adversary monitoring the gossip network can
@@ -75,7 +78,7 @@ impl DandelionManager {
                         PropagationPhase::Fluff
                     } else {
                         // Random chance of fluffing early
-                        let r: f64 = rand_float();
+                        let r: f64 = rand_float(tx_hash);
                         if r < self.fluff_probability {
                             state.phase = PropagationPhase::Fluff;
                             PropagationPhase::Fluff
@@ -89,8 +92,22 @@ impl DandelionManager {
             }
         } else {
             // New transaction — start in stem phase
-            let hops = self.min_stem_hops
-                + (rand_float() * (self.max_stem_hops - self.min_stem_hops) as f64) as u32;
+            let hop_range = self.max_stem_hops.saturating_sub(self.min_stem_hops);
+            let hops = if hop_range == 0 {
+                self.min_stem_hops
+            } else {
+                self.min_stem_hops + (rand_u32(tx_hash) % (hop_range + 1))
+            };
+
+            // Evict expired entries if we've hit the size cap
+            if self.states.len() >= MAX_TRACKED_TXS {
+                self.cleanup(self.stem_timeout);
+            }
+
+            // If still at capacity after cleanup, skip stem for this tx
+            if self.states.len() >= MAX_TRACKED_TXS {
+                return PropagationPhase::Fluff;
+            }
 
             self.states.insert(
                 tx_hash.to_vec(),
@@ -134,14 +151,40 @@ impl Default for DandelionManager {
     }
 }
 
-/// Simple pseudo-random float in [0, 1).
-fn rand_float() -> f64 {
+/// Hash-based pseudo-random float in [0, 1), seeded by tx_hash + timestamp.
+///
+/// Uses SHA-256 for uniform distribution, mixing the tx hash with the current
+/// timestamp to avoid deterministic outcomes for the same tx across calls.
+fn rand_float(tx_hash: &[u8]) -> f64 {
+    let bytes = rand_bytes(tx_hash);
+    let val = u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]);
+    (val >> 11) as f64 / ((1u64 << 53) as f64)
+}
+
+/// Hash-based pseudo-random u32, seeded by tx_hash + timestamp.
+fn rand_u32(tx_hash: &[u8]) -> u32 {
+    let bytes = rand_bytes(tx_hash);
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn rand_bytes(tx_hash: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
     use std::time::SystemTime;
+
     let nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
-        .subsec_nanos();
-    (nanos % 1000) as f64 / 1000.0
+        .as_nanos();
+
+    let mut hasher = Sha256::new();
+    hasher.update(tx_hash);
+    hasher.update(nanos.to_le_bytes());
+    let result = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&result);
+    out
 }
 
 #[cfg(test)]
@@ -195,6 +238,26 @@ mod tests {
             phase,
             PropagationPhase::Fluff,
             "should auto-fluff after timeout"
+        );
+    }
+
+    #[test]
+    fn test_size_cap_triggers_fluff() {
+        let mut dm = DandelionManager::new();
+        dm.stem_timeout = Duration::from_secs(3600); // won't expire
+
+        // Fill to capacity
+        for i in 0..MAX_TRACKED_TXS {
+            dm.get_phase(&i.to_be_bytes());
+        }
+        assert_eq!(dm.tracked_count(), MAX_TRACKED_TXS);
+
+        // Next new tx should get Fluff (overflow protection)
+        let phase = dm.get_phase(b"overflow_tx");
+        assert_eq!(
+            phase,
+            PropagationPhase::Fluff,
+            "should fluff when at capacity"
         );
     }
 
