@@ -851,3 +851,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Replaced 4 bare `fuel - cost` subtractions with `fuel.saturating_sub(cost)` in storage_read, storage_write, emit_log, get_caller host functions
   - Defense-in-depth: prevents potential u64 underflow to MAX if fuel guards are ever bypassed
   - All 29 mempool tests pass; clippy clean; full workspace green
+
+### Agent 2 — Cycle 30 (2026-04-02)
+- **Task**: fix(ops): add Docker HEALTHCHECK, non-root user, and compose healthchecks
+- **Tier**: 6 (Operational Readiness)
+- **Branch**: `fix/agent2-docker-healthcheck-hardening`, PR #288 (merged)
+- **Details**:
+  - Added HEALTHCHECK instruction to Dockerfile and Dockerfile.validator using /health RPC endpoint
+  - Run containers as non-root `aether` user (UID 1000) for container escape defense
+  - Added healthcheck config to all validators in both docker-compose files
+  - Changed validator-2/3/4 depends_on to service_healthy for proper startup ordering
+  - Removed unnecessary sleep in test-runner (healthcheck ordering makes it redundant)
