@@ -423,3 +423,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `thiserror` dep; resolved the TODO comment in `crates/sdk/rust/src/lib.rs`
   - 2 new tests: `submit_rejects_invalid_signature` (asserts `InvalidSignature` variant), `parse_invalid_endpoint_scheme` (asserts `InvalidEndpoint` variant)
   - All 5 SDK tests pass; workspace clippy and tests clean
+
+## Agent 1 Cycle 8 Log
+
+- **2026-04-02** — fix(consensus): use epoch-frozen validator set for vote validation and quorum. Tier 2 / epoch transitions. Branch: `fix/agent1-epoch-transition-correctness`, PR #161 (merged).
+  - BFT safety fix: `add_vote` now validates voters against `epoch_validators` instead of live set, preventing mid-epoch slashing from invalidating legitimate epoch participants
+  - Quorum threshold fix: `process_vote` uses `epoch_total_stake` instead of `total_stake`, preventing mid-epoch slashing from lowering the 2/3 quorum bar
+  - Vote stake consistency: `create_vote` populates stake from epoch snapshot, matching what `add_vote` validates
+  - Single-validator fast path also updated to use `epoch_validators.len()`
+  - 3 new tests: mid-epoch slash quorum safety, create_vote epoch stake, epoch boundary snapshot update
+  - All 35 consensus tests pass; full workspace tests and clippy clean
