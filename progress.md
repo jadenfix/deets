@@ -693,3 +693,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 10 proptest cases to `crates/programs/reputation/src/scoring.rs`.
   - Found and fixed real bug: `recompute_score()` used `success_rate=0.0` for providers with 0 jobs, producing 30.0 instead of initial 50.0. Fixed by using neutral `success_rate=0.5` when `total_jobs=0`.
   - All 21 tests pass; clippy clean.
+
+## Agent 3 Cycle 15 Log
+
+- **2026-04-02** — test(mempool): add proptest property-based tests for mempool invariants. Tier 5 item. Branch: `test/agent3-mempool-proptest`, PR #220 (merged).
+  - Added 10 proptest cases covering: pool size bounds, sequential nonce pending routing, nonce gap queuing, gap-fill promotion cascade, get_transactions max_count/fee ordering, removal size decrement, stale nonce rejection, duplicate rejection.
+  - Added `proptest` to `[dev-dependencies]` in `crates/mempool/Cargo.toml`.
+  - All 22 mempool tests pass; clippy clean; full workspace passes.
