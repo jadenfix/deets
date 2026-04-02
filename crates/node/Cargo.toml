@@ -35,6 +35,7 @@ aether-crypto-bls = { path = "../crypto/bls" }
 aether-crypto-vrf = { path = "../crypto/vrf" }
 aether-rpc-json = { path = "../rpc/json-rpc" }
 aether-state-storage = { path = "../state/storage" }
+aether-state-snapshots = { path = "../state/snapshots" }
 aether-p2p = { path = "../p2p" }
 aether-metrics = { path = "../metrics" }
 

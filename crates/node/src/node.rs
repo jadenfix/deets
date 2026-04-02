@@ -6,6 +6,7 @@ use aether_ledger::{EmissionSchedule, FeeMarket, Ledger};
 use aether_mempool::Mempool;
 use aether_p2p::network::NetworkEvent;
 use aether_program_staking::StakingState;
+use aether_state_snapshots::generate_snapshot;
 use aether_state_storage::{
     database::pruning, Storage, StorageBatch, CF_BLOCKS, CF_METADATA, CF_RECEIPTS,
 };
@@ -16,7 +17,7 @@ use aether_types::{
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -84,6 +85,9 @@ pub struct Node {
     orphan_count: usize,
     /// Counter for outbound messages dropped due to backpressure.
     outbound_drops: u64,
+    /// Directory to write epoch snapshots, if set. Snapshots are written at each
+    /// epoch boundary as `snapshot_<epoch>_<slot>.bin` for fast-sync bootstrapping.
+    snapshot_dir: Option<PathBuf>,
 }
 
 impl Node {
@@ -169,7 +173,18 @@ impl Node {
             orphan_blocks: HashMap::new(),
             orphan_count: 0,
             outbound_drops: 0,
+            snapshot_dir: None,
         })
+    }
+
+    /// Configure a directory where epoch snapshots are written for fast-sync.
+    ///
+    /// When set, a compressed snapshot is written at each epoch boundary to
+    /// `<dir>/snapshot_<epoch>_<slot>.bin`. New nodes can import the latest
+    /// snapshot via `aether_state_snapshots::import_snapshot` to skip replaying
+    /// all historical blocks.
+    pub fn set_snapshot_dir(&mut self, dir: PathBuf) {
+        self.snapshot_dir = Some(dir);
     }
 
     /// Load persisted blocks from RocksDB on startup.
@@ -507,6 +522,31 @@ impl Node {
                 prune_before_slot,
                 "Pruned old blocks/receipts"
             );
+        }
+
+        // Write an epoch snapshot for fast-sync if a snapshot directory is configured.
+        if let Some(ref dir) = self.snapshot_dir {
+            match generate_snapshot(self.ledger.storage(), slot) {
+                Ok(bytes) => {
+                    let filename = format!("snapshot_{}_{}.bin", new_epoch, slot);
+                    let path = dir.join(&filename);
+                    match std::fs::write(&path, &bytes) {
+                        Ok(()) => tracing::info!(
+                            new_epoch,
+                            slot,
+                            path = %path.display(),
+                            size_bytes = bytes.len(),
+                            "Epoch snapshot written"
+                        ),
+                        Err(e) => tracing::warn!(
+                            err = %e,
+                            path = %path.display(),
+                            "Failed to write epoch snapshot"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(err = %e, new_epoch, "Failed to generate epoch snapshot"),
+            }
         }
 
         Ok(())
@@ -2327,5 +2367,89 @@ mod tests {
             node.slashed_offenses.is_empty(),
             "slashed_offenses must remain empty for non-double-sign"
         );
+    }
+
+    #[test]
+    fn epoch_transition_writes_snapshot_when_dir_configured() {
+        let temp_dir = TempDir::new().unwrap();
+        let snapshot_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Seed the ledger with a non-zero state root so generate_snapshot succeeds.
+        node.ledger
+            .storage()
+            .put(
+                aether_state_storage::CF_METADATA,
+                b"state_root",
+                &[0x42u8; 32],
+            )
+            .unwrap();
+
+        node.set_snapshot_dir(snapshot_dir.path().to_path_buf());
+
+        // Trigger epoch transition for epoch 1. The snapshot height is taken from
+        // current_slot() which starts at 0 in SimpleConsensus for this test.
+        node.process_epoch_transition(1).unwrap();
+
+        // A snapshot file should have been written.
+        let entries: Vec<_> = std::fs::read_dir(snapshot_dir.path())
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one snapshot file expected");
+        let filename = entries[0].file_name();
+        let name = filename.to_string_lossy();
+        assert!(
+            name.starts_with("snapshot_1_"),
+            "snapshot file should be named snapshot_<epoch>_<slot>.bin, got: {name}"
+        );
+        assert!(name.ends_with(".bin"), "unexpected filename: {name}");
+
+        // Snapshot bytes must be non-empty and decodable.
+        let bytes = std::fs::read(entries[0].path()).unwrap();
+        assert!(!bytes.is_empty());
+        let snapshot = aether_state_snapshots::decode_snapshot(&bytes).unwrap();
+        // Height is the current slot at time of generation (0 for SimpleConsensus in test).
+        assert_eq!(snapshot.metadata.height, 0);
+    }
+
+    #[test]
+    fn epoch_transition_no_snapshot_without_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Seed state root.
+        node.ledger
+            .storage()
+            .put(
+                aether_state_storage::CF_METADATA,
+                b"state_root",
+                &[0x42u8; 32],
+            )
+            .unwrap();
+
+        // No snapshot_dir set — should not panic or error.
+        node.process_epoch_transition(1).unwrap();
+        // No assertion needed — just verifying no panic and clean return.
     }
 }
