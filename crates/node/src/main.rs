@@ -307,16 +307,16 @@ async fn main() -> Result<()> {
     let key_path = std::path::Path::new(&key_path);
 
     let validator_keypair = if key_path.exists() {
-        println!("Loading validator key from: {}", key_path.display());
+        tracing::info!(path = %key_path.display(), "Loading validator key");
         ValidatorKeypair::load_from_file(key_path)?
     } else {
-        println!("Generating new validator keypair...");
+        tracing::info!("Generating new validator keypair...");
         let kp = ValidatorKeypair::generate();
         // Auto-save so the node keeps the same identity on restart
         if let Err(e) = kp.save_to_file(key_path) {
-            eprintln!("WARNING: failed to save validator key: {e}");
+            tracing::warn!(err = %e, "failed to save validator key");
         } else {
-            println!("Saved validator key to: {}", key_path.display());
+            tracing::info!(path = %key_path.display(), "Saved validator key");
         }
         kp
     };
@@ -325,7 +325,7 @@ async fn main() -> Result<()> {
     // Build consensus from genesis file (multi-validator) or single-validator mode
     let consensus: Box<dyn aether_consensus::ConsensusEngine> =
         if let Ok(genesis_path) = env::var("AETHER_GENESIS_PATH") {
-            println!("Loading genesis from: {genesis_path}");
+            tracing::info!(path = %genesis_path, "Loading genesis config");
             let genesis_bytes = std::fs::read(&genesis_path)
                 .with_context(|| format!("failed to read genesis file: {genesis_path}"))?;
             let genesis: GenesisConfig = serde_json::from_slice(&genesis_bytes)
@@ -336,10 +336,10 @@ async fn main() -> Result<()> {
             let vrf_pubkeys = genesis.vrf_pubkeys();
             let bls_pubkeys = genesis.bls_pubkeys();
 
-            println!(
-                "Genesis: {} validators, {} total stake",
-                result.validator_set.len(),
-                result.total_stake
+            tracing::info!(
+                validators = result.validator_set.len(),
+                total_stake = result.total_stake,
+                "Genesis config loaded"
             );
 
             Box::new(create_hybrid_consensus_with_all_keys(

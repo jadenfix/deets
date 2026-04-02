@@ -137,7 +137,7 @@ pub fn create_hybrid_consensus(
         let bls_pk = kp.bls.public_key();
         let pop = kp.bls.proof_of_possession();
         if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
-            eprintln!("WARNING: failed to register local BLS key: {e}");
+            tracing::warn!(err = %e, "failed to register local BLS key");
         }
     }
 
@@ -176,7 +176,7 @@ pub fn create_hybrid_consensus_with_vrf_keys(
         let bls_pk = kp.bls.public_key();
         let pop = kp.bls.proof_of_possession();
         if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
-            eprintln!("WARNING: failed to register local BLS key: {e}");
+            tracing::warn!(err = %e, "failed to register local BLS key");
         }
     }
 
@@ -205,7 +205,7 @@ pub fn create_hybrid_consensus_with_all_keys(
     // Register ALL validators' BLS keys for cross-validation
     for (addr, bls_pk, pop) in bls_pubkeys {
         if let Err(e) = consensus.register_bls_pubkey(addr, bls_pk, &pop) {
-            eprintln!("WARNING: failed to register BLS key for {:?}: {e}", addr);
+            tracing::warn!(validator = ?addr, err = %e, "failed to register BLS key");
         }
     }
 

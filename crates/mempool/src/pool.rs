@@ -292,7 +292,7 @@ impl Mempool {
         for tx in reverted_txs {
             if let Err(e) = self.add_transaction(tx) {
                 // Log at module level since tracing may not be available
-                eprintln!("failed to re-add reverted tx during reorg: {e}");
+                tracing::warn!(err = %e, "failed to re-add reverted tx during reorg");
             }
         }
     }
