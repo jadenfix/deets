@@ -31,8 +31,16 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+RUN groupadd --gid 1000 aether && \
+    useradd --uid 1000 --gid aether --shell /bin/false aether
+
 WORKDIR /app
 
 COPY --from=builder /build/target/release/aether-indexer /usr/local/bin/
+RUN mkdir -p /data && chown -R aether:aether /data
+
+EXPOSE 8080
+
+USER aether
 
 ENTRYPOINT ["aether-indexer"]
