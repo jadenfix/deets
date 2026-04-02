@@ -369,3 +369,235 @@ fn test_concurrent_block_reconstruction() {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_crypto_primitives::Keypair;
+    use aether_da_shreds::shred::ShredVariant;
+    use aether_types::H256;
+    use proptest::prelude::*;
+    use sha2::{Digest, Sha256};
+
+    fn arb_payload() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 1..=256)
+    }
+
+    proptest! {
+        /// Shred count equals data_shards + parity_shards for any payload.
+        #[test]
+        fn shred_count_equals_total_shards(
+            payload in arb_payload(),
+            data_shards in 2usize..=8,
+            parity_shards in 1usize..=4,
+        ) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+            prop_assert_eq!(shreds.len(), data_shards + parity_shards);
+        }
+
+        /// First data_shards shreds are Data variant; remaining are Parity.
+        #[test]
+        fn shred_variants_ordered_correctly(
+            payload in arb_payload(),
+            data_shards in 2usize..=6,
+            parity_shards in 1usize..=3,
+        ) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+
+            for (i, shred) in shreds.iter().enumerate() {
+                if i < data_shards {
+                    prop_assert!(
+                        matches!(shred.variant, ShredVariant::Data),
+                        "shred {} should be Data", i
+                    );
+                } else {
+                    prop_assert!(
+                        matches!(shred.variant, ShredVariant::Parity),
+                        "shred {} should be Parity", i
+                    );
+                }
+            }
+        }
+
+        /// All shred signatures verify under the broadcaster's public key.
+        #[test]
+        fn all_shred_signatures_valid(
+            payload in arb_payload(),
+            data_shards in 2usize..=6,
+            parity_shards in 1usize..=3,
+        ) {
+            let key = Keypair::generate();
+            let pubkey = key.public_key();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(42, block_hash, &payload).unwrap();
+
+            for shred in &shreds {
+                let msg = shred.signing_message();
+                prop_assert!(
+                    aether_crypto_primitives::verify(&pubkey, &msg, shred.signature.as_bytes()).is_ok(),
+                    "shred signature must verify"
+                );
+            }
+        }
+
+        /// Reconstruction succeeds with all shreds received.
+        #[test]
+        fn full_reconstruction_succeeds(
+            payload in arb_payload(),
+            data_shards in 2usize..=6,
+            parity_shards in 1usize..=3,
+        ) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+
+            let mut receiver = TurbineReceiver::new(data_shards, parity_shards).unwrap();
+            let mut recovered = None;
+
+            for shred in shreds {
+                if let Some(block) = receiver.ingest_shred(shred).unwrap() {
+                    recovered = Some(block);
+                    break;
+                }
+            }
+
+            prop_assert!(recovered.is_some(), "must reconstruct with all shreds");
+            prop_assert_eq!(recovered.unwrap(), payload);
+        }
+
+        /// Reconstruction succeeds with exactly data_shards shreds (minimum set).
+        #[test]
+        fn minimal_shreds_reconstruct(
+            payload in arb_payload(),
+            data_shards in 2usize..=6,
+            parity_shards in 1usize..=3,
+        ) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+
+            // Take exactly data_shards shreds (all data shreds, no parity)
+            let minimal: Vec<_> = shreds.into_iter().take(data_shards).collect();
+            let mut receiver = TurbineReceiver::new(data_shards, parity_shards).unwrap();
+            let mut recovered = None;
+
+            for shred in minimal {
+                if let Some(block) = receiver.ingest_shred(shred).unwrap() {
+                    recovered = Some(block);
+                    break;
+                }
+            }
+
+            prop_assert!(recovered.is_some(), "minimal k shreds must suffice");
+            prop_assert_eq!(recovered.unwrap(), payload);
+        }
+
+        /// Reconstruction fails when fewer than data_shards shreds are received.
+        #[test]
+        fn insufficient_shreds_fail_to_reconstruct(
+            payload in arb_payload(),
+            data_shards in 3usize..=8,
+            parity_shards in 1usize..=3,
+            missing in 1usize..=2,
+        ) {
+            prop_assume!(data_shards > missing);
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+
+            // Take fewer than data_shards shreds
+            let insufficient: Vec<_> = shreds.into_iter().take(data_shards - missing).collect();
+            let mut receiver = TurbineReceiver::new(data_shards, parity_shards).unwrap();
+
+            let mut recovered = false;
+            for shred in insufficient {
+                if receiver.ingest_shred(shred).unwrap().is_some() {
+                    recovered = true;
+                    break;
+                }
+            }
+
+            prop_assert!(!recovered, "should not reconstruct with insufficient shreds");
+        }
+
+        /// Shred slot field matches the slot passed to make_shreds.
+        #[test]
+        fn shred_slot_matches(payload in arb_payload(), slot in any::<u64>()) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(2, 1, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(slot, block_hash, &payload).unwrap();
+
+            for shred in &shreds {
+                prop_assert_eq!(shred.slot, slot, "shred slot must match input slot");
+            }
+        }
+
+        /// Shred indices are sequential starting from 0.
+        #[test]
+        fn shred_indices_sequential(payload in arb_payload(), data_shards in 2usize..=6, parity_shards in 1usize..=3) {
+            let key = Keypair::generate();
+            let broadcaster = TurbineBroadcaster::new(data_shards, parity_shards, 1, key).unwrap();
+            let block_hash = H256::from_slice(&Sha256::digest(&payload)).unwrap();
+            let shreds = broadcaster.make_shreds(1, block_hash, &payload).unwrap();
+
+            for (i, shred) in shreds.iter().enumerate() {
+                prop_assert_eq!(shred.index, i as u32, "shred index must be sequential");
+            }
+        }
+
+        /// Topology: total child assignments covers entire child layer.
+        #[test]
+        fn topology_all_children_assigned(
+            layer0_size in 1usize..=5,
+            layer1_size in 1usize..=20,
+        ) {
+            use crate::topology::TurbineTopology;
+            use std::collections::HashSet;
+
+            let layer0: Vec<String> = (0..layer0_size).map(|i| format!("l0_{i}")).collect();
+            let layer1: Vec<String> = (0..layer1_size).map(|i| format!("l1_{i}")).collect();
+
+            let topology = TurbineTopology::new(vec![layer0.clone(), layer1.clone()]);
+
+            let mut assigned: HashSet<String> = HashSet::new();
+            for parent in &layer0 {
+                for child in topology.children(parent) {
+                    assigned.insert(child);
+                }
+            }
+
+            // Every node in layer1 must appear in exactly one parent's child list
+            for child in &layer1 {
+                prop_assert!(
+                    assigned.contains(child),
+                    "child {child} not assigned to any parent"
+                );
+            }
+            prop_assert_eq!(assigned.len(), layer1_size, "no child should be assigned twice");
+        }
+
+        /// Topology: single-node root receives all children.
+        #[test]
+        fn single_root_gets_all_children(child_count in 1usize..=15) {
+            use crate::topology::TurbineTopology;
+
+            let root = vec!["root".to_string()];
+            let children: Vec<String> = (0..child_count).map(|i| format!("c{i}")).collect();
+            let topology = TurbineTopology::new(vec![root, children.clone()]);
+
+            let root_children = topology.children("root");
+            prop_assert_eq!(root_children.len(), child_count);
+        }
+    }
+}

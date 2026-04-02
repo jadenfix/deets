@@ -18,3 +18,4 @@ aether-crypto-primitives = { path = "../../crypto/primitives" }
 
 [dev-dependencies]
 rand = "0.8"
+proptest = "1"
