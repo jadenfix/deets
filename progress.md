@@ -916,3 +916,19 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 12 new Prometheus alert rules for mempool (backlog, eviction, rejection), RPC (latency, errors, rate limiting), storage (read/write latency), and sync (lag, stalls)
   - Total alert rules: 18 (up from 6) across 8 groups (up from 4)
   - Note: CI workflow SDK test jobs still blocked by GitHub token `workflow` scope
+
+---
+
+## Agent 4 — Cycle 35 (2026-04-02)
+
+**Task**: test(ai-mesh): proptest for router scoring, routing, and coordinator invariants
+**Branch**: test/agent4-ai-mesh-proptests
+**PR**: #307 (merged)
+
+**What**: Added 16 property-based tests across two ai-mesh crates:
+
+- **aether-ai-coordinator** (6 props): reputation always clamped [-100, 1000] after any event sequence; best worker (highest reputation) selected for assignment; assign+complete and assign+cancel both restore available_worker_count to initial; duplicate job IDs always rejected; workers at/below -100 reputation are banned (unavailable)
+- **aether-ai-router scoring** (5 props): score_provider always in [0.0, 1.0] for eligible providers; unavailable provider → None; over-latency → None; over-price → None; higher reputation → >= score
+- **aether-ai-router routing** (5 props): empty providers → None; decision job_id matches request; decision score in [0.0, 1.0]; highest-rep provider wins (all else equal); all-unavailable → None
+
+Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (attestation freshness check requires recent timestamp).
