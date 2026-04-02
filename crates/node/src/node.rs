@@ -567,36 +567,27 @@ impl Node {
             })
             .collect();
 
-        // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
+        // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
         // Previously these were two separate write_batch calls; a crash between
         // them could leave ledger state committed without the block record (or
         // vice versa), corrupting the node on restart.
-        let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
-        let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
-        batch.extend(block_batch);
-        self.ledger.write_batch(batch)?;
-
-        // Process fee market and credit proposer with priority fees
+        // Fee distribution is also folded in so proposer rewards are never lost if
+        // the process crashes after the overlay commit but before the credit write.
         let total_fees: u128 = transactions.iter().map(|tx| tx.fee).sum();
         let gas_used: u64 = transactions.iter().map(|tx| tx.gas_limit).sum();
         let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
-        // Credit proposer with their share (priority fees / tips)
-        if fee_result.proposer_reward > 0 {
-            if let Err(e) = self
-                .ledger
-                .credit_account(&block.header.proposer, fee_result.proposer_reward)
-            {
-                tracing::warn!(err = %e, "Failed to credit proposer fee reward");
-            }
-        }
-
-        // Record burned fees in ledger (EIP-1559 deflationary mechanism)
-        if fee_result.burned > 0 {
-            if let Err(e) = self.ledger.record_burned_fees(fee_result.burned) {
-                tracing::warn!(err = %e, "Failed to record burned fees");
-            }
-        }
+        let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
+        let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
+        batch.extend(block_batch);
+        self.ledger.fold_fee_distribution_into_batch(
+            &mut batch,
+            &overlay,
+            &block.header.proposer,
+            fee_result.proposer_reward,
+            fee_result.burned,
+        )?;
+        self.ledger.write_batch(batch)?;
 
         for sr in &stored_receipts {
             self.receipts.insert(sr.tx_hash, sr.clone());
@@ -881,10 +872,23 @@ impl Node {
         let is_canonical = new_canonical == Some(block_hash);
 
         if is_canonical {
-            // ATOMIC COMMIT: overlay state + block + receipts in a single WriteBatch.
+            // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
+            // Fee distribution is folded in so proposer rewards are never lost if the process
+            // crashes after the overlay commit but before the credit write.
+            let total_fees: u128 = block.transactions.iter().map(|tx| tx.fee).sum();
+            let gas_used: u64 = block.transactions.iter().map(|tx| tx.gas_limit).sum();
+            let fee_result = self.fee_market.process_block(gas_used, total_fees);
+
             let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
             let block_batch = self.build_block_batch(&block, block_hash, &stored_receipts)?;
             batch.extend(block_batch);
+            self.ledger.fold_fee_distribution_into_batch(
+                &mut batch,
+                &overlay,
+                &block.header.proposer,
+                fee_result.proposer_reward,
+                fee_result.burned,
+            )?;
             self.ledger.write_batch(batch)?;
 
             // Apply slash evidence: verify cryptographic proof before reducing stake.
@@ -1020,20 +1024,6 @@ impl Node {
         // Remove included txs from mempool
         let tx_hashes: Vec<H256> = block.transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
-
-        // Update fee market, credit proposer, record burns
-        let total_fees: u128 = block.transactions.iter().map(|tx| tx.fee).sum();
-        let gas_used: u64 = block.transactions.iter().map(|tx| tx.gas_limit).sum();
-        let fee_result = self.fee_market.process_block(gas_used, total_fees);
-
-        if fee_result.proposer_reward > 0 {
-            let _ = self
-                .ledger
-                .credit_account(&block.header.proposer, fee_result.proposer_reward);
-        }
-        if fee_result.burned > 0 {
-            let _ = self.ledger.record_burned_fees(fee_result.burned);
-        }
 
         // Vote on this block (if we're a validator)
         self.vote_on_block(&block)?;
