@@ -810,3 +810,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Bounded gossipsub PeerScores map at 4096 entries to prevent Sybil memory exhaustion. When at capacity, the lowest-scoring peer is evicted to make room.
   - Fixed vote broadcast bug: serialization failure previously published an empty Vec to gossipsub. Now the error is logged and message dropped.
   - Added 2 unit tests for eviction behavior. All 7 gossipsub tests and 102 node tests pass; clippy clean.
+
+## Agent 4 Cycle 26 Log
+
+- **2026-04-02** — test(rollup): proptest for fraud proof and state commitment invariants. Branch: `test/agent4-mev-proptests`, PR #268 (merged).
+  - Added 9 proptest property-based tests to `fraud_proof.rs`: hash determinism, reward_pct bounds (>100 rejected, ≤100 accepted), insufficient challenger bond, pre-state root mismatch, no-fraud detection, re-execution failure, fabricated root rejection, reward = bond * pct / 100.
+  - Added 7 proptest property-based tests to `state_commitment.rs`: batch hash determinism, distinct IDs produce distinct hashes, challenge window boundary conditions, finalization guards (too early, challenged), and deadline invariant.
+  - Added `proptest` as dev-dependency to rollup crate.
+  - All 29 tests pass (16 new proptest + 13 existing unit tests); clippy clean.
