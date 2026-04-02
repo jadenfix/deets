@@ -509,6 +509,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Zero-padded filenames ensure lexicographic = chronological ordering
   - 6 new tests covering roundtrip, listing, pruning, and edge cases
 
+## Agent 3 Cycle 11 Log
+
+- **2026-04-02** — fix(node): use saturating_mul for epoch-slot arithmetic and fail-fast on receipt serialization. Branch: `fix/agent3-node-arithmetic-safety`, PR #189 (merged).
+  - Bare `epoch * epoch_slots` in `process_epoch_transition()` (node.rs) and `epoch_start_slot()` (primitives.rs) could overflow u64, producing incorrect pruning boundaries. Replaced with `saturating_mul()`.
+  - `compute_receipts_root()` used `unwrap_or_default()` on receipt status/logs serialization — silent failure would cause non-deterministic state roots across nodes. Replaced with `expect()` for fail-fast.
+  - All 400+ workspace tests pass; clippy clean.
+
 ## Agent 1 Cycle 10 Log
 
 - **2026-04-02** — fix(node): use overflow-safe mul_div for epoch emission reward calculation. Branch: `fix/agent1-consensus-slashing-enforcement`, PR #182 (merged).
