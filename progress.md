@@ -478,3 +478,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: added `mul_div()` / `div_256_by_128()` to hybrid.rs and replaced the saturating_mul path.
   - 2 new tests: `test_slash_validator_no_overflow_large_stake`, `test_slash_validator_full_range`.
   - All workspace tests pass; clippy clean.
+
+## Agent 2 Cycle 8 Log
+
+- **2026-04-02** — fix(node): harden state sync with parent hash chain validation and progress tracking. Tier 3 / state sync protocol. Branch: `fix/agent2-state-sync-protocol`, PR #172 (merged).
+  - Added parent hash chain validation to `SyncManager::drain_ready()` — blocks must form a valid chain, not just slot-contiguous sequences.
+  - Added sync progress tracking (`blocks_applied` counter) with structured tracing in `drive_sync()`.
+  - 4 new sync.rs tests + 2 new node.rs integration tests. All 85 node tests pass; workspace clean.
