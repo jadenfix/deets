@@ -408,6 +408,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added regression test `vote_on_block_refuses_duplicate_slot`.
   - Fixed flaky `test_multiple_byzantine_validators_independently_slashed` (was failing ~40% of runs).
 
+- **2026-04-02** — fix(p2p): harmonize gossipsub message size limits across network layers. Tier 3 item (message size limits). Branch: `fix/agent3-gossipsub-message-size-limits`, PR #156 (merged).
+  - network_handler.rs had limits that diverged from p2p/network.rs: blocks 4MB vs 2MB, votes 4KB vs 8KB, txs 128KB vs 64KB
+  - Aligned all MAX_*_SIZE constants to match the authoritative p2p layer values
+  - Added MAX_SHRED_SIZE (64KB) and explicit shred size validation in decode path
+  - 6 new tests: oversized rejection for each message type + cross-layer limit sync assertion
+
 ## Agent 4 Cycle 5 Log
 
 - **2026-04-02** — feat(sdk): add typed AetherSdkError enum to Rust SDK public API. Tier 7 / SDK quality. Branch: `feat/agent4-sdk-typed-error`, PR #145 (merged).
