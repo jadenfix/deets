@@ -211,3 +211,99 @@ mod tests {
         assert_eq!(dm.tracked_count(), 0);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn new_tx_always_starts_stem(tx_hash in proptest::collection::vec(any::<u8>(), 1..64)) {
+            let mut dm = DandelionManager::new();
+            let phase = dm.get_phase(&tx_hash);
+            prop_assert_eq!(phase, PropagationPhase::Stem);
+        }
+
+        #[test]
+        fn fluff_is_absorbing(tx_hash in proptest::collection::vec(any::<u8>(), 1..32)) {
+            let mut dm = DandelionManager::new();
+            dm.get_phase(&tx_hash); // create entry
+            dm.mark_fluffed(&tx_hash);
+            // Once fluffed, must stay fluffed
+            for _ in 0..10 {
+                prop_assert_eq!(dm.get_phase(&tx_hash), PropagationPhase::Fluff);
+            }
+        }
+
+        #[test]
+        fn guaranteed_fluff_with_prob_one(tx_hash in proptest::collection::vec(any::<u8>(), 1..32)) {
+            let mut dm = DandelionManager::new();
+            dm.fluff_probability = 1.0;
+            dm.get_phase(&tx_hash); // stem
+            let phase = dm.get_phase(&tx_hash); // should fluff
+            prop_assert_eq!(phase, PropagationPhase::Fluff);
+        }
+
+        #[test]
+        fn zero_prob_exhausts_hops(tx_hash in proptest::collection::vec(any::<u8>(), 1..32)) {
+            let mut dm = DandelionManager::new();
+            dm.fluff_probability = 0.0;
+            dm.min_stem_hops = 2;
+            dm.max_stem_hops = 2; // exactly 2 hops
+
+            dm.get_phase(&tx_hash); // creates with 2 hops
+            prop_assert_eq!(dm.get_phase(&tx_hash), PropagationPhase::Stem); // hop 1 (1 remaining)
+            prop_assert_eq!(dm.get_phase(&tx_hash), PropagationPhase::Stem); // hop 2 (0 remaining)
+            prop_assert_eq!(dm.get_phase(&tx_hash), PropagationPhase::Fluff); // exhausted
+        }
+
+        #[test]
+        fn cleanup_removes_all_old_entries(num_txs in 1usize..50) {
+            let mut dm = DandelionManager::new();
+            for i in 0..num_txs {
+                dm.get_phase(&i.to_be_bytes());
+            }
+            prop_assert_eq!(dm.tracked_count(), num_txs);
+
+            std::thread::sleep(Duration::from_millis(5));
+            dm.cleanup(Duration::from_millis(1));
+            prop_assert_eq!(dm.tracked_count(), 0);
+        }
+
+        #[test]
+        fn tracked_count_matches_unique_txs(num_txs in 1usize..30) {
+            let mut dm = DandelionManager::new();
+            for i in 0..num_txs {
+                dm.get_phase(&i.to_be_bytes());
+            }
+            prop_assert_eq!(dm.tracked_count(), num_txs);
+            // Re-querying same txs doesn't increase count
+            for i in 0..num_txs {
+                dm.get_phase(&i.to_be_bytes());
+            }
+            prop_assert_eq!(dm.tracked_count(), num_txs);
+        }
+
+        #[test]
+        fn eventual_fluff_within_max_hops(tx_hash in proptest::collection::vec(any::<u8>(), 1..32)) {
+            let mut dm = DandelionManager::new();
+            dm.fluff_probability = 0.0; // never random fluff
+            dm.min_stem_hops = 1;
+            dm.max_stem_hops = 4;
+
+            dm.get_phase(&tx_hash); // create
+            // After at most max_stem_hops + 1 calls, must be fluff
+            let mut reached_fluff = false;
+            for _ in 0..6 {
+                if dm.get_phase(&tx_hash) == PropagationPhase::Fluff {
+                    reached_fluff = true;
+                    break;
+                }
+            }
+            prop_assert!(reached_fluff, "must reach fluff within max_stem_hops + 1 calls");
+        }
+    }
+}
