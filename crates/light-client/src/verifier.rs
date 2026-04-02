@@ -90,11 +90,18 @@ impl LightClientVerifier {
             );
         }
 
-        // Verify all signers are known validators
+        // Verify all signers are known validators.
+        // SECURITY: deduplicate signers to prevent stake inflation attack where
+        // an attacker repeats the same pubkey to fake quorum with fewer validators.
+        let mut seen_signers = std::collections::HashSet::new();
         let mut verified_stake: u128 = 0;
         for pk in &finalized.signer_pubkeys {
+            let pk_bytes = pk.as_bytes().to_vec();
+            if !seen_signers.insert(pk_bytes) {
+                bail!("duplicate signer in finalized header: {:?}", pk);
+            }
             match self.validators.get(pk.as_bytes()) {
-                Some(entry) => verified_stake += entry.stake,
+                Some(entry) => verified_stake = verified_stake.saturating_add(entry.stake),
                 None => bail!("unknown signer: {:?}", pk),
             }
         }
@@ -329,5 +336,26 @@ mod tests {
         verifier.verify_finalized_header(&h).unwrap();
 
         assert_ne!(verifier.finalized_state_root(), H256::zero());
+    }
+
+    #[test]
+    fn test_reject_duplicate_signers() {
+        // 3 validators with 1000 stake each (total = 3000, quorum = 2000)
+        let tvs: Vec<TestValidator> = (0..3).map(|_| make_test_validator(1000)).collect();
+        let entries: Vec<ValidatorEntry> = tvs.iter().map(|tv| tv.entry.clone()).collect();
+        let mut verifier = LightClientVerifier::new(entries);
+
+        // Build a valid header signed by tvs[0] only, then duplicate the signer
+        // to inflate verified_stake from 1000 to 2000 (fake quorum).
+        let mut header = make_finalized_header(1, &[&tvs[0]]);
+        // Duplicate the single signer's pubkey
+        header.signer_pubkeys.push(tvs[0].entry.pubkey.clone());
+        header.total_signing_stake = 2000; // claim 2/3 quorum
+
+        let err = verifier.verify_finalized_header(&header).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate signer"),
+            "expected duplicate signer error, got: {err}"
+        );
     }
 }
