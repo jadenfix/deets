@@ -640,4 +640,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Bug: `StakingState::slash()` reduced individual validator/delegation/unbonding stakes but never decremented `total_staked`. This caused `distribute_rewards()` to use an inflated denominator, giving all validators smaller reward shares than correct after any slash.
   - Fix: Added `self.total_staked = self.total_staked.saturating_sub(total_slash)` after computing the total slash amount.
   - Added 2 regression tests: `test_slash` now asserts `total_staked`, new `test_slash_updates_total_staked_with_delegations` covers validator+delegation slash accounting.
+
+## Agent 2 Cycle 14 Log
+
+- **2026-04-02** — fix(rpc): bound RateLimiter map to prevent memory exhaustion from IP flooding. Tier 6 item (operational readiness). Branch: `fix/agent2-rpc-ratelimiter-bounded`, PR #214 (merged).
+  - Bug: The per-IP token-bucket `RateLimiter` used an unbounded `HashMap<IpAddr, TokenBucket>`. An attacker sending requests from millions of unique source IPs could exhaust memory — cleanup only ran every 5 minutes.
+  - Fix: Added `MAX_RATE_LIMIT_ENTRIES` (50,000) cap. When the map is full and a new IP arrives, the oldest entry (by `last_refill`) is evicted before insertion.
+  - 1 new test (`test_rate_limiter_bounded_size`). All 14 RPC tests pass; clippy clean.
   - All 500+ workspace tests pass; clippy clean.
