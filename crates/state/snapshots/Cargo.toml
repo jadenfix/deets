@@ -20,3 +20,4 @@ aether-state-merkle = { path = "../merkle" }
 
 [dev-dependencies]
 tempfile = "3"
+proptest = { workspace = true }

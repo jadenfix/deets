@@ -195,3 +195,107 @@ mod tests {
         assert!(heights.is_empty());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_state_merkle::SparseMerkleTree;
+    use aether_state_storage::{Storage, CF_METADATA};
+    use proptest::prelude::*;
+    use std::collections::BTreeSet;
+    use tempfile::TempDir;
+
+    fn seeded_storage(dir: &Path) -> Storage {
+        let storage = Storage::open(dir).unwrap();
+        let empty_root = SparseMerkleTree::new().root();
+        storage
+            .put(CF_METADATA, b"state_root", empty_root.as_bytes())
+            .unwrap();
+        storage
+    }
+
+    proptest! {
+        /// list_snapshots returns heights in sorted ascending order.
+        #[test]
+        fn list_returns_sorted(heights in prop::collection::vec(0u64..100_000, 1..10)) {
+            let db_dir = TempDir::new().unwrap();
+            let snap_dir = TempDir::new().unwrap();
+            let storage = seeded_storage(db_dir.path());
+
+            let unique: BTreeSet<u64> = heights.into_iter().collect();
+            for &h in &unique {
+                export_snapshot_to_file(&storage, h, snap_dir.path()).unwrap();
+            }
+
+            let listed = list_snapshots(snap_dir.path()).unwrap();
+            prop_assert_eq!(listed.len(), unique.len());
+            // Must be sorted
+            for w in listed.windows(2) {
+                prop_assert!(w[0] < w[1]);
+            }
+        }
+
+        /// Pruning with keep=N retains exactly min(N, total) snapshots.
+        #[test]
+        fn prune_retains_correct_count(
+            heights in prop::collection::vec(0u64..100_000, 1..8),
+            keep in 0usize..10,
+        ) {
+            let db_dir = TempDir::new().unwrap();
+            let snap_dir = TempDir::new().unwrap();
+            let storage = seeded_storage(db_dir.path());
+
+            let unique: BTreeSet<u64> = heights.into_iter().collect();
+            for &h in &unique {
+                export_snapshot_to_file(&storage, h, snap_dir.path()).unwrap();
+            }
+
+            let total = unique.len();
+            let deleted = prune_old_snapshots(snap_dir.path(), keep).unwrap();
+            let remaining = list_snapshots(snap_dir.path()).unwrap();
+
+            let expected_remaining = total.min(keep);
+            prop_assert_eq!(remaining.len(), expected_remaining);
+            prop_assert_eq!(deleted, total - expected_remaining);
+
+            // Remaining should be the highest heights
+            let all_sorted: Vec<u64> = unique.into_iter().collect();
+            if expected_remaining > 0 {
+                let expected_kept = &all_sorted[all_sorted.len() - expected_remaining..];
+                prop_assert_eq!(remaining, expected_kept);
+            }
+        }
+
+        /// Export then import roundtrip preserves snapshot height.
+        #[test]
+        fn export_import_preserves_height(height in 0u64..1_000_000) {
+            let db_dir = TempDir::new().unwrap();
+            let snap_dir = TempDir::new().unwrap();
+            let storage = seeded_storage(db_dir.path());
+
+            let path = export_snapshot_to_file(&storage, height, snap_dir.path()).unwrap();
+
+            let db2_dir = TempDir::new().unwrap();
+            let storage2 = Storage::open(db2_dir.path()).unwrap();
+            let snapshot = import_snapshot_from_file(&storage2, &path).unwrap();
+            prop_assert_eq!(snapshot.metadata.height, height);
+        }
+
+        /// Snapshot filename contains zero-padded height.
+        #[test]
+        fn filename_contains_height(height in 0u64..1_000_000) {
+            let db_dir = TempDir::new().unwrap();
+            let snap_dir = TempDir::new().unwrap();
+            let storage = seeded_storage(db_dir.path());
+
+            let path = export_snapshot_to_file(&storage, height, snap_dir.path()).unwrap();
+            let name = path.file_name().unwrap().to_str().unwrap();
+            prop_assert!(name.starts_with("snapshot_"));
+            prop_assert!(name.ends_with(".bin.zst"));
+            // Parse height back from filename
+            let stem = name.strip_prefix("snapshot_").unwrap().strip_suffix(".bin.zst").unwrap();
+            let parsed: u64 = stem.parse().unwrap();
+            prop_assert_eq!(parsed, height);
+        }
+    }
+}
