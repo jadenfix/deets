@@ -142,3 +142,6 @@ pub use pacemaker::Pacemaker;
 pub use simple::SimpleConsensus;
 pub use slashing::SlashingDetector;
 pub use vrf_pos::VrfPosConsensus;
+
+#[cfg(test)]
+mod proptest_tests;

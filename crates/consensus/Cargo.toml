@@ -18,3 +18,6 @@ aether-crypto-vrf = { path = "../crypto/vrf" }
 aether-crypto-bls = { path = "../crypto/bls" }
 aether-crypto-primitives = { path = "../crypto/primitives" }
 sha2 = "0.10"
+
+[dev-dependencies]
+proptest.workspace = true
