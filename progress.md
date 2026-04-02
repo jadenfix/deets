@@ -493,3 +493,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: added `voted_slots.retain(|&slot| slot >= finalized)` in `prune_finalized_state()` alongside existing pruning of `committed_at_slot` and `slashed_offenses`.
   - Reviewed open PRs (none pending). Verified peer ban enforcement and graceful shutdown already implemented.
   - 1 new test. All 130 node tests pass; clippy clean.
+
+## Agent 2 Cycle 9 Log
+
+- **2026-04-02** — feat(metrics): add Prometheus metrics to mempool for operational visibility. Tier 6 item. Branch: `feat/agent2-mempool-prometheus-metrics`, PR #178 (merged).
+  - Added 10 Prometheus metrics: 3 gauges (pool_size, pending_size, queued_size) + 7 counters (admitted, evictions, rate_limited, rejected, removed, rbf_replacements, reorgs)
+  - Every rejection path instrumented; gauges update on admission and removal
+  - New `crates/metrics/src/mempool.rs` module with `MEMPOOL_METRICS` static
