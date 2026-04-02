@@ -385,9 +385,12 @@ impl Ledger {
 
     fn hash_account(&self, account: &Account) -> H256 {
         use sha2::{Digest, Sha256};
-        let bytes = bincode::serialize(account).expect("Account serialization infallible");
-        let hash = Sha256::digest(&bytes);
-        H256::from_slice(&hash).expect("SHA256 produces 32 bytes")
+        let bytes = match bincode::serialize(account) {
+            Ok(b) => b,
+            Err(_) => return H256::zero(),
+        };
+        let hash: [u8; 32] = Sha256::digest(&bytes).into();
+        H256(hash)
     }
 
     /// Record burned fees in ledger metadata. This permanently removes tokens from
