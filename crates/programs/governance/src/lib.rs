@@ -322,6 +322,18 @@ impl GovernanceState {
         if self.delegations.contains_key(&delegate) {
             return Err("delegate is already delegating to someone else (no chains)".into());
         }
+        // Prevent delegation chains in reverse: if the delegator already receives
+        // delegations from others, they cannot delegate onwards (that would create
+        // A→B→C where B's received power doesn't cascade to C).
+        let delegator_receives = self
+            .delegations
+            .values()
+            .any(|d| *d == delegator);
+        if delegator_receives {
+            return Err(
+                "delegator already receives delegations from others (no chains)".into(),
+            );
+        }
         self.delegations.insert(delegator, delegate);
         self.recompute_effective_power();
         Ok(())
@@ -601,13 +613,31 @@ mod tests {
         state.update_voting_power(addr(2), 1_000_000_000_000);
         state.update_voting_power(addr(3), 1_000_000_000_000);
 
+        // A→B delegation succeeds
         state.delegate(addr(1), addr(2)).unwrap();
-        // addr(2) is already a delegation target — cannot delegate further
+
+        // B→C must fail: B already receives delegations from A, creating a chain
+        // would mean A's power reaches B but not C (recompute_effective_power is
+        // single-level), silently losing voting power.
         let result = state.delegate(addr(2), addr(3));
-        // addr(2) is not delegating, so this should succeed
-        // But addr(2) already has delegations FROM others, that's fine
-        // The restriction is: delegate must not be delegating TO someone
-        assert!(result.is_ok());
+        assert!(result.is_err(), "must reject delegation chain A→B→C");
+
+        // Reverse direction also blocked: C delegates to B first, then A→B
+        let mut state2 = GovernanceState::new();
+        state2.update_voting_power(addr(1), 1_000_000_000_000);
+        state2.update_voting_power(addr(2), 1_000_000_000_000);
+        state2.update_voting_power(addr(3), 1_000_000_000_000);
+        state2.delegate(addr(3), addr(2)).unwrap();
+        // A→B should fail because B already receives delegation from C
+        let result2 = state2.delegate(addr(1), addr(2));
+        // This is allowed: B receives from both A and C (fan-in, not a chain).
+        // Chains are A→B→C, which this prevents. Multiple delegators to same
+        // delegate is fine.
+        assert!(result2.is_ok(), "fan-in delegation (multiple to same delegate) is ok");
+
+        // Now verify the actual chain: B tries to delegate to D after receiving from C
+        let result3 = state2.delegate(addr(2), addr(1));
+        assert!(result3.is_err(), "B cannot delegate after receiving delegations");
     }
 
     #[test]
