@@ -949,3 +949,10 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
   - Now tests: all Prometheus metric subsystems, RPC health endpoint, request metrics, node sync/slot metrics
   - Added existence checks for Grafana dashboard and Prometheus alert config files
   - Note: CI workflow proptest job still blocked by GitHub token `workflow` scope
+
+## Agent 3 — Cycle 37 (2026-04-02)
+
+- **Task**: test(sdk/contract): proptest for contract SDK storage and context invariants
+- **Branch**: test/agent3-contract-sdk-proptests
+- **PR**: #314 (merged)
+- **Details**: Added 16 proptests to aether-contract-sdk (previously had 0 property tests). Storage: write/read roundtrip, delete, overwrite, u128 encoding roundtrip, u128 missing-is-zero, u128 rejects wrong-length, key isolation, delete isolation, delete nonexistent no-op, empty value is Some. Context: caller_hex 40-char format, address_hex 40-char format, hex injectivity, hex encode/decode roundtrip, clone equality.
