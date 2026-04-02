@@ -118,3 +118,97 @@ mod tests {
         assert!(err.to_string().contains("payload hash mismatch"));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::shred::{Shred, ShredVariant};
+    use aether_crypto_primitives::Keypair;
+    use aether_types::{Signature, H256};
+    use proptest::prelude::*;
+
+    fn signed_shred(key: &Keypair, slot: u64, index: u32, payload: Vec<u8>) -> Shred {
+        let payload_hash = Shred::hash_payload(&payload);
+        let msg = Shred::build_signing_message(slot, index, &payload_hash);
+        let sig = Signature::from_bytes(key.sign(&msg));
+        Shred::new(ShredVariant::Data, slot, index, 1, 0, H256::zero(), payload, sig)
+    }
+
+    proptest! {
+        /// A freshly signed shred always passes validation within the slot window.
+        #[test]
+        fn valid_shred_always_passes(
+            slot in 100u64..10_000u64,
+            max_age in 1u64..50u64,
+            payload in prop::collection::vec(any::<u8>(), 1..64),
+        ) {
+            let key = Keypair::generate();
+            let shred = signed_shred(&key, slot, 0, payload);
+            // current_slot is within window: slot <= current_slot <= slot + max_age
+            let current_slot = slot + max_age / 2;
+            let result = validate_shred(&shred, current_slot, max_age, &key.public_key());
+            prop_assert!(result.is_ok(), "valid shred must pass: {:?}", result);
+        }
+
+        /// A shred is always rejected if its slot is older than max_slot_age.
+        #[test]
+        fn stale_shred_always_rejected(
+            slot in 1u64..1_000u64,
+            excess in 1u64..100u64,
+            max_age in 1u64..50u64,
+            payload in prop::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let key = Keypair::generate();
+            let shred = signed_shred(&key, slot, 0, payload);
+            // current_slot is beyond the freshness window
+            let current_slot = slot.saturating_add(max_age).saturating_add(excess);
+            let result = validate_shred(&shred, current_slot, max_age, &key.public_key());
+            prop_assert!(result.is_err(), "stale shred must be rejected");
+        }
+
+        /// A shred signed by a wrong key always fails signature verification.
+        #[test]
+        fn wrong_key_always_rejected(
+            slot in 1u64..1_000u64,
+            payload in prop::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let signer = Keypair::generate();
+            let verifier = Keypair::generate();
+            let shred = signed_shred(&signer, slot, 0, payload);
+            let result = validate_shred(&shred, slot + 1, 10, &verifier.public_key());
+            prop_assert!(result.is_err(), "wrong-key shred must fail");
+        }
+
+        /// An empty signature is always rejected.
+        #[test]
+        fn empty_signature_rejected(
+            slot in 1u64..1_000u64,
+            payload in prop::collection::vec(any::<u8>(), 1..32),
+        ) {
+            let key = Keypair::generate();
+            let payload_hash = Shred::hash_payload(&payload);
+            let shred = Shred::new(
+                ShredVariant::Data, slot, 0, 1, 0, H256::zero(), payload,
+                Signature::from_bytes(vec![]),
+            );
+            let _ = payload_hash; // used to ensure hash is computed above
+            let result = validate_shred(&shred, slot + 1, 10, &key.public_key());
+            prop_assert!(result.is_err(), "empty signature must be rejected");
+        }
+
+        /// Tampering with the payload after signing always causes validation to fail.
+        #[test]
+        fn tampered_payload_always_rejected(
+            slot in 1u64..1_000u64,
+            payload in prop::collection::vec(any::<u8>(), 2..64),
+        ) {
+            let key = Keypair::generate();
+            let mut shred = signed_shred(&key, slot, 0, payload.clone());
+            // Flip the last byte so payload differs from what was signed
+            let last = shred.payload.len() - 1;
+            shred.payload[last] = shred.payload[last].wrapping_add(1);
+            let result = validate_shred(&shred, slot + 1, 10, &key.public_key());
+            prop_assert!(result.is_err(), "tampered payload must be rejected");
+        }
+    }
+}
