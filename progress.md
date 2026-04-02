@@ -842,4 +842,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `expire_old_transactions()` method that evicts both pending and queued txs exceeding TTL
   - Wired expiry into `set_current_slot()` so it runs automatically each slot advance
   - Added 3 regression tests: pending expiry, queued expiry, fresh-tx retention
+
+### Agent 1 — Cycle 29 (2026-04-02)
+- **Task**: fix(runtime): replace bare fuel subtraction with saturating_sub in WASM host functions
+- **Tier**: 1 (Correctness & Safety) — WASM VM gas limits hardening
+- **Branch**: `fix/agent1-runtime-fuel-saturating-sub`, PR #283 (merged)
+- **Details**:
+  - Replaced 4 bare `fuel - cost` subtractions with `fuel.saturating_sub(cost)` in storage_read, storage_write, emit_log, get_caller host functions
+  - Defense-in-depth: prevents potential u64 underflow to MAX if fuel guards are ever bypassed
   - All 29 mempool tests pass; clippy clean; full workspace green
