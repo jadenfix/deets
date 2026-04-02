@@ -1,7 +1,9 @@
+use aether_metrics::STORAGE_METRICS;
 use anyhow::{Context, Result};
 use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, WriteBatch, DB};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub const CF_ACCOUNTS: &str = "accounts";
 pub const CF_UTXOS: &str = "utxos";
@@ -144,7 +146,12 @@ impl Storage {
 
     pub fn get(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
-        Ok(self.db.get_cf(cf_handle, key)?)
+        let start = Instant::now();
+        let result = self.db.get_cf(cf_handle, key)?;
+        STORAGE_METRICS
+            .read_latency_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+        Ok(result)
     }
 
     pub fn put(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<()> {
@@ -161,11 +168,13 @@ impl Storage {
 
     pub fn write_batch(&self, batch: StorageBatch) -> Result<()> {
         let mut wb = WriteBatch::default();
+        let mut total_bytes: u64 = 0;
 
         for op in batch.operations {
             match op {
                 BatchOperation::Put { cf, key, value } => {
                     let cf_handle = self.db.cf_handle(&cf).context("column family not found")?;
+                    total_bytes += (key.len() + value.len()) as u64;
                     wb.put_cf(cf_handle, key, value);
                 }
                 BatchOperation::Delete { cf, key } => {
@@ -175,7 +184,14 @@ impl Storage {
             }
         }
 
+        let start = Instant::now();
         self.db.write(wb)?;
+        STORAGE_METRICS
+            .write_batch_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+        if total_bytes > 0 {
+            STORAGE_METRICS.bytes_written.inc_by(total_bytes);
+        }
         Ok(())
     }
 

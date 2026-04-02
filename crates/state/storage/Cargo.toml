@@ -13,6 +13,7 @@ serde.workspace = true
 num_cpus = "1"
 
 aether-types = { path = "../../types" }
+aether-metrics = { path = "../../metrics" }
 bincode.workspace = true
 
 [dev-dependencies]
