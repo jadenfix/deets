@@ -382,3 +382,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Tests: cross-node slash propagation (5% of stake), continued block production post-Byzantine, state convergence, double-slash prevention, multi-Byzantine validator detection
   - Bridges gap between consensus-level unit tests (byzantine_fault.rs) and single-node tests (node.rs)
   - All Tier 5 items now complete. All Tier 1-6 items verified complete or merged.
+
+## Agent 4 Cycle 5 Log
+
+- **2026-04-02** — feat(sdk): add typed AetherSdkError enum to Rust SDK public API. Tier 7 / SDK quality. Branch: `feat/agent4-sdk-typed-error`, PR #145 (merged).
+  - Replaced `anyhow::Error` returns on all public methods (`AetherClient::submit`, `TransferBuilder::build`, `JobBuilder::job_id/build/to_submission`) with typed `AetherSdkError` enum
+  - Variants: `Build`, `InvalidSignature`, `InvalidFee`, `Network`, `Rpc { code, message }`, `InvalidEndpoint`, `Serialization`, `InvalidResponse`, `TxHashMismatch`
+  - Callers can now `match` on specific error variants instead of inspecting error strings
+  - Added `thiserror` dep; resolved the TODO comment in `crates/sdk/rust/src/lib.rs`
+  - 2 new tests: `submit_rejects_invalid_signature` (asserts `InvalidSignature` variant), `parse_invalid_endpoint_scheme` (asserts `InvalidEndpoint` variant)
+  - All 5 SDK tests pass; workspace clippy and tests clean
