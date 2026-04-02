@@ -5,6 +5,11 @@ pub struct ConsensusMetrics {
     pub slots_finalized: IntCounter,
     pub fork_events: IntCounter,
     pub finality_latency_ms: Histogram,
+    pub blocks_produced: IntCounter,
+    pub blocks_received: IntCounter,
+    pub consensus_rounds: IntCounter,
+    pub transactions_processed: IntCounter,
+    pub block_production_ms: Histogram,
 }
 
 impl ConsensusMetrics {
@@ -25,6 +30,32 @@ impl ConsensusMetrics {
                 "Latency from block production to finality"
             )
             .expect("register finality latency"),
+            blocks_produced: register_int_counter!(
+                "aether_consensus_blocks_produced_total",
+                "Total blocks produced by this validator"
+            )
+            .expect("register blocks_produced"),
+            blocks_received: register_int_counter!(
+                "aether_consensus_blocks_received_total",
+                "Total blocks received from peers"
+            )
+            .expect("register blocks_received"),
+            consensus_rounds: register_int_counter!(
+                "aether_consensus_rounds_total",
+                "Total consensus rounds (slots) processed"
+            )
+            .expect("register consensus_rounds"),
+            transactions_processed: register_int_counter!(
+                "aether_consensus_transactions_processed_total",
+                "Total transactions processed in blocks"
+            )
+            .expect("register transactions_processed"),
+            block_production_ms: register_histogram!(
+                "aether_consensus_block_production_ms",
+                "Time to produce a block in milliseconds",
+                vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
+            )
+            .expect("register block_production_ms"),
         }
     }
 }
@@ -40,5 +71,10 @@ mod tests {
         CONSENSUS_METRICS.slots_finalized.inc();
         CONSENSUS_METRICS.fork_events.inc_by(2);
         CONSENSUS_METRICS.finality_latency_ms.observe(42.0);
+        CONSENSUS_METRICS.blocks_produced.inc();
+        CONSENSUS_METRICS.blocks_received.inc_by(3);
+        CONSENSUS_METRICS.consensus_rounds.inc();
+        CONSENSUS_METRICS.transactions_processed.inc_by(10);
+        CONSENSUS_METRICS.block_production_ms.observe(15.0);
     }
 }

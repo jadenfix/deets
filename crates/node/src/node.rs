@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time;
 
+use aether_metrics::{CONSENSUS_METRICS, STORAGE_METRICS};
+
 use crate::fork_choice::ForkChoice;
 use crate::network_handler::{decode_network_event, NodeMessage, OutboundMessage};
 use crate::poh::{PohMetrics, PohRecorder};
@@ -333,6 +335,7 @@ impl Node {
     fn process_slot(&mut self) -> Result<()> {
         let slot = self.consensus.current_slot();
         let _span = tracing::info_span!("process_slot", slot).entered();
+        CONSENSUS_METRICS.consensus_rounds.inc();
 
         // Update mempool with current slot for forced inclusion tracking
         self.mempool.set_current_slot(slot);
@@ -542,6 +545,7 @@ impl Node {
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
         let _span = tracing::info_span!("produce_block", slot).entered();
+        let block_start = Instant::now();
 
         // Forced inclusion: include txs that have been waiting too long (anti-censorship)
         let forced = self
@@ -659,7 +663,21 @@ impl Node {
             fee_result.proposer_reward,
             fee_result.burned,
         )?;
+        let write_start = Instant::now();
         self.ledger.write_batch(batch)?;
+        STORAGE_METRICS
+            .write_batch_ms
+            .observe(write_start.elapsed().as_secs_f64() * 1000.0);
+        STORAGE_METRICS.blocks_persisted.inc();
+
+        // Record block production metrics
+        CONSENSUS_METRICS.blocks_produced.inc();
+        CONSENSUS_METRICS
+            .transactions_processed
+            .inc_by(transactions.len() as u64);
+        CONSENSUS_METRICS
+            .block_production_ms
+            .observe(block_start.elapsed().as_secs_f64() * 1000.0);
 
         for sr in &stored_receipts {
             self.receipts.insert(sr.tx_hash, sr.clone());
@@ -1266,6 +1284,7 @@ impl Node {
     pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(block)) => {
+                CONSENSUS_METRICS.blocks_received.inc();
                 // During active sync, buffer blocks for ordered application
                 // instead of processing them immediately out of order.
                 if self.sync_manager.is_syncing() {
@@ -1338,6 +1357,7 @@ impl Node {
 
         for slot in start..=end {
             if self.consensus.check_finality(slot) {
+                CONSENSUS_METRICS.slots_finalized.inc();
                 tracing::info!(slot, "Slot finalized via VRF+HotStuff+BLS");
 
                 // Update epoch randomness from the first finalized block in this

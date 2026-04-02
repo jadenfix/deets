@@ -36,6 +36,7 @@ aether-crypto-vrf = { path = "../crypto/vrf" }
 aether-rpc-json = { path = "../rpc/json-rpc" }
 aether-state-storage = { path = "../state/storage" }
 aether-p2p = { path = "../p2p" }
+aether-metrics = { path = "../metrics" }
 
 [dev-dependencies]
 tempfile = "3"
