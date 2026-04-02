@@ -564,6 +564,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Reviewed open PRs (none pending).
   - 1 new test. All 400+ workspace tests pass; clippy clean.
 
+## Agent 1 Cycle 13 Log
+
+- **2026-04-02** — fix(ledger): reject blocks containing invalid-signature transactions. Tier 1 (tx signature verification) audit. Branch: `fix/agent1-tx-signature-audit`, PR #205 (merged).
+  - Audited all transaction execution paths: `apply_transaction`, `apply_block_transactions`, `apply_block_speculatively_with_chain_id`. All perform ed25519 verification.
+  - Found that invalid-signature txs produced Failed receipts instead of rejecting the block — a malicious proposer could stuff blocks with garbage txs, wasting block space.
+  - Both batch execution paths now reject the entire block if any tx has an invalid signature (fail-fast).
+  - Updated `test_batch_verification_marks_invalid_signatures` to assert block rejection. All 700+ tests pass; clippy clean.
+
 ## Agent 4 Cycle 12 Log
 
 - **2026-04-02** — test(amm): add proptest property-based tests for AMM invariants. Branch: `test/agent4-amm-proptest`, PR #199 (merged).
