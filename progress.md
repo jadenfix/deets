@@ -530,3 +530,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Bug: `banned_peers` HashMap in `P2PNetwork` had no size limit. An attacker rotating PeerIDs could trigger unlimited distinct bans, causing memory exhaustion. Expired entries were never cleaned up.
   - Fix: added `MAX_BANNED_PEERS` (4096) cap with `prune_banned_peers()` — removes expired bans first, then evicts soonest-to-expire if still over cap. Triggered automatically from `update_peer_score` when a new ban exceeds the limit.
   - 3 new tests. All 32 p2p tests pass; clippy clean.
+
+## Agent 1 Cycle 11 Log
+
+- **2026-04-02** — fix(runtime): validate WASM host function pointer/length args. Branch: `fix/agent1-wasm-host-input-validation`, PR #191 (merged).
+  - Bug: All 4 WASM host functions (storage_read, storage_write, emit_log, set_return) accepted negative i32 pointer/length values and cast them directly to usize. Gas charging happened BEFORE validation — negative val_len cast to u64 produced astronomically large gas costs via wrapping (e.g. -1i32 as u64 = 18446744073709551615), causing incorrect fuel deduction.
+  - Fix: added early `< 0` checks on all pointer/length params before any cast or gas charge. Moved gas charging after validation in storage_write, emit_log, set_return.
+  - Also: changed `WasmVm::new()` from `Self` to `Result<Self>` so engine creation errors propagate instead of panicking the validator via `.expect()`. Added `try_into()` guard on `input.len() as i32` to reject >2GB inputs.
+  - 2 new regression tests. All 31 runtime tests pass; full workspace tests pass; clippy clean.
