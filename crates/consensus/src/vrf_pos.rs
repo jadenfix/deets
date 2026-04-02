@@ -48,6 +48,8 @@ pub struct VrfPosConsensus {
 
 impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
+        // Guard against division-by-zero in advance_slot epoch boundary check.
+        let epoch_length = epoch_length.max(1);
         let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
@@ -169,7 +171,7 @@ impl VrfPosConsensus {
         self.current_slot = self.current_slot.saturating_add(1);
 
         // Check if we need to advance epoch
-        if self.current_slot % self.epoch_length == 0 {
+        if self.epoch_length > 0 && self.current_slot % self.epoch_length == 0 {
             // In production, would use VRF output from first block of previous epoch
             // For now, just hash current randomness
             let mut hasher = Sha256::new();
@@ -333,6 +335,16 @@ mod tests {
 
         // Just check it's reasonable (10-70% range)
         assert!(rate > 0.1 && rate < 0.7);
+    }
+
+    #[test]
+    fn epoch_length_zero_does_not_panic() {
+        // epoch_length=0 would cause division-by-zero in advance_slot.
+        // Constructor must clamp it to >= 1.
+        let mut consensus = VrfPosConsensus::new(vec![], 0.5, 0);
+        assert_eq!(consensus.epoch_length, 1);
+        // advance_slot should not panic
+        consensus.advance_slot();
     }
 }
 
