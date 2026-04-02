@@ -46,7 +46,11 @@ impl MockRpcServer {
         let handle = thread::spawn(move || {
             while running_clone.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => handle_rpc_connection(&mut stream),
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                        handle_rpc_connection(&mut stream);
+                    }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
                     }
