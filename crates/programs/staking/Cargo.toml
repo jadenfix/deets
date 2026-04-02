@@ -14,3 +14,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "staking_bench"
+harness = false
