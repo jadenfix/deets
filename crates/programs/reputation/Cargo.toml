@@ -12,3 +12,5 @@ anyhow.workspace = true
 
 aether-types = { path = "../../types" }
 
+[dev-dependencies]
+proptest = "1"
