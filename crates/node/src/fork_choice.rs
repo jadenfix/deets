@@ -327,6 +327,149 @@ mod tests {
         );
     }
 
+    // ---- Property-based tests ----
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+        use proptest::collection::vec as pvec;
+
+        fn arb_hash() -> impl Strategy<Value = H256> {
+            any::<[u8; 32]>().prop_map(|b| H256::from_slice(&b).unwrap())
+        }
+
+        /// After any sequence of add_block calls, canonical_block always returns
+        /// the block with the lexicographically smallest hash for that slot.
+        #[test]
+        fn canonical_is_always_lowest_hash() {
+            proptest!(|(
+                slot in 0u64..100,
+                hashes in pvec(arb_hash(), 1..=MAX_CANDIDATES_PER_SLOT)
+            )| {
+                let mut fc = ForkChoice::new();
+                for h in &hashes {
+                    fc.add_block(slot, *h);
+                }
+                let expected_min = hashes.iter().min_by_key(|h| h.as_bytes().to_vec()).unwrap();
+                prop_assert_eq!(fc.canonical_block(slot), Some(*expected_min));
+            });
+        }
+
+        /// Finalized blocks always take precedence over the hash-tiebreak rule.
+        #[test]
+        fn finalized_overrides_tiebreak() {
+            proptest!(|(
+                slot in 0u64..100,
+                hashes in pvec(arb_hash(), 2..=8)
+            )| {
+                let mut fc = ForkChoice::new();
+                for h in &hashes {
+                    fc.add_block(slot, *h);
+                }
+                // Finalize the LAST hash (likely not the min)
+                let target = *hashes.last().unwrap();
+                fc.finalize(slot, target);
+                prop_assert_eq!(fc.canonical_block(slot), Some(target));
+                prop_assert!(fc.is_finalized(slot));
+            });
+        }
+
+        /// No blocks can be added to finalized slots.
+        #[test]
+        fn finalized_slot_rejects_new_blocks() {
+            proptest!(|(
+                slot in 0u64..100,
+                initial in arb_hash(),
+                extras in pvec(arb_hash(), 1..=5)
+            )| {
+                let mut fc = ForkChoice::new();
+                fc.add_block(slot, initial);
+                fc.finalize(slot, initial);
+                for h in &extras {
+                    let is_fork = fc.add_block(slot, *h);
+                    prop_assert!(!is_fork, "should reject block at finalized slot");
+                }
+                prop_assert_eq!(fc.candidates_for(slot).len(), 1);
+            });
+        }
+
+        /// No blocks can be added to committed slots.
+        #[test]
+        fn committed_slot_rejects_new_blocks() {
+            proptest!(|(
+                slot in 0u64..100,
+                initial in arb_hash(),
+                extras in pvec(arb_hash(), 1..=5)
+            )| {
+                let mut fc = ForkChoice::new();
+                fc.add_block(slot, initial);
+                fc.mark_committed(slot);
+                for h in &extras {
+                    let is_fork = fc.add_block(slot, *h);
+                    prop_assert!(!is_fork);
+                }
+                prop_assert_eq!(fc.canonical_block(slot), Some(initial));
+            });
+        }
+
+        /// Candidate count never exceeds MAX_CANDIDATES_PER_SLOT.
+        #[test]
+        fn candidate_count_bounded() {
+            proptest!(|(
+                slot in 0u64..100,
+                hashes in pvec(arb_hash(), 1..=32)
+            )| {
+                let mut fc = ForkChoice::new();
+                for h in &hashes {
+                    fc.add_block(slot, *h);
+                }
+                prop_assert!(fc.candidates_for(slot).len() <= MAX_CANDIDATES_PER_SLOT);
+            });
+        }
+
+        /// prune_before removes exactly the slots below the threshold.
+        #[test]
+        fn prune_removes_only_old_slots() {
+            proptest!(|(
+                slots in pvec(0u64..200, 1..=20),
+                threshold in 0u64..200
+            )| {
+                let mut fc = ForkChoice::new();
+                let hash0 = H256::from_slice(&[0x01; 32]).unwrap();
+                for &s in &slots {
+                    fc.add_block(s, hash0);
+                }
+                fc.prune_before(threshold);
+                for &s in &slots {
+                    if s < threshold {
+                        prop_assert_eq!(fc.canonical_block(s), None);
+                    }
+                    // slots >= threshold that were added should still exist
+                    if s >= threshold {
+                        prop_assert_eq!(fc.canonical_block(s), Some(hash0));
+                    }
+                }
+            });
+        }
+
+        /// Duplicate adds are idempotent — candidate count stays the same.
+        #[test]
+        fn duplicate_add_idempotent() {
+            proptest!(|(
+                slot in 0u64..100,
+                h in arb_hash(),
+                repeats in 1usize..=10
+            )| {
+                let mut fc = ForkChoice::new();
+                for _ in 0..repeats {
+                    fc.add_block(slot, h);
+                }
+                prop_assert_eq!(fc.candidates_for(slot).len(), 1);
+                prop_assert_eq!(fc.canonical_block(slot), Some(h));
+            });
+        }
+    }
+
     #[test]
     fn test_prune_clears_committed() {
         let mut fc = ForkChoice::new();
