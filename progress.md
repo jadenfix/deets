@@ -880,4 +880,15 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Run containers as non-root `aether` user (UID 1000) for container escape defense
   - Added healthcheck config to all validators in both docker-compose files
   - Changed validator-2/3/4 depends_on to service_healthy for proper startup ordering
+
+### Agent 2 — Cycle 31 (2026-04-02)
+- **Task**: fix(ops): harden indexer and RPC Dockerfiles with non-root user, expose metrics port
+- **Tier**: 6 (Operational Readiness)
+- **Branch**: `fix/agent2-docker-harden-all`, PR #293 (merged)
+- **Details**:
+  - Applied production hardening from Dockerfile.validator (PR #288) to Dockerfile.indexer and Dockerfile.rpc
+  - Added non-root `aether` user (UID 1000) and /data directory ownership to both
+  - Added HEALTHCHECK and curl to RPC Dockerfile for orchestration readiness
+  - Exposed Prometheus metrics port 9090 on validator and RPC containers
+  - Note: CI workflow change to add TS/Python SDK test jobs blocked by token scope (needs `workflow` permission)
   - Removed unnecessary sleep in test-runner (healthcheck ordering makes it redundant)
