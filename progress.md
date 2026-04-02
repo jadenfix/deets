@@ -716,3 +716,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fixed test to assert fee_rate ordering and use different senders to avoid nonce interference.
   - All 26 mempool tests pass; full workspace green (0 failures); clippy clean.
   - No open PRs to review this cycle.
+
+## Agent 3 Cycle 17 Log
+
+- **2026-04-02** — test(runtime): add proptest property-based tests for WASM VM invariants. Tier 5 testing. Branch: `test/agent3-runtime-proptest`, PR #236 (merged).
+  - Added 10 proptest cases to `crates/runtime/src/vm.rs`: gas metering bounds, return code semantics, arbitrary input safety, fuel exhaustion, random bytes rejection, storage write bounds, oversized module rejection, deterministic execution.
+  - Added `proptest` dev-dependency to aether-runtime.
+  - All 40 runtime tests pass; clippy clean.

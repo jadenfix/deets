@@ -151,6 +151,7 @@ dependencies = [
  "aether-crypto-vrf",
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -468,6 +469,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
 ]
 
@@ -503,6 +505,7 @@ dependencies = [
  "aether-verifiers-tee",
  "aether-verifiers-vcr",
  "anyhow",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -590,6 +593,7 @@ dependencies = [
  "aether-ledger",
  "aether-types",
  "anyhow",
+ "proptest",
  "rayon",
  "serde",
  "sha2",
