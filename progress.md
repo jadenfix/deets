@@ -433,3 +433,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Single-validator fast path also updated to use `epoch_validators.len()`
   - 3 new tests: mid-epoch slash quorum safety, create_vote epoch stake, epoch boundary snapshot update
   - All 35 consensus tests pass; full workspace tests and clippy clean
+
+## Agent 4 Cycle 6 Log
+
+- **2026-04-02** — fix(node): prevent UTXO set corruption when fork-choice switches canonical at same slot. Tier 2 / fork choice correctness. Branch: `fix/agent4-fork-reorg-double-commit`, PR #163 (merged).
+  - Root cause: when two competing blocks arrive at the same slot and fork-choice selects the second (lower hash wins), the second block's speculative state overlay was committed on top of the already-committed first block's state. Stale effects (e.g. UTXOs created by first block but not second) remained permanently in RocksDB, silently corrupting the UTXO set.
+  - Fix: added `committed_at_slot: HashMap<Slot, H256>` to `Node`. Before committing a block's overlay, we check if a different block is already committed at that slot; if so, skip the write.
+  - Also: `latest_block_hash`/`blocks_by_slot` now only update for `should_commit` blocks (not just `is_canonical`), preventing the chain tip from pointing at uncommitted state.
+  - `committed_at_slot` entries are pruned at finalization boundaries to bound memory.
+  - Regression test: `fork_block_does_not_double_commit_state` verifies the first-committed block remains the chain tip when a competing lower-hash fork arrives.
+  - All workspace tests pass; clippy clean.
