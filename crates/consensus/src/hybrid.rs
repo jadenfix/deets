@@ -237,7 +237,7 @@ impl HybridConsensus {
         };
 
         let validator = self
-            .validators
+            .epoch_validators
             .get(my_addr)
             .ok_or_else(|| anyhow::anyhow!("not in validator set"))?;
 
@@ -327,9 +327,11 @@ impl HybridConsensus {
 
         let voter_addr = vote.validator.to_address();
 
-        // Verify voter is a known validator
+        // Verify voter is a known validator in the epoch-frozen set.
+        // Using the epoch snapshot ensures mid-epoch slashing doesn't change
+        // who can vote or their stake weight within the current epoch.
         let registered = self
-            .validators
+            .epoch_validators
             .get(&voter_addr)
             .ok_or_else(|| anyhow::anyhow!("unknown validator: {:?}", voter_addr))?;
 
@@ -434,11 +436,13 @@ impl HybridConsensus {
 
         // Check for quorum (2/3+ stake)
         let voted_stake: u128 = votes_map.values().map(|v| v.stake).fold(0u128, u128::saturating_add);
-        let has_quorum = crate::has_quorum(voted_stake, self.total_stake);
+        // Use epoch-frozen total stake for quorum calculation so mid-epoch
+        // slashing cannot lower the quorum threshold within an epoch.
+        let has_quorum = crate::has_quorum(voted_stake, self.epoch_total_stake);
 
         if has_quorum {
             // Single-validator fast path
-            if self.validators.len() == 1 {
+            if self.epoch_validators.len() == 1 {
                 let qc = QuorumCertificate {
                     slot: vote.slot,
                     block_hash: vote.block_hash,
@@ -1634,6 +1638,152 @@ mod tests {
             consensus.validate_block(&block).is_ok(),
             "should accept: parent slot == locked slot (equal counts as safe)"
         );
+    }
+
+    #[test]
+    fn test_mid_epoch_slash_does_not_lower_quorum_threshold() {
+        // Setup: 4 validators with 1000 stake each (total 4000).
+        // Quorum requires >2/3 of 4000 = 2667 stake.
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, bls2) = create_test_validator_with_bls(1000);
+        let (v3, bls3) = create_test_validator_with_bls(1000);
+        let (v4, _bls4) = create_test_validator_with_bls(1000);
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
+
+        // Register BLS keys for first 3 validators
+        let addr1 = v1.pubkey.to_address();
+        let addr2 = v2.pubkey.to_address();
+        let addr3 = v3.pubkey.to_address();
+        let pop1 = bls1.proof_of_possession();
+        let pop2 = bls2.proof_of_possession();
+        let pop3 = bls3.proof_of_possession();
+        consensus
+            .register_bls_pubkey(addr1, bls1.public_key(), &pop1)
+            .unwrap();
+        consensus
+            .register_bls_pubkey(addr2, bls2.public_key(), &pop2)
+            .unwrap();
+        consensus
+            .register_bls_pubkey(addr3, bls3.public_key(), &pop3)
+            .unwrap();
+
+        consensus.advance_slot(); // slot 1, still epoch 0
+
+        // Slash v4 for 100% — live total_stake drops to 3000
+        // but epoch_total_stake should remain 4000
+        let addr4 = v4.pubkey.to_address();
+        consensus.slash_validator(&addr4, 10000);
+        assert_eq!(consensus.total_stake, 3000);
+        assert_eq!(consensus.epoch_total_stake, 4000);
+
+        // Now try to reach quorum with 2 validators (2000 stake).
+        // Against live total (3000), 2000 > 2/3*3000=2000 — would pass.
+        // Against epoch total (4000), 2000 < 2/3*4000=2667 — must NOT pass.
+        let block_hash = H256::from_slice(&[0xAA; 32]).unwrap();
+        let mut msg = Vec::new();
+        msg.extend_from_slice(block_hash.as_bytes());
+        msg.extend_from_slice(&1u64.to_le_bytes());
+
+        let sig1 = bls1.sign(&msg);
+        let vote1 = Vote {
+            slot: 1,
+            block_hash,
+            validator: v1.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(sig1),
+            stake: 1000,
+        };
+
+        let sig2 = bls2.sign(&msg);
+        let vote2 = Vote {
+            slot: 1,
+            block_hash,
+            validator: v2.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(sig2),
+            stake: 1000,
+        };
+
+        let result1 = consensus.process_vote(vote1).unwrap();
+        assert!(result1.is_none(), "1 vote should not reach quorum");
+
+        let result2 = consensus.process_vote(vote2).unwrap();
+        assert!(
+            result2.is_none(),
+            "2 votes (2000 stake) should NOT reach quorum against epoch total 4000"
+        );
+
+        // Adding a 3rd vote (3000 stake total) should reach quorum (3000 > 2667)
+        let sig3 = bls3.sign(&msg);
+        let vote3 = Vote {
+            slot: 1,
+            block_hash,
+            validator: v3.pubkey.clone(),
+            signature: aether_types::Signature::from_bytes(sig3),
+            stake: 1000,
+        };
+        let result3 = consensus.process_vote(vote3).unwrap();
+        assert!(
+            result3.is_some(),
+            "3 votes (3000 stake) should reach quorum against epoch total 4000"
+        );
+    }
+
+    #[test]
+    fn test_create_vote_uses_epoch_snapshot_stake() {
+        // Verify that create_vote uses epoch-frozen stake, not live stake.
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let addr1 = v1.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone()],
+            0.8,
+            100,
+            None,
+            Some(bls1),
+            Some(addr1),
+        );
+
+        // Slash the validator mid-epoch — live stake drops but epoch stake stays
+        consensus.slash_validator(&addr1, 5000); // 50% slash
+        assert_eq!(consensus.validators.get(&addr1).unwrap().stake, 500);
+        assert_eq!(consensus.epoch_validators.get(&addr1).unwrap().stake, 1000);
+
+        // Vote should use epoch stake (1000), not live stake (500)
+        let block_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        let vote = consensus
+            .create_vote(block_hash, Phase::Propose)
+            .unwrap()
+            .unwrap();
+        assert_eq!(vote.stake, 1000, "vote should carry epoch-frozen stake, not live stake");
+    }
+
+    #[test]
+    fn test_epoch_boundary_snapshots_updated_validators() {
+        // After an epoch boundary, the epoch snapshot should reflect slashing.
+        let (v1, _bls1) = create_test_validator_with_bls(1000);
+        let addr1 = v1.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v1], 0.8, 5, None, None, None);
+
+        // Slash mid-epoch
+        consensus.slash_validator(&addr1, 5000); // 50% → 500
+        assert_eq!(consensus.epoch_validators.get(&addr1).unwrap().stake, 1000);
+
+        // Advance to epoch boundary (slot 5)
+        for _ in 0..5 {
+            consensus.advance_slot();
+        }
+
+        // Epoch snapshot should now reflect the slashed stake
+        assert_eq!(
+            consensus.epoch_validators.get(&addr1).unwrap().stake, 500,
+            "epoch snapshot should be updated at epoch boundary"
+        );
+        assert_eq!(consensus.epoch_total_stake, 500);
     }
 
     #[test]
