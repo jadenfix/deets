@@ -389,6 +389,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Periodic cleanup task evicts stale entries every 5 min to prevent memory growth
   - 4 new tests (burst, IP isolation, refill, cleanup), all 12 RPC tests pass, clippy clean
 
+- **2026-04-02** — fix(p2p): add connection limits to prevent inbound connection flooding DoS. Tier 3 hardening. Branch: `fix/agent2-p2p-connection-limits`, PR #154 (merged).
+  - Wired `libp2p::connection_limits::Behaviour` into swarm: 256 total / 128 inbound / 128 outbound / 4 per peer
+  - Without these limits, attackers could exhaust file descriptors and memory via TCP connection flooding
+  - New test `test_connection_limits_configured` validates constant sanity
+
 ## Agent 3 Cycle Log
 
 - **2026-04-02** — test(node): add e2e Byzantine fault detection tests across multi-node network. Tier 5 item (Byzantine fault test). Branch: `test/agent3-byzantine-fault-detection`, PR #139 (merged).
