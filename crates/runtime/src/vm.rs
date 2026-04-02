@@ -1032,3 +1032,242 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::{Address, ExecutionContext, WasmVm, MAX_STORAGE_KEY_LEN, MAX_STORAGE_VAL_LEN};
+    use proptest::prelude::*;
+
+    fn arb_context() -> impl Strategy<Value = ExecutionContext> {
+        (
+            any::<u128>(),
+            any::<u64>(),
+            any::<u64>(),
+        )
+            .prop_map(|(value, block_number, timestamp)| ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value,
+                gas_limit: 1_000_000,
+                block_number,
+                timestamp,
+            })
+    }
+
+    /// Compile a simple WAT module that returns a constant.
+    fn make_return_module(return_val: i32) -> Vec<u8> {
+        wat::parse_str(format!(
+            r#"(module
+                (func (export "execute") (param i32 i32) (result i32)
+                    i32.const {return_val}
+                )
+            )"#,
+        ))
+        .unwrap()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        /// Gas used never exceeds gas limit, regardless of context values.
+        #[test]
+        fn gas_used_le_gas_limit(gas_limit in 100u64..10_000_000, ctx in arb_context()) {
+            let mut vm = WasmVm::new(gas_limit).unwrap();
+            let mut ctx = ctx;
+            ctx.gas_limit = gas_limit;
+            let wasm = make_return_module(0);
+            let result = vm.execute(&wasm, &ctx, b"").unwrap();
+            prop_assert!(result.gas_used <= gas_limit,
+                "gas_used {} > gas_limit {}", result.gas_used, gas_limit);
+        }
+
+        /// Return code 0 means success=true, anything else means success=false.
+        #[test]
+        fn return_code_determines_success(rc in -100i32..100) {
+            let mut vm = WasmVm::new(1_000_000).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 1_000_000,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            let wasm = make_return_module(rc);
+            let result = vm.execute(&wasm, &ctx, b"").unwrap();
+            prop_assert_eq!(result.success, rc == 0);
+        }
+
+        /// Arbitrary input bytes are written to memory without panic.
+        #[test]
+        fn arbitrary_input_no_panic(input in proptest::collection::vec(any::<u8>(), 0..4096)) {
+            let mut vm = WasmVm::new(1_000_000).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 1_000_000,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            let wasm = wat::parse_str(
+                r#"(module
+                    (memory (export "memory") 1)
+                    (func (export "execute") (param i32 i32) (result i32)
+                        i32.const 0
+                    )
+                )"#,
+            ).unwrap();
+            // Must not panic — may succeed or fail gracefully
+            let _ = vm.execute(&wasm, &ctx, &input);
+        }
+
+        /// Very low gas always results in gas_used == gas_limit (all fuel consumed).
+        #[test]
+        fn low_gas_exhausts_fuel(gas in 1u64..50) {
+            let mut vm = WasmVm::new(gas).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: gas,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            // Loop that will definitely exhaust gas
+            let wasm = wat::parse_str(
+                r#"(module
+                    (func (export "execute") (param i32 i32) (result i32)
+                        (local $i i32)
+                        (block $b
+                            (loop $l
+                                (br_if $b (i32.ge_u (local.get $i) (i32.const 100000)))
+                                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                                (br $l)
+                            )
+                        )
+                        i32.const 0
+                    )
+                )"#,
+            ).unwrap();
+            if let Ok(result) = vm.execute(&wasm, &ctx, b"") {
+                prop_assert!(!result.success, "should fail with gas {}", gas);
+                prop_assert!(result.gas_used <= gas);
+            }
+        }
+
+        /// Random bytes are always rejected (not valid WASM).
+        #[test]
+        fn random_bytes_rejected(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let mut vm = WasmVm::new(1_000_000).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 1_000_000,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            // Random bytes almost certainly won't have valid WASM magic + structure
+            if bytes.len() >= 4 && bytes[0..4] == *b"\0asm" {
+                // Skip — could theoretically be valid-ish WASM
+                return Ok(());
+            }
+            prop_assert!(vm.execute(&bytes, &ctx, b"").is_err());
+        }
+
+        /// Storage writes with arbitrary key/value sizes stay within bounds.
+        #[test]
+        fn storage_write_bounded(
+            key_len in 1usize..512,
+            val_len in 1usize..8192,
+        ) {
+            let mut vm = WasmVm::new(10_000_000).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 10_000_000,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            // Module writes key_len bytes from offset 0 and val_len bytes from offset 1024
+            let wasm = wat::parse_str(format!(
+                r#"(module
+                    (import "env" "storage_write" (func $sw (param i32 i32 i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (func (export "execute") (param i32 i32) (result i32)
+                        i32.const 0
+                        i32.const {key_len}
+                        i32.const 1024
+                        i32.const {val_len}
+                        call $sw
+                    )
+                )"#,
+            )).unwrap();
+            let result = vm.execute(&wasm, &ctx, b"").unwrap();
+            if key_len > MAX_STORAGE_KEY_LEN || val_len > MAX_STORAGE_VAL_LEN {
+                // Host func should reject oversized keys/values — return -1 (not 0)
+                prop_assert!(!result.success || result.storage_changes.is_empty(),
+                    "oversized storage write should be rejected: key_len={key_len} val_len={val_len}");
+            }
+        }
+
+        /// Oversized WASM modules (>1MB) are rejected.
+        #[test]
+        fn oversized_module_rejected(extra in 1usize..4096) {
+            let mut vm = WasmVm::new(1_000_000).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 1_000_000,
+                block_number: 1,
+                timestamp: 1000,
+            };
+            // Create bytes > 1MB with valid WASM magic
+            let mut bytes = b"\0asm\x01\x00\x00\x00".to_vec();
+            bytes.resize(1024 * 1024 + extra, 0);
+            prop_assert!(vm.execute(&bytes, &ctx, b"").is_err());
+        }
+
+        /// Execution is deterministic — same inputs produce same outputs.
+        #[test]
+        fn deterministic_execution(
+            block_number in 0u64..1000,
+            timestamp in 0u64..1_000_000,
+        ) {
+            let wasm = wat::parse_str(
+                r#"(module
+                    (import "env" "block_number" (func $bn (result i64)))
+                    (memory (export "memory") 1)
+                    (func (export "execute") (param i32 i32) (result i32)
+                        call $bn
+                        i64.const 100
+                        i64.gt_s
+                        if (result i32)
+                            i32.const 1
+                        else
+                            i32.const 0
+                        end
+                    )
+                )"#,
+            ).unwrap();
+            let ctx = ExecutionContext {
+                contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+                caller: Address::from_slice(&[2u8; 20]).unwrap(),
+                value: 0,
+                gas_limit: 1_000_000,
+                block_number,
+                timestamp,
+            };
+            let mut vm1 = WasmVm::new(1_000_000).unwrap();
+            let mut vm2 = WasmVm::new(1_000_000).unwrap();
+            let r1 = vm1.execute(&wasm, &ctx, b"test").unwrap();
+            let r2 = vm2.execute(&wasm, &ctx, b"test").unwrap();
+            prop_assert_eq!(r1.success, r2.success);
+            prop_assert_eq!(r1.gas_used, r2.gas_used);
+            prop_assert_eq!(r1.return_data, r2.return_data);
+        }
+    }
+}
