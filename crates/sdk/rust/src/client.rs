@@ -68,17 +68,19 @@ impl AetherClient {
             body.len()
         );
 
+        // Combine headers and body into a single write to avoid partial-read
+        // issues with simple HTTP servers that do a single recv() call.
+        let mut payload_buf = Vec::with_capacity(request.len() + body.len());
+        payload_buf.extend_from_slice(request.as_bytes());
+        payload_buf.extend_from_slice(&body);
+
         let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
             .await
             .with_context(|| format!("failed to submit transaction to {}", self.endpoint))?;
         stream
-            .write_all(request.as_bytes())
+            .write_all(&payload_buf)
             .await
-            .context("failed to write rpc request headers")?;
-        stream
-            .write_all(&body)
-            .await
-            .context("failed to write rpc request body")?;
+            .context("failed to write rpc request")?;
 
         let mut raw = Vec::new();
         stream
