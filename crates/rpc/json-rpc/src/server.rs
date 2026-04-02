@@ -1065,6 +1065,7 @@ async fn handle_health<B: RpcBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[derive(Default)]
     struct MockBackend {
@@ -1400,5 +1401,269 @@ mod tests {
             limiter.len().await <= MAX_RATE_LIMIT_ENTRIES,
             "rate limiter map must not exceed MAX_RATE_LIMIT_ENTRIES"
         );
+    }
+
+    // ── Proptests ──────────────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        // ── parse_u128_value ──
+
+        #[test]
+        fn proptest_parse_u128_from_number(n in 0u64..=u64::MAX) {
+            let val = json!(n);
+            let result = parse_u128_value(&val, "test").unwrap();
+            prop_assert_eq!(result, n as u128);
+        }
+
+        #[test]
+        fn proptest_parse_u128_from_string(n in 0u128..=u128::MAX) {
+            let val = json!(n.to_string());
+            let result = parse_u128_value(&val, "test").unwrap();
+            prop_assert_eq!(result, n);
+        }
+
+        #[test]
+        fn proptest_parse_u128_rejects_negative(n in -1000i64..=-1) {
+            // Negative numbers as strings should fail
+            let val = json!(n.to_string());
+            prop_assert!(parse_u128_value(&val, "test").is_err());
+        }
+
+        #[test]
+        fn proptest_parse_u128_rejects_non_numeric(s in "[a-z]{1,10}") {
+            let val = json!(s);
+            prop_assert!(parse_u128_value(&val, "test").is_err());
+        }
+
+        // ── parse_hex_bytes ──
+
+        #[test]
+        fn proptest_parse_hex_roundtrip(bytes in proptest::collection::vec(0u8..=255, 0..64)) {
+            let hex_str = format!("0x{}", hex::encode(&bytes));
+            let parsed = parse_hex_bytes(&hex_str, "test").unwrap();
+            prop_assert_eq!(parsed, bytes);
+        }
+
+        #[test]
+        fn proptest_parse_hex_no_prefix(bytes in proptest::collection::vec(0u8..=255, 1..32)) {
+            let hex_str = hex::encode(&bytes);
+            let parsed = parse_hex_bytes(&hex_str, "test").unwrap();
+            prop_assert_eq!(parsed, bytes);
+        }
+
+        #[test]
+        fn proptest_parse_hex_rejects_odd_length(byte in 0u8..=255) {
+            // Odd-length hex is invalid
+            let hex_str = format!("0x{:x}", byte); // single nibble for 0..15
+            if byte < 16 {
+                prop_assert!(parse_hex_bytes(&hex_str, "test").is_err());
+            }
+        }
+
+        // ── parse_address ──
+
+        #[test]
+        fn proptest_parse_address_valid(bytes in proptest::collection::vec(0u8..=255, 20..=20)) {
+            let hex_str = format!("0x{}", hex::encode(&bytes));
+            let addr = parse_address(&hex_str, "test").unwrap();
+            prop_assert_eq!(addr.as_bytes(), bytes.as_slice());
+        }
+
+        #[test]
+        fn proptest_parse_address_wrong_length(len in (0usize..20).prop_union(21usize..40)) {
+            let bytes = vec![0xABu8; len];
+            let hex_str = format!("0x{}", hex::encode(&bytes));
+            prop_assert!(parse_address(&hex_str, "test").is_err());
+        }
+
+        // ── JsonRpcRequest serde roundtrip ──
+
+        #[test]
+        fn proptest_jsonrpc_request_serde_roundtrip(
+            method in "[a-z_]{1,30}",
+            id in 0u64..10000,
+        ) {
+            let req = JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                method: method.clone(),
+                params: vec![],
+                id: json!(id),
+            };
+            let serialized = serde_json::to_string(&req).unwrap();
+            let deserialized: JsonRpcRequest = serde_json::from_str(&serialized).unwrap();
+            prop_assert_eq!(deserialized.jsonrpc, "2.0");
+            prop_assert_eq!(deserialized.method, method);
+            prop_assert_eq!(deserialized.id, json!(id));
+        }
+
+        // ── JsonRpcResponse always has jsonrpc 2.0 ──
+
+        #[test]
+        fn proptest_response_always_2_0(id in 0u64..1000) {
+            let resp = JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: Some(json!(42)),
+                error: None,
+                id: json!(id),
+            };
+            let s = serde_json::to_string(&resp).unwrap();
+            let parsed: JsonRpcResponse = serde_json::from_str(&s).unwrap();
+            prop_assert_eq!(parsed.jsonrpc, "2.0");
+            // error field should be absent (skip_serializing_if)
+            prop_assert!(!s.contains("\"error\""));
+        }
+
+        // ── Unknown method always returns -32601 ──
+
+        #[test]
+        fn proptest_unknown_method_returns_method_not_found(
+            method in "unknown_[a-z]{1,20}",
+            id in 0u64..1000,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let backend = Arc::new(RwLock::new(MockBackend::default()));
+                let req = JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: method.clone(),
+                    params: vec![],
+                    id: json!(id),
+                };
+                let resp = process_rpc_request(req, backend, 1).await;
+                let err = resp.error.unwrap();
+                prop_assert_eq!(err.code, -32601);
+                prop_assert!(err.message.contains(&method));
+                prop_assert_eq!(resp.id, json!(id));
+                Ok(())
+            })?;
+        }
+
+        // ── chain_id hex encoding ──
+
+        #[test]
+        fn proptest_chain_id_hex_format(chain_id in 1u64..=u64::MAX) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let backend = Arc::new(RwLock::new(MockBackend::default()));
+                let req = JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: "aeth_chainId".to_string(),
+                    params: vec![],
+                    id: json!(1),
+                };
+                let resp = process_rpc_request(req, backend, chain_id).await;
+                let result = resp.result.unwrap();
+                let hex_str = result.as_str().unwrap();
+                prop_assert!(hex_str.starts_with("0x"));
+                let parsed = u64::from_str_radix(hex_str.trim_start_matches("0x"), 16).unwrap();
+                prop_assert_eq!(parsed, chain_id);
+                Ok(())
+            })?;
+        }
+
+        // ── RateLimiter: burst tokens are consumed correctly ──
+
+        #[test]
+        fn proptest_rate_limiter_burst(burst in 1u32..=50) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let limiter = RateLimiter::new(burst, 0.0); // no refill
+                let ip: IpAddr = "127.0.0.1".parse().unwrap();
+                let mut allowed = 0u32;
+                for _ in 0..burst + 10 {
+                    if limiter.check(ip).await {
+                        allowed += 1;
+                    }
+                }
+                prop_assert_eq!(allowed, burst);
+                Ok(())
+            })?;
+        }
+
+        // ── RateLimiter: different IPs are independent ──
+
+        #[test]
+        fn proptest_rate_limiter_ip_isolation(
+            a in 1u8..=254,
+            b in 1u8..=254,
+        ) {
+            prop_assume!(a != b);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let limiter = RateLimiter::new(1, 0.0);
+                let ip_a = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, a));
+                let ip_b = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, b));
+                prop_assert!(limiter.check(ip_a).await);
+                prop_assert!(!limiter.check(ip_a).await);
+                prop_assert!(limiter.check(ip_b).await, "different IP should be independent");
+                Ok(())
+            })?;
+        }
+
+        // ── Airdrop: amount exceeding max is rejected ──
+
+        #[test]
+        fn proptest_airdrop_max_amount(
+            excess in 1u128..=1_000_000_000_000u128,
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let backend = Arc::new(RwLock::new(MockBackend { allow_airdrop: true }));
+                let addr = format!("0x{}", "11".repeat(20));
+                let amount = 1_000_000_000_000u128 + excess; // above max
+                let req = JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: "aeth_requestAirdrop".to_string(),
+                    params: vec![json!(addr), json!(amount.to_string())],
+                    id: json!(1),
+                };
+                let resp = process_rpc_request(req, backend, 1).await;
+                let err = resp.error.unwrap();
+                prop_assert!(err.message.contains("exceeds maximum"));
+                Ok(())
+            })?;
+        }
+
+        // ── get_block_by_hash: invalid hash length rejected ──
+
+        #[test]
+        fn proptest_block_by_hash_wrong_length(
+            len in (1usize..32).prop_union(33usize..64),
+        ) {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async {
+                let backend = Arc::new(RwLock::new(MockBackend::default()));
+                let hex_str = format!("0x{}", "aa".repeat(len));
+                let req = JsonRpcRequest {
+                    jsonrpc: "2.0".to_string(),
+                    method: "aeth_getBlockByHash".to_string(),
+                    params: vec![json!(hex_str), json!(false)],
+                    id: json!(1),
+                };
+                let resp = process_rpc_request(req, backend, 1).await;
+                prop_assert!(resp.error.is_some());
+                Ok(())
+            })?;
+        }
     }
 }
