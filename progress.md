@@ -949,3 +949,10 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
   - Now tests: all Prometheus metric subsystems, RPC health endpoint, request metrics, node sync/slot metrics
   - Added existence checks for Grafana dashboard and Prometheus alert config files
   - Note: CI workflow proptest job still blocked by GitHub token `workflow` scope
+
+### Agent 1 — Cycle 37 (2026-04-02)
+- **Task**: fix(consensus): guard epoch_length against division-by-zero in advance_slot
+- **Tier**: 2 (Consensus Hardening)
+- **Branch**: `fix/agent1-consensus-epoch-length-div-zero`
+- **PR**: #316 (merged)
+- **Details**: Both `HybridConsensus::new()` and `VrfPosConsensus::new()` accepted `epoch_length=0` without validation, causing a division-by-zero panic in `advance_slot`'s epoch boundary check (`current_slot % epoch_length`). Fixed by clamping `epoch_length` to `>= 1` in constructors via `.max(1)`, plus belt-and-suspenders guard at the modulo site. Added 3 regression tests.
