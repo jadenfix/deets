@@ -75,6 +75,9 @@ pub struct Node {
     /// Tracks (validator, slot) pairs that have already been slashed to prevent
     /// double-slashing the same offense via both vote-time detection and block evidence.
     slashed_offenses: HashSet<(Address, u64)>,
+    /// Slots at which this validator has already cast a vote, preventing
+    /// accidental double-votes when multiple blocks arrive for the same slot.
+    voted_slots: HashSet<u64>,
     /// Tracks sync state (synced, syncing, stalled).
     sync_manager: SyncManager,
     /// Number of connected peers (updated externally via `set_peer_count`).
@@ -168,6 +171,7 @@ impl Node {
             consecutive_timeouts: 0,
             slashing_detector: SlashingDetector::new(),
             slashed_offenses: HashSet::new(),
+            voted_slots: HashSet::new(),
             sync_manager: SyncManager::new(10),
             peer_count: 0,
             orphan_blocks: HashMap::new(),
@@ -762,6 +766,14 @@ impl Node {
 
         let block_hash = block.hash();
         let slot = block.header.slot;
+
+        // Prevent double-voting: if we already voted at this slot (e.g. from
+        // a different block produced by a concurrent VRF leader), skip.
+        if !self.voted_slots.insert(slot) {
+            tracing::debug!(slot, "Already voted at this slot — skipping to avoid double-vote");
+            return Ok(());
+        }
+
         let validator_pubkey = PublicKey::from_bytes(validator_key.public_key());
 
         let vote_msg = {
