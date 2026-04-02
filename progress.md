@@ -2,6 +2,14 @@
 
 **Date**: March 31, 2026
 
+## Agent 1 — Cycle 42 (2026-04-02)
+
+- **fix(runtime,node,consensus): replace remaining bare arithmetic with saturating/safe ops** — PR #336
+  - Gas metering in host_functions.rs: `saturating_mul` for `12 * words` and `8 * data.len()` to prevent overflow on large WASM inputs
+  - Sync slot arithmetic in sync.rs and node.rs: `saturating_add` to prevent wrap near u64::MAX
+  - Tau f64→u128 cast in vrf_pos.rs and hybrid.rs: clamp to [0.0, 1.0] with NaN/Inf guard
+  - Branch: `fix/agent1-runtime-node-saturating-arithmetic`
+
 ## Agent 3 — Cycle 42 (2026-04-02)
 
 - **bench(da): criterion benchmarks for erasure coding and turbine broadcast** — PR #334
