@@ -1100,18 +1100,17 @@ impl Node {
                 bail!("invalid BLS aggregate signature in block");
             }
 
-            // Verify quorum: locally-computed voted stake must be >= 2/3 of total
+            // Verify quorum: locally-computed voted stake must be >= 2/3 of total.
+            // Use the overflow-safe has_quorum() which handles large u128 stakes
+            // via checked_mul — bare `total_stake * 2` would overflow for stakes
+            // near u128::MAX, making the check trivially pass.
             let total_stake = self.consensus.total_stake();
-            if total_stake > 0 {
-                let required = total_stake * 2 / 3 + 1;
-                if voted_stake < required {
-                    bail!(
-                        "insufficient quorum: voted stake {} < required {} (2/3 of {})",
-                        voted_stake,
-                        required,
-                        total_stake
-                    );
-                }
+            if total_stake > 0 && !aether_consensus::has_quorum(voted_stake, total_stake) {
+                bail!(
+                    "insufficient quorum: voted stake {} < required 2/3 of {}",
+                    voted_stake,
+                    total_stake
+                );
             }
         }
 
