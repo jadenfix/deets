@@ -493,6 +493,13 @@ impl Node {
 
         // Check if sync is needed based on how far behind we are.
         if self.sync_manager.check_sync_needed(my_latest, current_slot) {
+            // Set expected parent hash from our latest block for chain continuity.
+            if self.sync_manager.blocks_applied() == 0 {
+                if let Some(hash) = self.latest_block_hash_if_set() {
+                    self.sync_manager.set_expected_parent(hash);
+                }
+            }
+
             // Request the next batch of blocks from peers.
             if let Some((from, to)) = self.sync_manager.next_request() {
                 tracing::info!(from, to, "Requesting sync blocks from peers");
@@ -505,10 +512,25 @@ impl Node {
 
         // Apply any contiguous buffered blocks.
         let ready = self.sync_manager.drain_ready();
+        let batch_len = ready.len();
         for block in ready {
             let slot = block.header.slot;
-            if let Err(e) = self.on_block_received(block) {
-                tracing::warn!(slot, err = %e, "Failed to apply sync block");
+            match self.on_block_received(block) {
+                Ok(()) => self.sync_manager.record_applied(),
+                Err(e) => tracing::warn!(slot, err = %e, "Failed to apply sync block"),
+            }
+        }
+        if batch_len > 0 {
+            if let Some((from, target)) = self.sync_manager.sync_range() {
+                tracing::info!(
+                    applied = batch_len,
+                    total_applied = self.sync_manager.blocks_applied(),
+                    next_expected = self.sync_manager.next_expected(),
+                    target_slot = target,
+                    from_slot = from,
+                    buffered = self.sync_manager.buffer_len(),
+                    "Sync progress"
+                );
             }
         }
     }
@@ -1669,6 +1691,15 @@ impl Node {
 
     pub fn latest_block_hash(&self) -> H256 {
         self.latest_block_hash
+    }
+
+    /// Returns the latest block hash only if we have processed at least one block.
+    fn latest_block_hash_if_set(&self) -> Option<H256> {
+        if self.latest_block_slot.is_some() {
+            Some(self.latest_block_hash)
+        } else {
+            None
+        }
     }
 
     pub fn allows_airdrop(&self) -> bool {
@@ -2954,6 +2985,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sync_buffers_and_applies_blocks_via_producer() {
+        // Use a producer node to generate valid blocks (with correct state roots),
+        // then test that a syncing receiver can buffer and apply them in order.
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+
+        // Produce a valid block at slot 1 (bootstrap slot, no QC required)
+        let block = {
+            let consensus = Box::new(SimpleConsensus::new(validators.clone()));
+            let mut producer = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+            producer.consensus.advance_slot(); // skip slot 0
+            producer.tick().unwrap();
+            producer.get_block_by_slot(1).unwrap()
+        };
+
+        let block_hash = block.hash();
+
+        // Receiver node starts syncing
+        let temp_dir2 = TempDir::new().unwrap();
+        let consensus2 = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir2.path(),
+            consensus2,
+            None,
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Advance receiver's consensus far enough to accept blocks
+        for _ in 0..10 {
+            node.consensus.advance_slot();
+        }
+
+        assert!(node.sync_manager.check_sync_needed(0, 50));
+        assert!(node.sync_manager.is_syncing());
+
+        // Buffer and drain
+        assert!(node.sync_manager.buffer_block(block.clone()));
+        let ready = node.sync_manager.drain_ready();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].header.slot, 1);
+
+        // Apply via on_block_received (full validation)
+        node.on_block_received(ready.into_iter().next().unwrap())
+            .unwrap();
+        node.sync_manager.record_applied();
+
+        assert_eq!(node.latest_block_slot(), Some(1));
+        assert_eq!(node.latest_block_hash(), block_hash);
+        assert_eq!(node.sync_manager.blocks_applied(), 1);
+    }
+
     /// A block whose timestamp is more than MAX_CLOCK_DRIFT_SECS in the future must be
     /// rejected to prevent proposers from manufacturing far-future timestamps.
     #[test]
@@ -3046,5 +3139,40 @@ mod tests {
             msg.contains("precedes parent timestamp"),
             "error must mention parent timestamp, got: {msg}"
         );
+    }
+
+    #[test]
+    fn handle_block_range_request_serves_produced_blocks() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Skip slot 0, produce blocks at slots 1 and 2
+        node.consensus.advance_slot();
+        node.tick().unwrap();
+        node.tick().unwrap();
+        assert_eq!(node.latest_block_slot(), Some(2));
+
+        // Clear outbound buffer
+        node.outbound_buffer.clear();
+
+        // Request blocks 1-2
+        node.handle_block_range_request(1, 2);
+
+        let broadcast_count = node
+            .outbound_buffer
+            .iter()
+            .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
+            .count();
+        assert_eq!(broadcast_count, 2);
     }
 }
