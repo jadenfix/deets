@@ -1,3 +1,4 @@
+use aether_metrics::MEMPOOL_METRICS;
 use aether_types::{Address, FeeParams, Transaction, H256};
 use anyhow::Result;
 use std::cmp::Ordering;
@@ -109,6 +110,7 @@ impl Mempool {
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
         // Reject cross-chain transactions (replay protection)
         if self.expected_chain_id != 0 && tx.chain_id != self.expected_chain_id {
+            MEMPOOL_METRICS.rejected_total.inc();
             anyhow::bail!(
                 "chain_id mismatch: tx has {}, expected {}",
                 tx.chain_id,
@@ -116,23 +118,33 @@ impl Mempool {
             );
         }
 
-        tx.verify_signature()
-            .map_err(|e| anyhow::anyhow!("invalid signature: {}", e))?;
+        tx.verify_signature().map_err(|e| {
+            MEMPOOL_METRICS.rejected_total.inc();
+            anyhow::anyhow!("invalid signature: {}", e)
+        })?;
 
-        tx.calculate_fee(&self.fee_params)
-            .map_err(|e| anyhow::anyhow!("invalid fee: {}", e))?;
+        tx.calculate_fee(&self.fee_params).map_err(|e| {
+            MEMPOOL_METRICS.rejected_total.inc();
+            anyhow::anyhow!("invalid fee: {}", e)
+        })?;
 
         if tx.fee < MIN_FEE {
+            MEMPOOL_METRICS.rejected_total.inc();
             anyhow::bail!("fee below minimum");
         }
 
         // Rate limiting
-        self.check_rate_limit(&tx.sender)?;
+        if let Err(e) = self.check_rate_limit(&tx.sender) {
+            MEMPOOL_METRICS.rate_limited_total.inc();
+            MEMPOOL_METRICS.rejected_total.inc();
+            return Err(e);
+        }
 
         let tx_hash = tx.hash();
 
         // Exact duplicate check
         if self.by_hash.contains_key(&tx_hash) {
+            MEMPOOL_METRICS.rejected_total.inc();
             anyhow::bail!("duplicate transaction");
         }
 
@@ -147,12 +159,14 @@ impl Mempool {
                 let old_fee = self.by_hash[&old_hash].fee;
                 let min_replacement_fee = old_fee.saturating_add(old_fee / 10);
                 if tx.fee <= min_replacement_fee {
+                    MEMPOOL_METRICS.rejected_total.inc();
                     anyhow::bail!(
                         "fee {} not high enough to replace (need >10% above {})",
                         tx.fee,
                         old_fee
                     );
                 }
+                MEMPOOL_METRICS.rbf_replacements_total.inc();
                 let old_nonce = self.by_hash[&old_hash].nonce;
                 // Remove the old transaction being replaced
                 self.by_hash.remove(&old_hash);
@@ -178,6 +192,7 @@ impl Mempool {
         let expected_nonce = self.next_nonce.get(&tx.sender).copied().unwrap_or(0);
 
         if tx.nonce < expected_nonce {
+            MEMPOOL_METRICS.rejected_total.inc();
             anyhow::bail!(
                 "nonce too low: tx nonce {} < expected {}",
                 tx.nonce,
@@ -202,6 +217,8 @@ impl Mempool {
                 .insert(tx.nonce, tx);
         }
 
+        MEMPOOL_METRICS.admitted_total.inc();
+        self.update_gauges();
         Ok(())
     }
 
@@ -269,6 +286,7 @@ impl Mempool {
 
     /// Handle a chain reorg: re-add reverted txs, remove invalid ones.
     pub fn reorg(&mut self, reverted_txs: Vec<Transaction>, new_tip_nonces: HashMap<Address, u64>) {
+        MEMPOOL_METRICS.reorgs_total.inc();
         // Reset nonces to the new chain tip
         for (sender, nonce) in &new_tip_nonces {
             self.next_nonce.insert(*sender, *nonce);
@@ -372,14 +390,18 @@ impl Mempool {
     }
 
     pub fn remove_transactions(&mut self, tx_hashes: &[H256]) {
+        let mut removed = 0u64;
         for hash in tx_hashes {
             if let Some(tx) = self.by_hash.remove(hash) {
                 if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
                     sender_txs.remove(hash);
                 }
+                removed += 1;
             }
         }
         self.rebuild_heap();
+        MEMPOOL_METRICS.removed_total.inc_by(removed);
+        self.update_gauges();
     }
 
     fn rebuild_heap(&mut self) {
@@ -393,6 +415,7 @@ impl Mempool {
     }
 
     fn evict_lowest_fee(&mut self) {
+        MEMPOOL_METRICS.evictions_total.inc();
         // Prefer evicting queued (future-nonce) txs over ready-to-execute pending txs.
         let mut worst_queued: Option<(Address, u64, u128)> = None;
         for (sender, nonces) in &self.queued {
@@ -441,6 +464,13 @@ impl Mempool {
 
     pub fn is_empty(&self) -> bool {
         self.by_hash.is_empty()
+    }
+
+    /// Update Prometheus gauge metrics to reflect current pool state.
+    fn update_gauges(&self) {
+        MEMPOOL_METRICS.pool_size.set(self.by_hash.len() as i64);
+        MEMPOOL_METRICS.pending_size.set(self.pending.len() as i64);
+        MEMPOOL_METRICS.queued_size.set(self.queued_len() as i64);
     }
 
     /// Number of queued (future nonce) transactions.

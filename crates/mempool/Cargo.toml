@@ -14,6 +14,7 @@ bincode.workspace = true
 tracing.workspace = true
 
 aether-types = { path = "../types" }
+aether-metrics = { path = "../metrics" }
 
 [dev-dependencies]
 aether-crypto-primitives = { path = "../crypto/primitives" }
