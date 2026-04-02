@@ -963,3 +963,10 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: `fix/agent1-consensus-epoch-length-div-zero`
 - **PR**: #316 (merged)
 - **Details**: Both `HybridConsensus::new()` and `VrfPosConsensus::new()` accepted `epoch_length=0` without validation, causing a division-by-zero panic in `advance_slot`'s epoch boundary check (`current_slot % epoch_length`). Fixed by clamping `epoch_length` to `>= 1` in constructors via `.max(1)`, plus belt-and-suspenders guard at the modulo site. Added 3 regression tests.
+
+## Agent 3 — Cycle 38 (2026-04-02)
+
+- **Task**: bench(consensus): criterion benchmarks for vote processing, BLS, and quorum
+- **Branch**: bench/agent3-consensus-benchmarks
+- **PR**: #319 (merged)
+- **Details**: Added 8 criterion benchmarks to aether-consensus. BLS keygen, sign, verify (individual ops). BLS signature and pubkey aggregation scaling at 4/16/64/128 validators. Full vote processing pipeline at 4/16/64 validators. Quorum check, VRF prove, slot advancement (100 validators × 100 slots).
