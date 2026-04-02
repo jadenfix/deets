@@ -978,3 +978,10 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: bench/agent3-consensus-benchmarks
 - **PR**: #319 (merged)
 - **Details**: Added 8 criterion benchmarks to aether-consensus. BLS keygen, sign, verify (individual ops). BLS signature and pubkey aggregation scaling at 4/16/64/128 validators. Full vote processing pipeline at 4/16/64 validators. Quorum check, VRF prove, slot advancement (100 validators × 100 slots).
+
+## Agent 3 — Cycle 39 (2026-04-02)
+
+- **Task**: bench(mempool): criterion benchmarks for tx insertion, block packing, and eviction
+- **Branch**: bench/agent3-mempool-benchmarks
+- **PR**: #325 (merged)
+- **Details**: Added 8 criterion benchmarks to aether-mempool across 4 groups: add throughput at 100/1K/5K distinct senders, single-sender 500-nonce ordering path, block packing (get_transactions) from 100/1K/5K pools, batch removal of 500 from 1K, TTL-based expiry of 1K stale txs.
