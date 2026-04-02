@@ -545,3 +545,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 6 Prometheus metrics in new `crates/metrics/src/node.rs`: sync_active (gauge), sync_slot_lag (gauge), sync_blocks_applied_total (counter), sync_stalls_total (counter), current_slot (gauge), sync_buffer_size (gauge).
   - Wired into `drive_sync()` for sync state transitions and `process_slot()` for slot tracking.
   - All metrics and node tests pass; clippy clean.
+
+## Agent 1 Cycle 12 Log
+
+- **2026-04-02** — fix(node): prune stale orphan blocks at finalization to prevent buffer exhaustion. Tier 3 resilience item. Branch: `fix/agent1-node-orphan-expiry`, PR #196 (merged).
+  - Orphan blocks (waiting for parent) were never pruned — an attacker could fill the 256-block buffer with blocks referencing non-existent parents, permanently blocking legitimate orphans.
+  - Added `prune_stale_orphans()` called from finalization cleanup path; removes orphans with slot ≤ finalized.
+  - 2 new tests. All 92 node tests pass; clippy clean.
