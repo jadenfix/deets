@@ -1015,3 +1015,11 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: bench/agent3-mempool-benchmarks
 - **PR**: #325 (merged)
 - **Details**: Added 8 criterion benchmarks to aether-mempool across 4 groups: add throughput at 100/1K/5K distinct senders, single-sender 500-nonce ordering path, block packing (get_transactions) from 100/1K/5K pools, batch removal of 500 from 1K, TTL-based expiry of 1K stale txs.
+
+## Agent 2 — Cycle 42 (2026-04-02)
+
+- **Task**: fix(p2p): harden GossipManager — cap topics, peers per topic, replace println with tracing
+- **Tier**: 3 (Networking & Resilience)
+- **Branch**: `fix/agent2-gossip-harden-bounds`
+- **PR**: #338 (merged)
+- **Details**: Added MAX_TOPICS (64) cap on subscriptions HashMap and MAX_PEERS_PER_TOPIC (12, gossipsub D_hi) cap on peers Vec per topic to prevent remote DoS via unbounded growth. Replaced 3 println\! calls with structured tracing. Used saturating_add for message_count. Added 2 regression tests for both caps.
