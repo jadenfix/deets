@@ -445,6 +445,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - 3 new tests: pruning correctness, empty-CF edge case, record creation verification
   - All workspace tests pass; clippy clean
 
+## Agent 3 Cycle 7 Log
+
+- **2026-04-02** — fix(ledger): defer overlay writes until after UTxO validation in speculative execution. Tier 1 correctness fix. Branch: `fix/agent3-overlay-write-after-validation`, PR #169 (merged).
+  - Root cause: `apply_tx_to_overlay` wrote the sender's account (incremented nonce, modified balance) to the `PendingOverlay` **before** UTxO input validation. If UTxO validation failed (non-existent input, wrong owner, etc.), the overlay retained the corrupted nonce. Subsequent valid transactions from the same sender in the same block would fail with "invalid nonce".
+  - Fix: moved all overlay writes (account state + speculative merkle tree updates) to after all validation passes. Account/balance changes are computed in local variables during validation, then committed to overlay only on success.
+  - Regression test: `test_failed_utxo_tx_does_not_corrupt_overlay_nonce` — two-tx block where tx1 (bad UTxO) fails and tx2 (valid transfer at nonce 0) succeeds.
+  - All workspace tests pass; clippy clean.
+
 ## Agent 4 Cycle 6 Log
 
 - **2026-04-02** — fix(node): prevent UTXO set corruption when fork-choice switches canonical at same slot. Tier 2 / fork choice correctness. Branch: `fix/agent4-fork-reorg-double-commit`, PR #163 (merged).
