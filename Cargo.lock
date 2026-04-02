@@ -331,6 +331,7 @@ name = "aether-ledger"
 version = "0.1.0"
 dependencies = [
  "aether-crypto-primitives",
+ "aether-metrics",
  "aether-state-merkle",
  "aether-state-storage",
  "aether-types",
@@ -342,6 +343,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -417,11 +419,13 @@ dependencies = [
  "aether-crypto-vrf",
  "aether-ledger",
  "aether-mempool",
+ "aether-metrics",
  "aether-p2p",
  "aether-program-staking",
  "aether-quic-transport",
  "aether-rpc-json",
  "aether-runtime",
+ "aether-state-snapshots",
  "aether-state-storage",
  "aether-types",
  "anyhow",
@@ -441,6 +445,7 @@ name = "aether-p2p"
 version = "0.1.0"
 dependencies = [
  "aether-gossipsub",
+ "aether-metrics",
  "aether-quic-transport",
  "aether-types",
  "anyhow",
@@ -486,10 +491,15 @@ dependencies = [
 name = "aether-program-job-escrow"
 version = "0.1.0"
 dependencies = [
+ "aether-crypto-kzg",
+ "aether-crypto-primitives",
  "aether-types",
+ "aether-verifiers-tee",
  "aether-verifiers-vcr",
  "anyhow",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -603,6 +613,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -640,6 +651,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "bincode",
  "num_cpus",
  "rocksdb",
  "serde",

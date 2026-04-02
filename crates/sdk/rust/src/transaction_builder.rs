@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use aether_crypto_primitives::Keypair;
 use aether_types::{Address, PublicKey, Signature, Transaction};
-use anyhow::{anyhow, bail, Result};
 
+use crate::error::AetherSdkError;
 use crate::types::{ClientConfig, TransferRequest};
 
 /// Builder for constructing token transfer transactions.
@@ -65,9 +65,13 @@ impl TransferBuilder {
     }
 
     /// Build and sign the transfer transaction.
-    pub fn build(self, keypair: &Keypair, nonce: u64) -> Result<Transaction> {
-        let recipient = self.recipient.ok_or_else(|| anyhow!("missing recipient"))?;
-        let amount = self.amount.ok_or_else(|| anyhow!("missing amount"))?;
+    pub fn build(self, keypair: &Keypair, nonce: u64) -> Result<Transaction, AetherSdkError> {
+        let recipient = self
+            .recipient
+            .ok_or_else(|| AetherSdkError::build("missing recipient"))?;
+        let amount = self
+            .amount
+            .ok_or_else(|| AetherSdkError::build("missing amount"))?;
 
         let payload = TransferRequest {
             recipient,
@@ -75,7 +79,8 @@ impl TransferBuilder {
             memo: self.memo,
         };
 
-        let payload_bytes = bincode::serialize(&payload)?;
+        let payload_bytes = bincode::serialize(&payload)
+            .map_err(AetherSdkError::serialization)?;
         let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
         let sender_address = sender_pubkey.to_address();
 
@@ -101,12 +106,17 @@ impl TransferBuilder {
         let message = tx.hash();
         let signature = keypair.sign(message.as_bytes());
         if signature.len() != 64 {
-            bail!("invalid signature length: {}", signature.len());
+            return Err(AetherSdkError::InvalidSignature(format!(
+                "invalid signature length: {}",
+                signature.len()
+            )));
         }
         tx.signature = Signature::from_bytes(signature);
-        tx.verify_signature()?;
+        tx.verify_signature()
+            .map_err(|e| AetherSdkError::InvalidSignature(e.to_string()))?;
         let fee_params = aether_types::ChainConfig::devnet().fees;
-        tx.calculate_fee(&fee_params)?;
+        tx.calculate_fee(&fee_params)
+            .map_err(|e| AetherSdkError::InvalidFee(e.to_string()))?;
         Ok(tx)
     }
 }
