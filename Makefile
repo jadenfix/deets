@@ -11,7 +11,7 @@
 
 .PHONY: all build test test-ts test-python test-all clean devnet testnet docs chaos validator-deploy \
         bench bench-parallel bench-consensus bench-mempool bench-ledger bench-storage bench-merkle \
-        bench-runtime bench-crypto bench-da
+        bench-runtime bench-crypto bench-da bench-rpc
 
 # Default target
 all: build test
@@ -140,6 +140,9 @@ bench-da:
 	cargo bench --package aether-da-erasure
 	cargo bench --package aether-da-turbine
 
+bench-rpc:
+	cargo bench --package aether-rpc-json
+
 # Run all benchmark suites across the workspace
 bench:
 	@echo "==> Running all criterion benchmarks"
@@ -153,6 +156,7 @@ bench:
 	cargo bench --package aether-crypto-vrf
 	cargo bench --package aether-da-erasure
 	cargo bench --package aether-da-turbine
+	cargo bench --package aether-rpc-json
 	@echo "==> All benchmarks complete"
 
 # ============================================================================
