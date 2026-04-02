@@ -851,3 +851,22 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Replaced 4 bare `fuel - cost` subtractions with `fuel.saturating_sub(cost)` in storage_read, storage_write, emit_log, get_caller host functions
   - Defense-in-depth: prevents potential u64 underflow to MAX if fuel guards are ever bypassed
   - All 29 mempool tests pass; clippy clean; full workspace green
+
+### Agent 4 — Cycle 30 (2026-04-02)
+- **Task**: test(tools/faucet): proptest for faucet validation invariants
+- **Tier**: 5 (Testing & Verification)
+- **Branch**: `test/agent4-faucet-proptest`, PR #285 (merged)
+- **Details**:
+  - Added 15 proptest property-based tests to `aether-faucet` (previously had 0 proptests)
+  - Covers: GitHub handle format (valid/hyphen-leading/hyphen-trailing/empty), hex address parsing (0x-prefix, raw hex, non-hex rejection), amount bounds (valid range, zero, over-limit), token allowlist (AIC/SWR case-insensitive, unlisted rejection), grant output invariants (memo encoding, normalized address, amount passthrough)
+  - Added `proptest = "1"` as dev-dependency
+  - All 19 tests (4 existing + 15 new) pass; clippy clean
+
+### Agent 4 — Cycle 30 (2026-04-02)
+- **Task**: test(tools/faucet): proptest for faucet validation invariants
+- **Tier**: 5 (Testing & Verification)
+- **Branch**: `test/agent4-faucet-proptest`, PR #285 (merged)
+- **Details**:
+  - Added 15 proptest property-based tests to `aether-faucet` (previously had 0 proptests)
+  - Covers: GitHub handle format, hex address parsing, amount bounds, token allowlist, grant output invariants
+  - All 19 tests (4 existing + 15 new) pass; clippy clean
