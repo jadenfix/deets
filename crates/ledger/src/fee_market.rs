@@ -54,7 +54,7 @@ impl FeeMarket {
     ///
     /// total_fee = base_fee * gas_limit + priority_fee
     pub fn min_fee_for_gas(&self, gas_limit: u64) -> u128 {
-        self.base_fee * gas_limit as u128
+        self.base_fee.saturating_mul(gas_limit as u128)
     }
 
     /// Process a block and update the base fee.
@@ -196,5 +196,23 @@ mod tests {
     fn test_min_fee_for_gas() {
         let fm = FeeMarket::new(10_000, 1_000_000, 1_000);
         assert_eq!(fm.min_fee_for_gas(21_000), 210_000_000);
+    }
+
+    #[test]
+    fn test_min_fee_for_gas_no_overflow_large_base_fee() {
+        // base_fee = u128::MAX/2, gas_limit = u64::MAX — bare `*` would overflow;
+        // saturating_mul must return u128::MAX instead of wrapping.
+        let fm = FeeMarket::new(u128::MAX / 2, 1_000_000, 1_000);
+        let result = fm.min_fee_for_gas(u64::MAX);
+        assert_eq!(result, u128::MAX, "overflow should saturate to u128::MAX");
+    }
+
+    #[test]
+    fn test_min_fee_for_gas_no_overflow_large_gas_limit() {
+        // Moderate base_fee but very large gas_limit still risks overflow without
+        // saturating_mul when base_fee * gas_limit > u128::MAX.
+        let fm = FeeMarket::new(u128::MAX, 1_000_000, 1_000);
+        let result = fm.min_fee_for_gas(2);
+        assert_eq!(result, u128::MAX, "overflow should saturate to u128::MAX");
     }
 }

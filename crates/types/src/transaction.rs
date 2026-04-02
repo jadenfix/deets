@@ -401,8 +401,14 @@ impl BlobTransaction {
 
     /// Calculate the blob fee (separate from execution gas fee).
     pub fn blob_fee(&self, fee_params: &FeeParams) -> u128 {
-        fee_params.blob_per_blob_fee * self.blob_count as u128
-            + fee_params.blob_per_byte_fee * self.total_blob_size as u128
+        fee_params
+            .blob_per_blob_fee
+            .saturating_mul(self.blob_count as u128)
+            .saturating_add(
+                fee_params
+                    .blob_per_byte_fee
+                    .saturating_mul(self.total_blob_size as u128),
+            )
     }
 }
 
@@ -465,5 +471,33 @@ mod blob_tests {
     fn test_blob_hash_deterministic() {
         let tx = make_blob_tx(1, 1000);
         assert_eq!(tx.hash(), tx.hash());
+    }
+
+    #[test]
+    fn test_blob_fee_no_overflow_large_params() {
+        // Verify that blob_fee saturates rather than wrapping on extreme inputs.
+        let tx = BlobTransaction {
+            nonce: 0,
+            chain_id: TESTNET_CHAIN_ID,
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(vec![2u8; 32]),
+            gas_limit: 21000,
+            fee: 0,
+            signature: Signature::from_bytes(vec![0u8; 64]),
+            blob_commitments: vec![vec![0u8; 48]],
+            blob_count: u32::MAX,
+            total_blob_size: u64::MAX,
+            program_id: None,
+            data: vec![],
+        };
+
+        // fee_params with max fee values
+        let mut fee_params = crate::chain_config::ChainConfig::devnet().fees;
+        fee_params.blob_per_blob_fee = u128::MAX;
+        fee_params.blob_per_byte_fee = u128::MAX;
+
+        // Should saturate to u128::MAX rather than overflow/panic
+        let fee = tx.blob_fee(&fee_params);
+        assert_eq!(fee, u128::MAX, "blob_fee must saturate on overflow");
     }
 }
