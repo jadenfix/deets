@@ -151,7 +151,7 @@ CONSECUTIVE_FAILURES=0
 RUNNER_LOG="${LOG_DIR}/runner-reviewer.log"
 
 echo "=== $AGENT_SIG ===" | tee "$RUNNER_LOG"
-echo "Model:    $MODEL (effort=max)" | tee -a "$RUNNER_LOG"
+echo "Model:    $MODEL" | tee -a "$RUNNER_LOG"
 echo "Cooldown: ${COOLDOWN}s" | tee -a "$RUNNER_LOG"
 echo "Hours:    $MAX_HOURS" | tee -a "$RUNNER_LOG"
 echo "Start:    $(date -Iseconds)" | tee -a "$RUNNER_LOG"
@@ -196,7 +196,7 @@ while true; do
     echo "[$(date -Iseconds)] Reviewer: Running → $LOG_FILE" | tee -a "$RUNNER_LOG"
 
     EXIT_CODE=0
-    caffeinate -dims claude --permission-mode bypassPermissions --model "$MODEL" --effort max -p "$TASK_PROMPT" >> "$LOG_FILE" 2>&1 || EXIT_CODE=$?
+    caffeinate -dims claude --permission-mode bypassPermissions --model "$MODEL" -p "$TASK_PROMPT" >> "$LOG_FILE" 2>&1 || EXIT_CODE=$?
 
     echo "[$(date -Iseconds)] Reviewer: Exit $EXIT_CODE" | tee -a "$RUNNER_LOG"
 
