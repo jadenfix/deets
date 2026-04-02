@@ -660,3 +660,151 @@ mod tests {
         assert!(verifier.commit(&coeffs).is_err());
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Use a small degree to keep pairing-based tests fast.
+    const TEST_DEGREE: usize = 8;
+
+    fn verifier() -> KzgVerifier {
+        KzgVerifier::new_insecure_test(TEST_DEGREE)
+    }
+
+    /// Generate a random scalar (32 bytes). We keep the high bit clear to stay
+    /// well within the BLS12-381 field modulus for all test inputs.
+    fn arb_scalar() -> impl Strategy<Value = ScalarBytes> {
+        prop::array::uniform32(any::<u8>()).prop_map(|mut b| {
+            b[31] &= 0x3f; // keep top two bits clear — avoids field overflow
+            b
+        })
+    }
+
+    /// Generate a non-empty coefficient vector of length 1..=TEST_DEGREE+1.
+    fn arb_coeffs() -> impl Strategy<Value = Vec<ScalarBytes>> {
+        prop::collection::vec(arb_scalar(), 1..=TEST_DEGREE + 1)
+    }
+
+    proptest! {
+        // Use a reduced case count because KZG pairing checks are expensive.
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// Committing to the same polynomial twice produces identical bytes.
+        #[test]
+        fn commitment_is_deterministic(coeffs in arb_coeffs()) {
+            let v = verifier();
+            let c1 = v.commit(&coeffs).unwrap();
+            let c2 = v.commit(&coeffs).unwrap();
+            prop_assert_eq!(c1.commitment, c2.commitment);
+        }
+
+        /// Every commitment is exactly 48 bytes (compressed G1 point).
+        #[test]
+        fn commitment_size_is_48_bytes(coeffs in arb_coeffs()) {
+            let v = verifier();
+            let c = v.commit(&coeffs).unwrap();
+            prop_assert_eq!(c.commitment.len(), 48);
+        }
+
+        /// A valid proof created for any polynomial and evaluation point verifies.
+        #[test]
+        fn valid_proof_always_verifies(coeffs in arb_coeffs(), z in arb_scalar()) {
+            let v = verifier();
+            let commitment = v.commit(&coeffs).unwrap();
+            let proof = v.create_proof(&coeffs, &z).unwrap();
+            let valid = v.verify(&commitment, &proof, &z).unwrap();
+            prop_assert!(valid, "valid proof must verify");
+        }
+
+        /// Proof evaluation field is exactly 32 bytes.
+        #[test]
+        fn proof_evaluation_is_32_bytes(coeffs in arb_coeffs(), z in arb_scalar()) {
+            let v = verifier();
+            let proof = v.create_proof(&coeffs, &z).unwrap();
+            prop_assert_eq!(proof.proof.len(), 48);
+            prop_assert_eq!(proof.evaluation.len(), 32);
+        }
+
+        /// Tampered commitment byte causes verification failure.
+        #[test]
+        fn tampered_commitment_fails(
+            coeffs in arb_coeffs(),
+            z in arb_scalar(),
+            byte_idx in 0usize..48,
+            flip in 1u8..=255u8,
+        ) {
+            let v = verifier();
+            let mut commitment = v.commit(&coeffs).unwrap();
+            let proof = v.create_proof(&coeffs, &z).unwrap();
+            commitment.commitment[byte_idx] ^= flip;
+            // A tampered commitment either fails to decompress (Err) or returns false.
+            let result = v.verify(&commitment, &proof, &z);
+            let ok = result.map(|b| !b).unwrap_or(true);
+            prop_assert!(ok, "tampered commitment must not verify");
+        }
+
+        /// Tampered evaluation (y value) causes verification failure.
+        #[test]
+        fn tampered_evaluation_fails(coeffs in arb_coeffs(), z in arb_scalar(), flip in 1u8..=255u8) {
+            let v = verifier();
+            let commitment = v.commit(&coeffs).unwrap();
+            let mut proof = v.create_proof(&coeffs, &z).unwrap();
+            proof.evaluation[0] ^= flip;
+            let result = v.verify(&commitment, &proof, &z);
+            let ok = result.map(|b| !b).unwrap_or(true);
+            prop_assert!(ok, "tampered evaluation must not verify");
+        }
+
+        /// Verifying at a different z-point fails when polynomials are non-constant
+        /// (a constant polynomial evaluates to the same value everywhere).
+        #[test]
+        fn wrong_z_fails_for_nonconstant_poly(
+            // Use ≥2 coefficients to guarantee the polynomial is non-constant.
+            coeffs in prop::collection::vec(arb_scalar(), 2..=TEST_DEGREE + 1),
+            z in arb_scalar(),
+            z_wrong in arb_scalar(),
+        ) {
+            prop_assume!(z != z_wrong);
+            let v = verifier();
+            let commitment = v.commit(&coeffs).unwrap();
+            let proof = v.create_proof(&coeffs, &z).unwrap();
+            // Proof was created for z but we verify at z_wrong — should fail.
+            let result = v.verify(&commitment, &proof, &z_wrong);
+            let ok = result.map(|b| !b).unwrap_or(true);
+            prop_assert!(ok, "proof for z must not verify at z_wrong");
+        }
+
+        /// Different polynomials produce different commitments (with overwhelming probability).
+        #[test]
+        fn different_polys_different_commitments(
+            coeffs1 in arb_coeffs(),
+            coeffs2 in arb_coeffs(),
+        ) {
+            prop_assume!(coeffs1 != coeffs2);
+            let v = verifier();
+            let c1 = v.commit(&coeffs1).unwrap();
+            let c2 = v.commit(&coeffs2).unwrap();
+            // Collision is cryptographically negligible; assert for testing purposes.
+            prop_assert_ne!(c1.commitment, c2.commitment);
+        }
+
+        /// Batch verification passes when all individual proofs are valid.
+        #[test]
+        fn batch_verify_valid_proofs(
+            coeffs1 in prop::collection::vec(arb_scalar(), 1..=4),
+            coeffs2 in prop::collection::vec(arb_scalar(), 1..=4),
+            z1 in arb_scalar(),
+            z2 in arb_scalar(),
+        ) {
+            let v = verifier();
+            let c1 = v.commit(&coeffs1).unwrap();
+            let c2 = v.commit(&coeffs2).unwrap();
+            let p1 = v.create_proof(&coeffs1, &z1).unwrap();
+            let p2 = v.create_proof(&coeffs2, &z2).unwrap();
+            let valid = v.batch_verify(&[c1, c2], &[p1, p2], &[z1, z2]).unwrap();
+            prop_assert!(valid, "batch verify of valid proofs must pass");
+        }
+    }
+}
