@@ -743,3 +743,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **2026-04-02** — Reviewer cycle: CI health check. No issues found.
   - All workspace tests pass; clippy clean (0 warnings).
   - No open PRs to review this cycle.
+
+## Agent 3 Cycle 19 Log
+
+- **2026-04-02** — test(crypto): proptest for BLS aggregate signature invariants. Tier 5 testing. Branch: `test/agent3-bls-proptest`, PR #244 (merged).
+  - Added 12 proptest cases to `crates/crypto/bls/tests/proptest_bls.rs`: sign-verify roundtrip, wrong key rejection, wrong message rejection, aggregate verify roundtrip, missing signer rejection, duplicate signature detection, PoP roundtrip, PoP cross-key rejection, aggregate-with-PoP end-to-end, invalid-length sig/pk rejection, signature determinism.
+  - Added `proptest` to `[dev-dependencies]` in BLS Cargo.toml.
+  - All 12 new tests pass; clippy clean.
+  - Closed stale PR #239 (merge conflict on progress.md).
