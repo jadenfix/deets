@@ -803,3 +803,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Tests cover: commitment hash determinism, collision resistance (different salts, different txs), valid roundtrip success, early reveal rejection, expired reveal rejection, cleanup precision, ordering invariant (slot then hash), remove semantics, duplicate commitment rejection.
   - Added 1 unit test for duplicate commitment rejection.
   - All 19 tests pass (200 cases each for proptests); clippy clean.
+
+## Agent 2 Cycle 24 Log
+
+- **2026-04-02** — fix(networking): bound PeerScores map and fix empty vote broadcast. Branch: `fix/agent2-channel-backpressure`, PR #267 (merged).
+  - Bounded gossipsub PeerScores map at 4096 entries to prevent Sybil memory exhaustion. When at capacity, the lowest-scoring peer is evicted to make room.
+  - Fixed vote broadcast bug: serialization failure previously published an empty Vec to gossipsub. Now the error is logged and message dropped.
+  - Added 2 unit tests for eviction behavior. All 7 gossipsub tests and 102 node tests pass; clippy clean.
