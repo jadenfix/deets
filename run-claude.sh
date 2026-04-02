@@ -214,11 +214,13 @@ run_agent() {
         echo "" | tee -a "$RUNNER_LOG"
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Cycle $CYCLE" | tee -a "$RUNNER_LOG"
 
-        # ── Recreate worktree if directory was deleted ──
-        if [ ! -d "$WORK_DIR" ]; then
-            echo "[$(date -Iseconds)] Agent $AGENT_ID: Work dir gone, recreating worktree..." | tee -a "$RUNNER_LOG"
-            git -C "$REPO_DIR" worktree prune 2>/dev/null || true
-            git -C "$REPO_DIR" worktree add --detach "$WORK_DIR" HEAD 2>&1 | tee -a "$RUNNER_LOG"
+        # ── Ensure work dir exists (recreate if deleted) ──
+        if ! cd "$WORK_DIR" 2>/dev/null || ! pwd -P >/dev/null 2>&1; then
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: Work dir gone, recreating..." | tee -a "$RUNNER_LOG"
+            cd "$REPO_DIR"
+            git worktree remove --force "$WORK_DIR" 2>/dev/null || true
+            git worktree prune 2>/dev/null || true
+            git worktree add --detach "$WORK_DIR" HEAD 2>&1 | tee -a "$RUNNER_LOG"
             cd "$WORK_DIR"
         fi
 
@@ -226,8 +228,8 @@ run_agent() {
         git checkout -- . 2>/dev/null || true
         git clean -fd 2>/dev/null || true
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Syncing to latest main..." | tee -a "$RUNNER_LOG"
-        git fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
-        git checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
+        git -C "$WORK_DIR" fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
+        git -C "$WORK_DIR" checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
 
         # ── Build prompt with live comms ──
         local TASK_PROMPT

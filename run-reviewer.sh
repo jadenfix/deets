@@ -176,18 +176,20 @@ while true; do
     echo "" | tee -a "$RUNNER_LOG"
     echo "[$(date -Iseconds)] Reviewer: Cycle $CYCLE" | tee -a "$RUNNER_LOG"
 
-    # Recreate worktree if deleted
-    if [ ! -d "$WORKTREE" ]; then
+    # Ensure worktree exists (recreate if deleted)
+    if ! cd "$WORKTREE" 2>/dev/null || ! pwd -P >/dev/null 2>&1; then
         echo "[$(date -Iseconds)] Reviewer: Worktree gone, recreating..." | tee -a "$RUNNER_LOG"
-        git -C "$REPO_DIR" worktree prune 2>/dev/null || true
-        git -C "$REPO_DIR" worktree add --detach "$WORKTREE" HEAD 2>&1 | tee -a "$RUNNER_LOG"
+        cd "$REPO_DIR"
+        git worktree remove --force "$WORKTREE" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        git worktree add --detach "$WORKTREE" HEAD 2>&1 | tee -a "$RUNNER_LOG"
         cd "$WORKTREE"
     fi
 
     git checkout -- . 2>/dev/null || true
     git clean -fd 2>/dev/null || true
-    git fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
-    git checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
+    git -C "$WORKTREE" fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
+    git -C "$WORKTREE" checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
 
     TASK_PROMPT=$(reviewer_prompt "$WORKTREE")
 
