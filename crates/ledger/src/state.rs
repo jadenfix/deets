@@ -7,6 +7,7 @@ use aether_types::{
 };
 use anyhow::{anyhow, bail, Result};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 /// In-memory overlay for speculative block execution.
 /// Reads check overlay first, falls back to storage. Writes stay in memory
@@ -115,6 +116,7 @@ impl Ledger {
     }
 
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<TransactionReceipt> {
+        let _span = tracing::debug_span!("apply_transaction", tx_hash = ?tx.hash()).entered();
         tx.verify_signature()?;
         self.apply_transaction_validated(tx)
     }
@@ -507,6 +509,12 @@ impl Ledger {
         transactions: &[Transaction],
         expected_chain_id: Option<u64>,
     ) -> Result<(Vec<TransactionReceipt>, PendingOverlay)> {
+        let _span = tracing::info_span!(
+            "apply_block_speculative",
+            tx_count = transactions.len(),
+        )
+        .entered();
+        let start = Instant::now();
         let mut overlay = PendingOverlay::new();
         let mut receipts = Vec::new();
 
@@ -578,6 +586,11 @@ impl Ledger {
         }
 
         overlay.state_root = spec_tree.root();
+        tracing::info!(
+            elapsed_us = start.elapsed().as_micros() as u64,
+            tx_count = transactions.len(),
+            "Speculative block execution complete"
+        );
         Ok((receipts, overlay))
     }
 
@@ -818,6 +831,7 @@ impl Ledger {
     /// All state changes (accounts, UTXOs, state root) are written in a single
     /// atomic WriteBatch so a crash mid-commit cannot corrupt state.
     pub fn commit_overlay(&mut self, overlay: PendingOverlay) -> Result<()> {
+        let _span = tracing::info_span!("commit_overlay").entered();
         let batch = self.prepare_overlay_batch(&overlay)?;
         self.storage.write_batch(batch)?;
         Ok(())
@@ -846,6 +860,11 @@ impl Ledger {
         &mut self,
         transactions: &[Transaction],
     ) -> Result<Vec<TransactionReceipt>> {
+        let _span = tracing::info_span!(
+            "apply_block_transactions",
+            tx_count = transactions.len(),
+        )
+        .entered();
         let mut receipts = Vec::new();
 
         if transactions.is_empty() {
