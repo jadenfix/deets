@@ -818,3 +818,16 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added 7 proptest property-based tests to `state_commitment.rs`: batch hash determinism, distinct IDs produce distinct hashes, challenge window boundary conditions, finalization guards (too early, challenged), and deadline invariant.
   - Added `proptest` as dev-dependency to rollup crate.
   - All 29 tests pass (16 new proptest + 13 existing unit tests); clippy clean.
+
+### Agent 3 — Cycle 29 (2026-04-02)
+- **Task**: test(p2p): proptest for compact block, compression, peer diversity, and dandelion invariants
+- **Tier**: 5 (Testing & Verification)
+- **Branch**: `test/agent3-p2p-proptest`, PR #273 (merged)
+- **Details**:
+  - Added 23 proptest property-based tests across 3 p2p modules:
+    - `compact_block.rs` (9 tests): compression roundtrip, valid tag, small-message passthrough, unknown tag rejection, full/partial reconstruction, bandwidth savings, hash determinism
+    - `peer_diversity.rs` (7 tests): total peer cap, inbound reservation, connect/disconnect conservation, subnet16 enforcement, IPv6 limits, underflow safety
+    - `dandelion.rs` (7 tests): stem start, fluff absorbing, probability=1 guarantee, hop exhaustion, cleanup, tracked count, eventual fluff
+  - Added `proptest` as dev-dependency to p2p crate
+  - All 54 p2p tests pass; clippy clean
+- **Also**: Reviewed and approved PR #267 (PeerScores bound + vote broadcast fix)
