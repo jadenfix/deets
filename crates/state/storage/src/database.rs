@@ -624,3 +624,169 @@ mod tests {
         assert_eq!(value, Some(b"flush_value".to_vec()));
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use tempfile::TempDir;
+
+    /// Arbitrary non-empty byte vector (keys and values).
+    fn arb_bytes() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 1..64)
+    }
+
+    proptest! {
+        /// A value written to any supported CF can always be read back unchanged.
+        #[test]
+        fn write_read_roundtrip(
+            key in arb_bytes(),
+            value in arb_bytes(),
+            cf_idx in 0usize..4,
+        ) {
+            let cfs = [CF_ACCOUNTS, CF_UTXOS, CF_BLOCKS, CF_METADATA];
+            let cf = cfs[cf_idx];
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            storage.put(cf, &key, &value).unwrap();
+            let result = storage.get(cf, &key).unwrap();
+            prop_assert_eq!(result, Some(value));
+        }
+
+        /// A key that was never written returns None.
+        #[test]
+        fn absent_key_returns_none(key in arb_bytes()) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            let result = storage.get(CF_METADATA, &key).unwrap();
+            prop_assert_eq!(result, None);
+        }
+
+        /// After deleting a key, get returns None.
+        #[test]
+        fn delete_removes_key(key in arb_bytes(), value in arb_bytes()) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            storage.put(CF_METADATA, &key, &value).unwrap();
+            storage.delete(CF_METADATA, &key).unwrap();
+            let result = storage.get(CF_METADATA, &key).unwrap();
+            prop_assert_eq!(result, None);
+        }
+
+        /// Writing a key twice returns the latest value (last-write-wins).
+        #[test]
+        fn overwrite_returns_latest(key in arb_bytes(), v1 in arb_bytes(), v2 in arb_bytes()) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            storage.put(CF_METADATA, &key, &v1).unwrap();
+            storage.put(CF_METADATA, &key, &v2).unwrap();
+            let result = storage.get(CF_METADATA, &key).unwrap();
+            prop_assert_eq!(result, Some(v2));
+        }
+
+        /// All writes in a batch are atomically visible after write_batch.
+        #[test]
+        fn batch_all_writes_visible(
+            pairs in prop::collection::vec((arb_bytes(), arb_bytes()), 1..10),
+        ) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            let mut batch = StorageBatch::new();
+            for (k, v) in &pairs {
+                batch.put(CF_METADATA, k.clone(), v.clone());
+            }
+            storage.write_batch(batch).unwrap();
+            for (k, v) in &pairs {
+                let result = storage.get(CF_METADATA, k).unwrap();
+                prop_assert_eq!(&result, &Some(v.clone()));
+            }
+        }
+
+        /// Batch delete removes all targeted keys and leaves others untouched.
+        #[test]
+        fn batch_delete_selective(
+            key_del in arb_bytes(),
+            key_keep in arb_bytes(),
+            val_del in arb_bytes(),
+            val_keep in arb_bytes(),
+        ) {
+            prop_assume!(key_del != key_keep);
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+
+            // Write both
+            storage.put(CF_METADATA, &key_del, &val_del).unwrap();
+            storage.put(CF_METADATA, &key_keep, &val_keep).unwrap();
+
+            // Delete one via batch
+            let mut batch = StorageBatch::new();
+            batch.delete(CF_METADATA, key_del.clone());
+            storage.write_batch(batch).unwrap();
+
+            prop_assert_eq!(storage.get(CF_METADATA, &key_del).unwrap(), None);
+            prop_assert_eq!(storage.get(CF_METADATA, &key_keep).unwrap(), Some(val_keep));
+        }
+
+        /// Writes to different column families are isolated — same key in different CFs
+        /// holds independent values.
+        #[test]
+        fn column_family_isolation(key in arb_bytes(), v1 in arb_bytes(), v2 in arb_bytes()) {
+            prop_assume!(v1 != v2);
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            storage.put(CF_ACCOUNTS, &key, &v1).unwrap();
+            storage.put(CF_METADATA, &key, &v2).unwrap();
+            prop_assert_eq!(storage.get(CF_ACCOUNTS, &key).unwrap(), Some(v1));
+            prop_assert_eq!(storage.get(CF_METADATA, &key).unwrap(), Some(v2));
+        }
+
+        /// Keys stored in CF_BLOCKS with a numeric slot prefix are retrievable
+        /// by exact lookup (simulating block storage pattern).
+        #[test]
+        fn slot_prefix_lookup(slot in any::<u64>(), suffix in arb_bytes(), value in arb_bytes()) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            let mut key = slot.to_be_bytes().to_vec();
+            key.extend_from_slice(&suffix);
+            storage.put(CF_BLOCKS, &key, &value).unwrap();
+            let result = storage.get(CF_BLOCKS, &key).unwrap();
+            prop_assert_eq!(result, Some(value));
+        }
+
+        /// Deleting a key that was never written does not error.
+        #[test]
+        fn delete_nonexistent_is_safe(key in arb_bytes()) {
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            prop_assert!(storage.delete(CF_METADATA, &key).is_ok());
+        }
+
+        /// StorageBatch::extend merges both batches: all keys from both are written.
+        #[test]
+        fn batch_extend_merges(
+            pairs_a in prop::collection::vec((arb_bytes(), arb_bytes()), 1..5),
+            pairs_b in prop::collection::vec((arb_bytes(), arb_bytes()), 1..5),
+        ) {
+            // Ensure no key overlap between batches (for deterministic result)
+            prop_assume!(pairs_a.iter().all(|(ka, _)| pairs_b.iter().all(|(kb, _)| ka != kb)));
+
+            let tmp = TempDir::new().unwrap();
+            let storage = Storage::open(tmp.path()).unwrap();
+            let mut batch_a = StorageBatch::new();
+            let mut batch_b = StorageBatch::new();
+            for (k, v) in &pairs_a {
+                batch_a.put(CF_METADATA, k.clone(), v.clone());
+            }
+            for (k, v) in &pairs_b {
+                batch_b.put(CF_METADATA, k.clone(), v.clone());
+            }
+            batch_a.extend(batch_b);
+            storage.write_batch(batch_a).unwrap();
+
+            for (k, v) in pairs_a.iter().chain(pairs_b.iter()) {
+                let result = storage.get(CF_METADATA, k).unwrap();
+                prop_assert_eq!(&result, &Some(v.clone()));
+            }
+        }
+    }
+}
