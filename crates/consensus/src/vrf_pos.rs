@@ -295,6 +295,16 @@ mod tests {
     }
 
     #[test]
+    fn test_add_validator_updates_total_stake() {
+        let v1 = create_test_validator(1000);
+        let mut consensus = VrfPosConsensus::new(vec![v1], 0.8, 100);
+        assert_eq!(consensus.total_stake(), 1000);
+        let v2 = create_test_validator(2000);
+        consensus.add_validator(v2);
+        assert_eq!(consensus.total_stake(), 3000);
+    }
+
+    #[test]
     fn test_stake_proportional_eligibility() {
         // Validator with 50% stake should be eligible ~40% of time (tau=0.8 * 0.5)
         let high_stake_validator = create_test_validator(5000);
@@ -323,5 +333,146 @@ mod tests {
 
         // Just check it's reasonable (10-70% range)
         assert!(rate > 0.1 && rate < 0.7);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_crypto_vrf::VrfKeypair;
+    use aether_types::PublicKey;
+    use proptest::prelude::*;
+
+    fn create_validator(stake: u128) -> ValidatorInfo {
+        let keypair = aether_crypto_primitives::Keypair::generate();
+        ValidatorInfo {
+            pubkey: PublicKey::from_bytes(keypair.public_key()),
+            stake,
+            commission: 0,
+            active: true,
+        }
+    }
+
+    proptest! {
+        /// Total stake equals the sum of all validator stakes.
+        #[test]
+        fn total_stake_is_sum(stakes in prop::collection::vec(1u128..=1_000_000, 1..10)) {
+            let validators: Vec<ValidatorInfo> = stakes.iter().map(|&s| create_validator(s)).collect();
+            let expected: u128 = stakes.iter().copied().fold(0u128, u128::saturating_add);
+            let consensus = VrfPosConsensus::new(validators, 0.5, 100);
+            prop_assert_eq!(consensus.total_stake(), expected);
+        }
+
+        /// Validator count matches input.
+        #[test]
+        fn validator_count_matches(n in 1usize..=20) {
+            let validators: Vec<ValidatorInfo> = (0..n).map(|_| create_validator(1000)).collect();
+            let consensus = VrfPosConsensus::new(validators, 0.5, 100);
+            prop_assert_eq!(consensus.validator_count(), n);
+        }
+
+        /// Slot advances monotonically.
+        #[test]
+        fn slot_advances_monotonically(advances in 1usize..=50) {
+            let validators = vec![create_validator(1000)];
+            let mut consensus = VrfPosConsensus::new(validators, 0.5, 100);
+            let mut prev = consensus.current_slot();
+            for _ in 0..advances {
+                consensus.advance_slot();
+                let cur = consensus.current_slot();
+                prop_assert!(cur > prev, "slot must increase");
+                prev = cur;
+            }
+        }
+
+        /// Epoch advances at epoch boundaries.
+        #[test]
+        fn epoch_advances_at_boundary(epoch_len in 2u64..=20) {
+            let validators = vec![create_validator(1000)];
+            let mut consensus = VrfPosConsensus::new(validators, 0.5, epoch_len);
+            prop_assert_eq!(consensus.current_epoch(), 0);
+            for _ in 0..epoch_len {
+                consensus.advance_slot();
+            }
+            prop_assert_eq!(consensus.current_epoch(), 1);
+        }
+
+        /// Epoch randomness changes at epoch boundary.
+        #[test]
+        fn randomness_rotates_at_epoch(epoch_len in 2u64..=20) {
+            let validators = vec![create_validator(1000)];
+            let mut consensus = VrfPosConsensus::new(validators, 0.5, epoch_len);
+            let initial = consensus.epoch_randomness;
+            for _ in 0..epoch_len {
+                consensus.advance_slot();
+            }
+            prop_assert_ne!(consensus.epoch_randomness, initial,
+                "randomness must change at epoch boundary");
+        }
+
+        /// update_stake maintains total_stake conservation.
+        #[test]
+        fn update_stake_conserves_total(
+            old_stake in 100u128..=10000,
+            new_stake in 100u128..=10000,
+        ) {
+            let v = create_validator(old_stake);
+            let addr = v.pubkey.to_address();
+            let mut consensus = VrfPosConsensus::new(vec![v], 0.5, 100);
+            prop_assert_eq!(consensus.total_stake(), old_stake);
+            consensus.update_stake(&addr, new_stake).unwrap();
+            prop_assert_eq!(consensus.total_stake(), new_stake);
+        }
+
+        /// add_validator increases total_stake and count.
+        #[test]
+        fn add_validator_increases_stake_and_count(
+            initial_stakes in prop::collection::vec(100u128..=10000, 1..5),
+            new_stake in 100u128..=10000,
+        ) {
+            let validators: Vec<ValidatorInfo> = initial_stakes.iter().map(|&s| create_validator(s)).collect();
+            let initial_count = validators.len();
+            let initial_total: u128 = initial_stakes.iter().copied().fold(0u128, u128::saturating_add);
+            let mut consensus = VrfPosConsensus::new(validators, 0.5, 100);
+
+            let new_v = create_validator(new_stake);
+            consensus.add_validator(new_v);
+            prop_assert_eq!(consensus.validator_count(), initial_count + 1);
+            prop_assert_eq!(consensus.total_stake(), initial_total.saturating_add(new_stake));
+        }
+
+        /// is_eligible_leader never errors for registered validators.
+        #[test]
+        fn eligible_leader_never_errors(slot in 0u64..1000, stake in 1u128..=100_000) {
+            let v = create_validator(stake);
+            let addr = v.pubkey.to_address();
+            let consensus = VrfPosConsensus::new(vec![v], 0.8, 100);
+            let vrf_kp = VrfKeypair::generate();
+            let result = consensus.is_eligible_leader(&vrf_kp, slot, &addr);
+            prop_assert!(result.is_ok(), "is_eligible_leader must not error for registered validator");
+        }
+
+        /// is_eligible_leader errors for unregistered validators.
+        #[test]
+        fn eligible_leader_errors_for_unknown(slot in 0u64..1000) {
+            let v = create_validator(1000);
+            let consensus = VrfPosConsensus::new(vec![v], 0.8, 100);
+            let unknown = create_validator(500);
+            let unknown_addr = unknown.pubkey.to_address();
+            let vrf_kp = VrfKeypair::generate();
+            prop_assert!(consensus.is_eligible_leader(&vrf_kp, slot, &unknown_addr).is_err());
+        }
+
+        /// advance_epoch changes epoch number and randomness deterministically.
+        #[test]
+        fn advance_epoch_deterministic(seed in prop::array::uniform32(any::<u8>())) {
+            let v = create_validator(1000);
+            let mut c1 = VrfPosConsensus::new(vec![v.clone()], 0.5, 100);
+            let mut c2 = VrfPosConsensus::new(vec![v], 0.5, 100);
+            c1.advance_epoch(seed);
+            c2.advance_epoch(seed);
+            prop_assert_eq!(c1.epoch_randomness, c2.epoch_randomness);
+            prop_assert_eq!(c1.current_epoch(), c2.current_epoch());
+        }
     }
 }
