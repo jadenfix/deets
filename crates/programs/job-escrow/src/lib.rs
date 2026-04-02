@@ -111,7 +111,9 @@ impl JobEscrowState {
             payment,
             status: JobStatus::Posted,
             posted_slot: current_slot,
-            deadline_slot: current_slot + deadline_slots,
+            deadline_slot: current_slot
+                .checked_add(deadline_slots)
+                .ok_or_else(|| "slot overflow in deadline calculation".to_string())?,
             challenge_end_slot: None,
         };
 
@@ -193,7 +195,11 @@ impl JobEscrowState {
         job.output_hash = Some(output_hash);
         job.vcr_proof = Some(vcr_proof);
         job.status = JobStatus::Submitted;
-        job.challenge_end_slot = Some(current_slot + 10); // 10 slot challenge period
+        job.challenge_end_slot = Some(
+            current_slot
+                .checked_add(10)
+                .ok_or_else(|| "slot overflow in challenge period calculation".to_string())?,
+        ); // 10 slot challenge period
 
         Ok(())
     }

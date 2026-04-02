@@ -127,7 +127,9 @@ impl GovernanceState {
             votes_against: 0,
             status: ProposalStatus::Active,
             start_slot: current_slot,
-            end_slot: current_slot + self.voting_period_slots,
+            end_slot: current_slot
+                .checked_add(self.voting_period_slots)
+                .ok_or_else(|| "slot overflow in voting period calculation".to_string())?,
             execution_slot: None,
             voters: HashMap::new(),
             // Snapshot effective voting power at proposal creation to prevent
@@ -229,7 +231,11 @@ impl GovernanceState {
         // Check majority
         if proposal.votes_for > proposal.votes_against {
             proposal.status = ProposalStatus::Passed;
-            proposal.execution_slot = Some(current_slot + self.timelock_slots);
+            proposal.execution_slot = Some(
+                current_slot
+                    .checked_add(self.timelock_slots)
+                    .ok_or_else(|| "slot overflow in timelock calculation".to_string())?,
+            );
         } else {
             proposal.status = ProposalStatus::Failed;
         }

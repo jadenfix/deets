@@ -260,7 +260,9 @@ impl StakingState {
             address: delegator,
             validator,
             amount,
-            complete_slot: current_slot + 100_800,
+            complete_slot: current_slot
+                .checked_add(100_800)
+                .ok_or(StakingError::Overflow)?,
         });
 
         self.total_staked = self
