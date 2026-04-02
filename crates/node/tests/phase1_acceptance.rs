@@ -124,7 +124,7 @@ fn test_phase1_wasm_runtime_executes_contract() {
         timestamp: 1_000,
     };
 
-    let mut vm = WasmVm::new(50_000);
+    let mut vm = WasmVm::new(50_000).unwrap();
     let result = vm
         .execute(wasm, &context, b"input")
         .expect("WASM execution succeeds");
