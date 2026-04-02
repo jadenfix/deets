@@ -3,41 +3,265 @@
     "title": "Aether Blockchain Overview",
     "tags": ["aether", "blockchain"],
     "timezone": "browser",
+    "refresh": "10s",
+    "templating": {
+      "list": [
+        {
+          "name": "instance",
+          "type": "query",
+          "query": "label_values(aether_node_current_slot, instance)",
+          "refresh": 2,
+          "includeAll": true,
+          "multi": true
+        }
+      ]
+    },
     "panels": [
       {
-        "title": "Slots Finalized",
+        "title": "Consensus",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "Slots Finalized (rate)",
         "targets": [{"expr": "rate(aether_consensus_slots_finalized[5m])"}],
-        "type": "graph"
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1}
       },
       {
-        "title": "Finality Latency (p95)",
-        "targets": [{"expr": "histogram_quantile(0.95, rate(aether_consensus_finality_latency_ms_bucket[5m]))"}],
-        "type": "graph"
-      },
-      {
-        "title": "Transactions Executed",
-        "targets": [{"expr": "rate(aether_runtime_tx_executed[1m])"}],
-        "type": "graph"
-      },
-      {
-        "title": "DA Reconstruction Success Rate",
-        "targets": [{"expr": "rate(aether_da_blocks_reconstructed_total[5m]) / (rate(aether_da_blocks_reconstructed_total[5m]) + rate(aether_da_reconstruction_failures_total[5m]))"}],
-        "type": "graph"
-      },
-      {
-        "title": "Network Bandwidth (Mbps)",
+        "title": "Finality Latency (p50 / p95 / p99)",
         "targets": [
-          {"expr": "rate(aether_net_quic_bytes_sent_total[1m]) * 8 / 1000000", "legendFormat": "Out"},
-          {"expr": "rate(aether_net_quic_bytes_received_total[1m]) * 8 / 1000000", "legendFormat": "In"}
+          {"expr": "histogram_quantile(0.50, rate(aether_consensus_finality_latency_ms_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, rate(aether_consensus_finality_latency_ms_bucket[5m]))", "legendFormat": "p95"},
+          {"expr": "histogram_quantile(0.99, rate(aether_consensus_finality_latency_ms_bucket[5m]))", "legendFormat": "p99"}
         ],
-        "type": "graph"
+        "type": "graph",
+        "yaxes": [{"format": "ms"}],
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 1}
+      },
+      {
+        "title": "Blocks Produced / Received",
+        "targets": [
+          {"expr": "rate(aether_consensus_blocks_produced[5m])", "legendFormat": "produced"},
+          {"expr": "rate(aether_consensus_blocks_received[5m])", "legendFormat": "received"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 1}
+      },
+      {
+        "title": "Fork Events",
+        "targets": [{"expr": "rate(aether_consensus_fork_events[5m])"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 1}
+      },
+      {
+        "title": "Runtime & Transactions",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "Transaction Throughput (TPS)",
+        "targets": [{"expr": "rate(aether_runtime_tx_executed[1m])"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 10}
+      },
+      {
+        "title": "Block Production Latency (ms)",
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(aether_consensus_block_production_ms_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, rate(aether_consensus_block_production_ms_bucket[5m]))", "legendFormat": "p95"}
+        ],
+        "type": "graph",
+        "yaxes": [{"format": "ms"}],
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 10}
+      },
+      {
+        "title": "Parallel Execution Speedup",
+        "targets": [{"expr": "histogram_quantile(0.50, rate(aether_runtime_parallel_speedup_bucket[5m]))"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 10}
+      },
+      {
+        "title": "Mempool",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "Mempool Size",
+        "targets": [
+          {"expr": "aether_mempool_size", "legendFormat": "total"},
+          {"expr": "aether_mempool_pending_size", "legendFormat": "pending"},
+          {"expr": "aether_mempool_queued_size", "legendFormat": "queued"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 19}
+      },
+      {
+        "title": "Mempool Throughput",
+        "targets": [
+          {"expr": "rate(aether_mempool_admitted_total[5m])", "legendFormat": "admitted/s"},
+          {"expr": "rate(aether_mempool_removed_total[5m])", "legendFormat": "removed/s"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 19}
+      },
+      {
+        "title": "Mempool Rejections & Evictions",
+        "targets": [
+          {"expr": "rate(aether_mempool_rejected_total[5m])", "legendFormat": "rejected/s"},
+          {"expr": "rate(aether_mempool_evictions_total[5m])", "legendFormat": "evicted/s"},
+          {"expr": "rate(aether_mempool_rate_limited_total[5m])", "legendFormat": "rate-limited/s"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 19}
+      },
+      {
+        "title": "Networking & P2P",
+        "type": "row",
+        "collapsed": false
       },
       {
         "title": "Connected Peers",
         "targets": [{"expr": "aether_net_peers_connected"}],
-        "type": "graph"
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 28}
+      },
+      {
+        "title": "Network Bandwidth (Mbps)",
+        "targets": [
+          {"expr": "rate(aether_net_quic_bytes_sent_total[1m]) * 8 / 1000000", "legendFormat": "out"},
+          {"expr": "rate(aether_net_quic_bytes_received_total[1m]) * 8 / 1000000", "legendFormat": "in"}
+        ],
+        "type": "graph",
+        "yaxes": [{"format": "Mbps"}],
+        "gridPos": {"h": 8, "w": 6, "x": 6, "y": 28}
+      },
+      {
+        "title": "P2P Messages by Topic",
+        "targets": [
+          {"expr": "rate(aether_p2p_messages_received_by_topic[5m])", "legendFormat": "{{topic}}"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 12, "y": 28}
+      },
+      {
+        "title": "Peer Bans & Dropped Messages",
+        "targets": [
+          {"expr": "rate(aether_p2p_peers_banned_total[5m])", "legendFormat": "bans/s"},
+          {"expr": "rate(aether_p2p_messages_dropped_banned_total[5m])", "legendFormat": "dropped (banned)/s"},
+          {"expr": "rate(aether_p2p_messages_dropped_oversized[5m])", "legendFormat": "dropped (oversized)/s"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 6, "x": 18, "y": 28}
+      },
+      {
+        "title": "Data Availability",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "DA Reconstruction Success Rate",
+        "targets": [{"expr": "rate(aether_da_blocks_reconstructed_total[5m]) / (rate(aether_da_blocks_reconstructed_total[5m]) + rate(aether_da_reconstruction_failures_total[5m]))"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37}
+      },
+      {
+        "title": "Packet Loss Rate",
+        "targets": [{"expr": "rate(aether_da_packets_lost_total[5m]) / (rate(aether_da_packets_lost_total[5m]) + rate(aether_da_shreds_received_total[5m]))"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 37}
+      },
+      {
+        "title": "RPC",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "RPC Request Rate by Method",
+        "targets": [
+          {"expr": "rate(aether_rpc_requests_total[5m])", "legendFormat": "{{method}}"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 46}
+      },
+      {
+        "title": "RPC Latency (p50 / p95)",
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(aether_rpc_request_duration_seconds_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, rate(aether_rpc_request_duration_seconds_bucket[5m]))", "legendFormat": "p95"}
+        ],
+        "type": "graph",
+        "yaxes": [{"format": "s"}],
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 46}
+      },
+      {
+        "title": "RPC Errors & Rate Limits",
+        "targets": [
+          {"expr": "rate(aether_rpc_errors_total[5m])", "legendFormat": "errors {{method}}"},
+          {"expr": "rate(aether_rpc_rate_limited_total[5m])", "legendFormat": "rate-limited"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 46}
+      },
+      {
+        "title": "Storage",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "Storage Write Latency (p50 / p95)",
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(aether_storage_write_batch_ms_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, rate(aether_storage_write_batch_ms_bucket[5m]))", "legendFormat": "p95"}
+        ],
+        "type": "graph",
+        "yaxes": [{"format": "ms"}],
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 55}
+      },
+      {
+        "title": "Storage Read Latency (p50 / p95)",
+        "targets": [
+          {"expr": "histogram_quantile(0.50, rate(aether_storage_read_latency_ms_bucket[5m]))", "legendFormat": "p50"},
+          {"expr": "histogram_quantile(0.95, rate(aether_storage_read_latency_ms_bucket[5m]))", "legendFormat": "p95"}
+        ],
+        "type": "graph",
+        "yaxes": [{"format": "ms"}],
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 55}
+      },
+      {
+        "title": "Blocks Persisted & Bytes Written",
+        "targets": [
+          {"expr": "rate(aether_storage_blocks_persisted_total[5m])", "legendFormat": "blocks/s"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 55}
+      },
+      {
+        "title": "Sync",
+        "type": "row",
+        "collapsed": false
+      },
+      {
+        "title": "Sync Slot Lag",
+        "targets": [{"expr": "aether_node_sync_slot_lag"}],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 64}
+      },
+      {
+        "title": "Current Slot",
+        "targets": [{"expr": "aether_node_current_slot"}],
+        "type": "stat",
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 64}
+      },
+      {
+        "title": "Sync Blocks Applied & Stalls",
+        "targets": [
+          {"expr": "rate(aether_node_sync_blocks_applied_total[5m])", "legendFormat": "blocks/s"},
+          {"expr": "rate(aether_node_sync_stalls_total[5m])", "legendFormat": "stalls/s"}
+        ],
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 64}
       }
     ]
   }
 }
-

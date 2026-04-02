@@ -62,6 +62,108 @@ groups:
           summary: "High network connection error rate"
           description: "Error rate: {{ $value }} errors/s"
 
+  - name: aether_mempool
+    interval: 30s
+    rules:
+      - alert: MempoolBacklog
+        expr: aether_mempool_size > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mempool backlog growing"
+          description: "Mempool has {{ $value }} pending transactions"
+
+      - alert: HighMempoolEvictionRate
+        expr: rate(aether_mempool_evictions_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High mempool eviction rate"
+          description: "Evicting {{ $value }} txs/s — mempool at capacity"
+
+      - alert: HighMempoolRejectionRate
+        expr: rate(aether_mempool_rejected_total[5m]) / (rate(aether_mempool_admitted_total[5m]) + rate(aether_mempool_rejected_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 50% of mempool submissions rejected"
+          description: "Rejection rate: {{ $value | humanizePercentage }}"
+
+  - name: aether_rpc
+    interval: 30s
+    rules:
+      - alert: HighRPCLatency
+        expr: histogram_quantile(0.95, rate(aether_rpc_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC P95 latency exceeds 2s"
+          description: "P95 latency: {{ $value }}s"
+
+      - alert: HighRPCErrorRate
+        expr: rate(aether_rpc_errors_total[5m]) / rate(aether_rpc_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC error rate above 5%"
+          description: "Error rate: {{ $value | humanizePercentage }}"
+
+      - alert: RPCRateLimitingActive
+        expr: rate(aether_rpc_rate_limited_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "RPC rate limiting is active"
+          description: "Rate-limiting {{ $value }} requests/s"
+
+  - name: aether_storage
+    interval: 30s
+    rules:
+      - alert: HighStorageWriteLatency
+        expr: histogram_quantile(0.95, rate(aether_storage_write_batch_ms_bucket[5m])) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Storage write latency P95 > 50ms"
+          description: "P95 write latency: {{ $value }}ms"
+
+      - alert: HighStorageReadLatency
+        expr: histogram_quantile(0.95, rate(aether_storage_read_latency_ms_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Storage read latency P95 > 10ms"
+          description: "P95 read latency: {{ $value }}ms"
+
+  - name: aether_sync
+    interval: 30s
+    rules:
+      - alert: NodeSyncLagging
+        expr: aether_node_sync_slot_lag > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node is lagging behind network"
+          description: "Slot lag: {{ $value }} slots behind"
+
+      - alert: SyncStalled
+        expr: rate(aether_node_sync_stalls_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node sync has stalled"
+          description: "Stall rate: {{ $value }}/s"
+
   - name: aether_slo
     interval: 30s
     rules:
