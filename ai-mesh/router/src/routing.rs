@@ -128,3 +128,81 @@ mod tests {
         assert_eq!(metrics.routed_jobs(), 1);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn eligible_provider(id: String, rep: i32) -> ProviderCandidate {
+        ProviderCandidate {
+            provider_id: id,
+            capabilities: vec![],
+            reputation_score: rep,
+            avg_latency_ms: 200,
+            price_per_unit: 1_000,
+            available: true,
+            active_jobs: 0,
+            max_concurrent_jobs: 10,
+        }
+    }
+
+    proptest! {
+        /// route_job returns None when providers list is empty.
+        #[test]
+        fn prop_empty_providers_returns_none(_seed in any::<u8>()) {
+            let job = JobRequest::default();
+            prop_assert!(route_job(&job, &[]).is_none());
+        }
+
+        /// route_job result job_id matches the request job_id.
+        #[test]
+        fn prop_decision_job_id_matches(job_id in "[a-z0-9]{1,16}") {
+            let job = JobRequest { job_id: job_id.clone(), ..JobRequest::default() };
+            let providers = vec![eligible_provider("p1".to_string(), 50)];
+            if let Some(decision) = route_job(&job, &providers) {
+                prop_assert_eq!(decision.job_id, job_id);
+            }
+        }
+
+        /// route_job decision score is in [0.0, 1.0].
+        #[test]
+        fn prop_decision_score_in_unit_interval(rep in 0i32..=100) {
+            let job = JobRequest::default();
+            let providers = vec![eligible_provider("p1".to_string(), rep)];
+            if let Some(decision) = route_job(&job, &providers) {
+                prop_assert!(decision.score >= 0.0);
+                prop_assert!(decision.score <= 1.0);
+            }
+        }
+
+        /// route_job selects the provider with highest reputation when all else equal.
+        #[test]
+        fn prop_highest_rep_wins(
+            rep_a in 0i32..=50,
+            rep_b in 51i32..=100,
+        ) {
+            let job = JobRequest::default();
+            let providers = vec![
+                eligible_provider("a".to_string(), rep_a),
+                eligible_provider("b".to_string(), rep_b),
+            ];
+            let decision = route_job(&job, &providers).unwrap();
+            prop_assert_eq!(decision.provider_id, "b");
+        }
+
+        /// All unavailable providers yields None.
+        #[test]
+        fn prop_all_unavailable_returns_none(n in 1usize..=5) {
+            let job = JobRequest::default();
+            let providers: Vec<_> = (0..n)
+                .map(|i| ProviderCandidate {
+                    provider_id: format!("p{i}"),
+                    available: false,
+                    ..ProviderCandidate::default()
+                })
+                .collect();
+            prop_assert!(route_job(&job, &providers).is_none());
+        }
+    }
+}
