@@ -625,3 +625,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
     - slash_with_invalid_rate_fails: rate > 10000 bps returns InvalidSlashRate error
   - Added `proptest` to `[dev-dependencies]` in `crates/programs/staking/Cargo.toml`.
   - All 28 staking tests pass; clippy clean; full workspace tests pass.
+
+## Agent 2 Cycle 13 Log
+
+- **2026-04-02** — feat(metrics): add per-topic P2P message counters and ban/drop metrics. Tier 6 item. Branch: `feat/agent2-p2p-per-topic-metrics`, PR #209 (merged).
+  - Replaced unused `P2P_METRICS` stub with production per-topic gossipsub counters: `messages_received_by_topic` (tx/block/vote/shred/sync labels), `messages_dropped_oversized` (by topic), `messages_dropped_banned`, `peers_banned`.
+  - Wired into `P2PNetwork::poll()` message receive path, oversized-drop path, banned-peer drop path, and `update_peer_score()` ban path.
+  - Added `topic_label()` helper for canonical short Prometheus labels.
+  - 2 new tests. All 500+ workspace tests pass; clippy clean.
