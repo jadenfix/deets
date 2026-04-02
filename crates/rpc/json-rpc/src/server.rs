@@ -6,12 +6,74 @@ use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{broadcast, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use warp::ws::{Message, WebSocket};
 use warp::{Filter, Reply};
+
+/// Per-IP token-bucket rate limiter for RPC endpoints.
+///
+/// Each IP gets `max_tokens` tokens, refilled at `refill_rate` tokens/sec.
+/// A request is allowed if at least one token is available; otherwise a
+/// 429 Too Many Requests response is returned.
+#[derive(Clone)]
+pub struct RateLimiter {
+    state: Arc<Mutex<HashMap<IpAddr, TokenBucket>>>,
+    pub(crate) max_tokens: u32,
+    pub(crate) refill_rate: f64,
+}
+
+struct TokenBucket {
+    tokens: f64,
+    last_refill: Instant,
+}
+
+impl RateLimiter {
+    pub fn new(max_tokens: u32, refill_rate: f64) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HashMap::new())),
+            max_tokens,
+            refill_rate,
+        }
+    }
+
+    pub async fn check(&self, ip: IpAddr) -> bool {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        let max = self.max_tokens as f64;
+        let rate = self.refill_rate;
+
+        let bucket = state.entry(ip).or_insert(TokenBucket {
+            tokens: max,
+            last_refill: now,
+        });
+
+        let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * rate).min(max);
+        bucket.last_refill = now;
+
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub async fn cleanup(&self, max_age: Duration) {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        state.retain(|_, bucket| now.duration_since(bucket.last_refill) < max_age);
+    }
+}
+
+/// Warp rejection for rate-limited requests.
+#[derive(Debug)]
+struct RateLimited;
+impl warp::reject::Reject for RateLimited {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -163,7 +225,12 @@ pub struct JsonRpcServer<B: RpcBackend> {
     chain_id: u64,
     /// Optional future that resolves when the server should shut down.
     shutdown_signal: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    /// Per-IP rate limiter for RPC requests.
+    rate_limiter: RateLimiter,
 }
+
+const DEFAULT_RPC_RATE_LIMIT_BURST: u32 = 100;
+const DEFAULT_RPC_RATE_LIMIT_PER_SEC: f64 = 50.0;
 
 impl<B: RpcBackend + 'static> JsonRpcServer<B> {
     pub fn new(backend: B, port: u16) -> Self {
@@ -171,9 +238,12 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             backend: Arc::new(RwLock::new(backend)),
             subscriptions: Arc::new(SubscriptionManager::new()),
             port,
-            // Default to mainnet chain_id = 1; use `with_chain_id` to override.
             chain_id: 1,
             shutdown_signal: None,
+            rate_limiter: RateLimiter::new(
+                DEFAULT_RPC_RATE_LIMIT_BURST,
+                DEFAULT_RPC_RATE_LIMIT_PER_SEC,
+            ),
         }
     }
 
@@ -185,7 +255,17 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             port,
             chain_id,
             shutdown_signal: None,
+            rate_limiter: RateLimiter::new(
+                DEFAULT_RPC_RATE_LIMIT_BURST,
+                DEFAULT_RPC_RATE_LIMIT_PER_SEC,
+            ),
         }
+    }
+
+    /// Override rate limit parameters.
+    pub fn with_rate_limit(mut self, max_burst: u32, per_sec: f64) -> Self {
+        self.rate_limiter = RateLimiter::new(max_burst, per_sec);
+        self
     }
 
     /// Set a shutdown signal that will gracefully stop the server when resolved.
@@ -206,9 +286,37 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
         let backend = self.backend.clone();
         let subs = self.subscriptions.clone();
         let chain_id = self.chain_id;
+        let rate_limiter = self.rate_limiter.clone();
 
+        // Periodic cleanup of stale rate-limiter entries (every 5 min).
+        let cleanup_limiter = rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                cleanup_limiter.cleanup(Duration::from_secs(600)).await;
+            }
+        });
+
+        let rpc_limiter = rate_limiter.clone();
         let rpc = warp::post()
             .and(warp::path::end())
+            .and(warp::addr::remote())
+            .and_then(move |addr: Option<std::net::SocketAddr>| {
+                let limiter = rpc_limiter.clone();
+                async move {
+                    let ip = addr
+                        .map(|a| a.ip())
+                        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+                    if limiter.check(ip).await {
+                        Ok(())
+                    } else {
+                        tracing::warn!(%ip, "RPC rate limit exceeded");
+                        Err(warp::reject::custom(RateLimited))
+                    }
+                }
+            })
+            .untuple_one()
             .and(warp::body::content_length_limit(1024 * 256)) // 256KB max
             .and(warp::body::json())
             .and(with_backend(backend))
@@ -263,9 +371,19 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             cors = cors.allow_origin(origin.as_str());
         }
 
-        let routes = rpc.or(health).or(ws).with(cors);
+        let routes = rpc
+            .or(health)
+            .or(ws)
+            .recover(handle_rejection)
+            .with(cors);
 
-        tracing::info!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
+        tracing::info!(
+            port = self.port,
+            rate_limit_burst = self.rate_limiter.max_tokens,
+            rate_limit_per_sec = self.rate_limiter.refill_rate,
+            "JSON-RPC server listening on 127.0.0.1:{}",
+            self.port
+        );
         tracing::info!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
 
         if let Some(signal) = self.shutdown_signal {
@@ -278,6 +396,26 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
 
         tracing::info!("RPC server stopped");
         Ok(())
+    }
+}
+
+async fn handle_rejection(
+    err: warp::Rejection,
+) -> Result<impl Reply, warp::Rejection> {
+    if err.find::<RateLimited>().is_some() {
+        Ok(warp::reply::with_status(
+            warp::reply::json(&json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32029,
+                    "message": "Rate limit exceeded"
+                },
+                "id": null
+            })),
+            warp::http::StatusCode::TOO_MANY_REQUESTS,
+        ))
+    } else {
+        Err(err)
     }
 }
 
@@ -1108,5 +1246,46 @@ mod tests {
         assert_eq!(result["finalizedSlot"], 0);
         assert_eq!(result["peerCount"], 0);
         assert_eq!(result["sync"]["syncing"], false);
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_allows_within_burst() {
+        let limiter = RateLimiter::new(5, 10.0);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        for _ in 0..5 {
+            assert!(limiter.check(ip).await);
+        }
+        assert!(!limiter.check(ip).await, "should deny over burst");
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_isolates_ips() {
+        let limiter = RateLimiter::new(2, 1.0);
+        let ip1: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip2: IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(limiter.check(ip1).await);
+        assert!(limiter.check(ip1).await);
+        assert!(!limiter.check(ip1).await, "ip1 exhausted");
+        assert!(limiter.check(ip2).await, "ip2 independent");
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_refills_over_time() {
+        let limiter = RateLimiter::new(1, 1000.0);
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(limiter.check(ip).await);
+        assert!(!limiter.check(ip).await);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(limiter.check(ip).await, "should refill");
+    }
+
+    #[tokio::test]
+    async fn rate_limiter_cleanup_removes_stale() {
+        let limiter = RateLimiter::new(5, 10.0);
+        let ip: IpAddr = "192.168.1.1".parse().unwrap();
+        limiter.check(ip).await;
+        assert_eq!(limiter.state.lock().await.len(), 1);
+        limiter.cleanup(Duration::ZERO).await;
+        assert_eq!(limiter.state.lock().await.len(), 0);
     }
 }
