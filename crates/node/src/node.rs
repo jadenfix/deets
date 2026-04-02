@@ -879,6 +879,7 @@ impl Node {
             &block.header.proposer,
             fee_result.proposer_reward,
             fee_result.burned,
+            fee_result.treasury_fee,
         )?;
         // Record spent UTXOs for light-client audit and epoch-based pruning.
         self.ledger.record_spent_utxos(&mut batch, &overlay, slot);
@@ -1285,6 +1286,7 @@ impl Node {
                 &block.header.proposer,
                 fee_result.proposer_reward,
                 fee_result.burned,
+                fee_result.treasury_fee,
             )?;
             // Record spent UTXOs for light-client audit and epoch-based pruning.
             self.ledger

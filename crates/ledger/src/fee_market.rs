@@ -25,6 +25,8 @@ pub struct FeeMarket {
     pub total_burned: u128,
     /// Total priority fees paid to proposers.
     pub total_priority_fees: u128,
+    /// Total priority fees allocated to treasury.
+    pub total_treasury_fees: u128,
 }
 
 /// Result of processing a block's fees.
@@ -32,8 +34,10 @@ pub struct FeeMarket {
 pub struct BlockFeeResult {
     /// Base fee that was burned for this block.
     pub burned: u128,
-    /// Priority fees paid to the proposer.
+    /// Priority fees paid to the proposer (60% of tip).
     pub proposer_reward: u128,
+    /// Priority fees allocated to the treasury (40% of tip).
+    pub treasury_fee: u128,
     /// New base fee for the next block.
     pub next_base_fee: u128,
 }
@@ -47,6 +51,7 @@ impl FeeMarket {
             min_base_fee,
             total_burned: 0,
             total_priority_fees: 0,
+            total_treasury_fees: 0,
         }
     }
 
@@ -70,11 +75,16 @@ impl FeeMarket {
     ) -> BlockFeeResult {
         // Calculate burn amount (base_fee * gas_used)
         let burned = self.base_fee.saturating_mul(block_gas_used as u128);
-        // Proposer gets the remainder (priority fees / tips)
-        let proposer_reward = total_fees_collected.saturating_sub(burned);
+        // Priority fee (tip) is the remainder after the base fee burn
+        let priority_fee = total_fees_collected.saturating_sub(burned);
+
+        // Split priority fee: 60% to proposer, 40% to treasury
+        let (proposer_reward, treasury_fee) =
+            crate::emission::EmissionSchedule::distribute_priority_fee(priority_fee);
 
         self.total_burned = self.total_burned.saturating_add(burned);
         self.total_priority_fees = self.total_priority_fees.saturating_add(proposer_reward);
+        self.total_treasury_fees = self.total_treasury_fees.saturating_add(treasury_fee);
 
         // Adjust base fee for next block (EIP-1559 formula)
         let next_base_fee = self.calculate_next_base_fee(block_gas_used);
@@ -83,6 +93,7 @@ impl FeeMarket {
         BlockFeeResult {
             burned,
             proposer_reward,
+            treasury_fee,
             next_base_fee,
         }
     }
@@ -177,8 +188,9 @@ mod tests {
 
         // Burned = base_fee * gas_used = 10,000 * 100,000 = 1,000,000,000
         assert_eq!(result.burned, 1_000_000_000);
-        // Proposer gets the remainder
-        assert_eq!(result.proposer_reward, 1_000_000_000);
+        // Priority fee = 2B - 1B = 1B. Proposer gets 60%, treasury gets 40%.
+        assert_eq!(result.proposer_reward, 600_000_000);
+        assert_eq!(result.treasury_fee, 400_000_000);
     }
 
     #[test]
@@ -190,6 +202,24 @@ mod tests {
 
         assert!(fm.total_burned > 0);
         assert!(fm.total_priority_fees > 0);
+        assert!(fm.total_treasury_fees > 0);
+    }
+
+    #[test]
+    fn test_priority_fee_split_60_40() {
+        let mut fm = FeeMarket::new(10_000, 1_000_000, 1_000);
+
+        // 100k gas used, total fees 2B.
+        // Burned = 10_000 * 100_000 = 1B.  Priority = 1B.
+        let result = fm.process_block(100_000, 2_000_000_000);
+        // 60% of 1B = 600M to proposer, 40% = 400M to treasury
+        assert_eq!(result.proposer_reward, 600_000_000);
+        assert_eq!(result.treasury_fee, 400_000_000);
+        assert_eq!(
+            result.proposer_reward + result.treasury_fee + result.burned,
+            2_000_000_000,
+            "proposer + treasury + burned must equal total fees"
+        );
     }
 
     #[test]

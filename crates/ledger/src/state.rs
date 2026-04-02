@@ -429,6 +429,7 @@ impl Ledger {
         proposer: &Address,
         proposer_reward: u128,
         burned: u128,
+        treasury_fee: u128,
     ) -> Result<()> {
         if proposer_reward > 0 {
             // Read proposer account from overlay first (in case proposer submitted txs),
@@ -461,6 +462,26 @@ impl Ledger {
             );
         }
 
+        // Accumulate treasury fees in metadata. These are held in reserve
+        // until the governance module is wired in and can claim them.
+        if treasury_fee > 0 {
+            let current = self
+                .storage
+                .get(CF_METADATA, b"total_treasury_fees")?
+                .map(|bytes| {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&bytes[..16.min(bytes.len())]);
+                    u128::from_le_bytes(arr)
+                })
+                .unwrap_or(0);
+            let new_total = current.saturating_add(treasury_fee);
+            batch.put(
+                CF_METADATA,
+                b"total_treasury_fees".to_vec(),
+                new_total.to_le_bytes().to_vec(),
+            );
+        }
+
         Ok(())
     }
 
@@ -468,6 +489,21 @@ impl Ledger {
     pub fn total_burned(&self) -> u128 {
         self.storage
             .get(CF_METADATA, b"total_burned")
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let mut arr = [0u8; 16];
+                arr.copy_from_slice(&bytes[..16.min(bytes.len())]);
+                u128::from_le_bytes(arr)
+            })
+            .unwrap_or(0)
+    }
+
+    /// Get the total treasury fees accumulated since genesis.
+    /// These fees are held in reserve until governance can claim them.
+    pub fn total_treasury_fees(&self) -> u128 {
+        self.storage
+            .get(CF_METADATA, b"total_treasury_fees")
             .ok()
             .flatten()
             .map(|bytes| {
@@ -1973,7 +2009,7 @@ mod tests {
         let mut batch = StorageBatch::new();
         let reward = 5_000u128;
         ledger
-            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, reward, 0)
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, reward, 0, 0)
             .unwrap();
         ledger.write_batch(batch).unwrap();
 
@@ -1993,11 +2029,39 @@ mod tests {
         let overlay = PendingOverlay::new();
         let mut batch = StorageBatch::new();
         ledger
-            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 0, 1_000)
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 0, 1_000, 0)
             .unwrap();
         ledger.write_batch(batch).unwrap();
 
         assert_eq!(ledger.total_burned(), 1_000);
+    }
+
+    #[test]
+    fn test_fold_fee_distribution_records_treasury_fees() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let proposer_kp = Keypair::generate();
+        let proposer = Address::from_slice(&proposer_kp.to_address()).unwrap();
+
+        let overlay = PendingOverlay::new();
+        let mut batch = StorageBatch::new();
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 0, 0, 500)
+            .unwrap();
+        ledger.write_batch(batch).unwrap();
+
+        assert_eq!(ledger.total_treasury_fees(), 500);
+
+        // Accumulates across blocks
+        let mut batch2 = StorageBatch::new();
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch2, &overlay, &proposer, 0, 0, 300)
+            .unwrap();
+        ledger.write_batch(batch2).unwrap();
+
+        assert_eq!(ledger.total_treasury_fees(), 800);
     }
 
     #[test]
@@ -2014,7 +2078,7 @@ mod tests {
         let overlay = PendingOverlay::new();
         let mut batch = StorageBatch::new();
         ledger
-            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 9_000, 0)
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 9_000, 0, 0)
             .unwrap();
         ledger.write_batch(batch).unwrap();
 
@@ -2046,7 +2110,7 @@ mod tests {
 
         let mut batch = ledger.prepare_overlay_batch(&overlay).unwrap();
         ledger
-            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 200, 0)
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 200, 0, 0)
             .unwrap();
         ledger.write_batch(batch).unwrap();
 
