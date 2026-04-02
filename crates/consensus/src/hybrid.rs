@@ -390,12 +390,12 @@ impl HybridConsensus {
         match self.vote_record.entry(vote_key) {
             Entry::Occupied(e) => {
                 if *e.get() != vote.block_hash {
-                    println!(
-                        "⚠ EQUIVOCATION: validator {:?} voted for {:?} AND {:?} at slot {}",
-                        voter_addr,
-                        e.get(),
-                        vote.block_hash,
-                        vote.slot
+                    tracing::warn!(
+                        validator = ?voter_addr,
+                        first_block = ?e.get(),
+                        second_block = ?vote.block_hash,
+                        slot = vote.slot,
+                        "EQUIVOCATION: validator double-voted in same slot"
                     );
                     bail!(
                         "equivocation detected: validator {:?} double-voted at slot {}",
@@ -488,9 +488,10 @@ impl HybridConsensus {
                                 && parent_slot > self.finalized_slot
                             {
                                 self.finalized_slot = parent_slot;
-                                println!(
-                                    "FINALIZED slot {} (parent of slot {} block)",
-                                    parent_slot, vote.slot
+                                tracing::info!(
+                                    finalized_slot = parent_slot,
+                                    child_slot = vote.slot,
+                                    "2-chain finality: slot finalized via precommit QC"
                                 );
                             }
                         }
