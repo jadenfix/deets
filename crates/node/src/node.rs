@@ -905,9 +905,15 @@ impl Node {
         self.consensus
             .record_block(block_hash, block.header.parent_hash, slot);
 
-        // Remove transactions from mempool
+        // Remove transactions from mempool and update sender nonces so the
+        // mempool rejects replays of already-executed transactions — even ones
+        // that were never in this node's local pool.
         let tx_hashes: Vec<H256> = transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
+        for tx in &transactions {
+            self.mempool
+                .advance_sender_nonce(tx.sender, tx.nonce.saturating_add(1));
+        }
 
         // Broadcast block to network
         self.broadcast(OutboundMessage::BroadcastBlock(block.clone()));
@@ -1425,9 +1431,14 @@ impl Node {
             self.receipts.insert(sr.tx_hash, sr.clone());
         }
 
-        // Remove included txs from mempool
+        // Remove included txs from mempool and advance sender nonces so the
+        // mempool rejects replays of transactions included in received blocks.
         let tx_hashes: Vec<H256> = block.transactions.iter().map(|tx| tx.hash()).collect();
         self.mempool.remove_transactions(&tx_hashes);
+        for tx in &block.transactions {
+            self.mempool
+                .advance_sender_nonce(tx.sender, tx.nonce.saturating_add(1));
+        }
 
         // Vote on this block (if we're a validator)
         self.vote_on_block(&block)?;

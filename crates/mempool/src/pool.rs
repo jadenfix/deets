@@ -106,6 +106,16 @@ impl Mempool {
         self.next_nonce.insert(sender, nonce);
     }
 
+    /// Advance the expected nonce for a sender to at least `min_nonce`.
+    /// Unlike `set_sender_nonce`, this never moves the nonce backward — useful
+    /// when processing a block whose transactions may arrive out of order.
+    pub fn advance_sender_nonce(&mut self, sender: Address, min_nonce: u64) {
+        let current = self.next_nonce.get(&sender).copied().unwrap_or(0);
+        if min_nonce > current {
+            self.next_nonce.insert(sender, min_nonce);
+        }
+    }
+
     /// Add a transaction to the mempool with nonce ordering and rate limiting.
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
         // Reject cross-chain transactions (replay protection)
@@ -772,5 +782,47 @@ mod tests {
         // Should evict kp2's queued tx (lower fee: 60k < 200k)
         assert_eq!(mempool.queued_len(), 1);
         assert_eq!(mempool.len(), 3);
+    }
+
+    #[test]
+    fn test_advance_sender_nonce_only_moves_forward() {
+        let kp = Keypair::generate();
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+        let sender = sender_pubkey.to_address();
+        let mut mempool = Mempool::with_defaults();
+
+        // Advance from 0 → 5
+        mempool.advance_sender_nonce(sender, 5);
+        let tx = create_test_tx_with_keypair(&kp, 3, 60_000);
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err(), "nonce 3 < 5 should be rejected");
+        assert!(result.unwrap_err().to_string().contains("nonce too low"));
+
+        // Trying to move backward (to 2) should be a no-op
+        mempool.advance_sender_nonce(sender, 2);
+        let tx = create_test_tx_with_keypair(&kp, 4, 60_000);
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err(), "nonce 4 < 5 should still be rejected after backward advance");
+    }
+
+    #[test]
+    fn test_advance_nonce_rejects_replayed_block_txs() {
+        let kp = Keypair::generate();
+        let mut mempool = Mempool::with_defaults();
+
+        // Simulate: block contained tx with nonce 0 from this sender
+        let sender_pubkey = PublicKey::from_bytes(kp.public_key().to_vec());
+        let sender = sender_pubkey.to_address();
+        mempool.advance_sender_nonce(sender, 1); // nonce 0 consumed
+
+        // Attempt to add nonce 0 (replay) — must fail
+        let tx = create_test_tx_with_keypair(&kp, 0, 60_000);
+        let result = mempool.add_transaction(tx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce too low"));
+
+        // Nonce 1 should succeed
+        let tx = create_test_tx_with_keypair(&kp, 1, 60_000);
+        assert!(mempool.add_transaction(tx).is_ok());
     }
 }
