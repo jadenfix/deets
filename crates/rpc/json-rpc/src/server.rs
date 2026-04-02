@@ -1,3 +1,4 @@
+use aether_metrics::RPC_METRICS;
 use aether_types::{
     Address, Block, PublicKey, Signature, Transaction, TransactionReceipt, TransferPayload, H256,
     TRANSFER_PROGRAM_ID,
@@ -312,6 +313,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
                         Ok(())
                     } else {
                         tracing::warn!(%ip, "RPC rate limit exceeded");
+                        RPC_METRICS.rate_limited_total.inc();
                         Err(warp::reject::custom(RateLimited))
                     }
                 }
@@ -508,6 +510,12 @@ async fn process_rpc_request<B: RpcBackend>(
     backend: Arc<RwLock<B>>,
     chain_id: u64,
 ) -> JsonRpcResponse {
+    let method = req.method.clone();
+    RPC_METRICS.requests_total.with_label_values(&[&method]).inc();
+    let timer = RPC_METRICS
+        .request_duration_seconds
+        .with_label_values(&[&method])
+        .start_timer();
     let result = match req.method.as_str() {
         "aeth_sendRawTransaction" => handle_send_raw_transaction(&req.params, backend).await,
         "aeth_sendTransaction" => {
@@ -530,6 +538,7 @@ async fn process_rpc_request<B: RpcBackend>(
         }),
     };
 
+    timer.observe_duration();
     match result {
         Ok(value) => JsonRpcResponse {
             jsonrpc: "2.0".to_string(),
@@ -537,12 +546,15 @@ async fn process_rpc_request<B: RpcBackend>(
             error: None,
             id: req.id,
         },
-        Err(error) => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
-            result: None,
-            error: Some(error),
-            id: req.id,
-        },
+        Err(error) => {
+            RPC_METRICS.errors_total.with_label_values(&[&method]).inc();
+            JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                result: None,
+                error: Some(error),
+                id: req.id,
+            }
+        }
     }
 }
 
@@ -1287,5 +1299,51 @@ mod tests {
         assert_eq!(limiter.state.lock().await.len(), 1);
         limiter.cleanup(Duration::ZERO).await;
         assert_eq!(limiter.state.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn rpc_metrics_record_requests_and_errors() {
+        let backend = Arc::new(RwLock::new(MockBackend::default()));
+
+        // Successful request
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_chainId".to_string(),
+            params: vec![],
+            id: json!(1),
+        };
+        let before = RPC_METRICS
+            .requests_total
+            .with_label_values(&["aeth_chainId"])
+            .get();
+        let resp = process_rpc_request(req, backend.clone(), 100).await;
+        assert!(resp.error.is_none());
+        let after = RPC_METRICS
+            .requests_total
+            .with_label_values(&["aeth_chainId"])
+            .get();
+        assert!(after > before, "request counter should increment");
+
+        // Error request (unknown method)
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "unknown_method".to_string(),
+            params: vec![],
+            id: json!(2),
+        };
+        let err_before = RPC_METRICS
+            .errors_total
+            .with_label_values(&["unknown_method"])
+            .get();
+        let resp = process_rpc_request(req, backend, 100).await;
+        assert!(resp.error.is_some());
+        let err_after = RPC_METRICS
+            .errors_total
+            .with_label_values(&["unknown_method"])
+            .get();
+        assert!(
+            err_after > err_before,
+            "error counter should increment on failure"
+        );
     }
 }

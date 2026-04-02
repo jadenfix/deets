@@ -23,6 +23,7 @@ pub mod mempool;
 pub mod networking;
 pub mod node;
 pub mod p2p;
+pub mod rpc;
 pub mod runtime;
 pub mod storage;
 
@@ -33,5 +34,6 @@ pub use mempool::MEMPOOL_METRICS;
 pub use networking::NET_METRICS;
 pub use node::NODE_METRICS;
 pub use p2p::P2P_METRICS;
+pub use rpc::RPC_METRICS;
 pub use runtime::RUNTIME_METRICS;
 pub use storage::STORAGE_METRICS;
