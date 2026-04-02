@@ -105,7 +105,12 @@ impl HostFunctions {
 
         let to_balance = self.balances.get(to).copied().unwrap_or(0);
 
-        self.balances.insert(*from, from_balance - amount);
+        self.balances.insert(
+            *from,
+            from_balance
+                .checked_sub(amount)
+                .ok_or_else(|| anyhow::anyhow!("balance underflow"))?,
+        );
         let new_to_balance = to_balance
             .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("balance overflow"))?;
