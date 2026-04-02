@@ -375,6 +375,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Node main: spawns Prometheus HTTP exporter on AETHER_METRICS_PORT (default 9090) — all registered metrics now scraped at /metrics
   - Note: Tier 3 channel backpressure item already complete — all channels bounded with drop-on-full behavior
 
+- **2026-04-02** — feat(rpc): add per-IP rate limiting to JSON-RPC endpoint. Production hardening. Branch: `feat/agent2-rpc-rate-limiting`, PR #146 (merged).
+  - Token-bucket rate limiter: 100 burst / 50 req/sec per IP (configurable via `with_rate_limit()`)
+  - Returns HTTP 429 + JSON-RPC error -32029 on exceeded rate
+  - Periodic cleanup task evicts stale entries every 5 min to prevent memory growth
+  - 4 new tests (burst, IP isolation, refill, cleanup), all 12 RPC tests pass, clippy clean
+
 ## Agent 3 Cycle Log
 
 - **2026-04-02** — test(node): add e2e Byzantine fault detection tests across multi-node network. Tier 5 item (Byzantine fault test). Branch: `test/agent3-byzantine-fault-detection`, PR #139 (merged).
