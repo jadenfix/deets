@@ -376,3 +376,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Tests: cross-node slash propagation (5% of stake), continued block production post-Byzantine, state convergence, double-slash prevention, multi-Byzantine validator detection
   - Bridges gap between consensus-level unit tests (byzantine_fault.rs) and single-node tests (node.rs)
   - All Tier 5 items now complete. All Tier 1-6 items verified complete or merged.
+
+- **2026-04-02** — feat(rpc): add per-IP rate limiting to JSON-RPC endpoint. Production hardening. Branch: `feat/agent2-rpc-rate-limiting`, PR #146 (merged).
+  - Token-bucket rate limiter: 100 burst / 50 req/sec per IP (configurable via `with_rate_limit()`)
+  - Returns HTTP 429 + JSON-RPC error -32029 on exceeded rate
+  - Periodic cleanup task evicts stale entries every 5 min to prevent memory growth
+  - 4 new tests (burst, IP isolation, refill, cleanup), all 12 RPC tests pass, clippy clean
