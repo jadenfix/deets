@@ -407,6 +407,56 @@ impl Ledger {
         Ok(())
     }
 
+    /// Fold proposer reward and burn accounting into an existing write batch,
+    /// making fee distribution atomic with the overlay commit.
+    ///
+    /// Must be called AFTER `prepare_overlay_batch` (so the in-memory Merkle tree
+    /// already reflects the overlay state) and BEFORE the batch is written to disk.
+    ///
+    /// Uses `overlay` to read the proposer's post-transaction balance in case the
+    /// proposer also submitted transactions in this block.
+    pub fn fold_fee_distribution_into_batch(
+        &mut self,
+        batch: &mut StorageBatch,
+        overlay: &PendingOverlay,
+        proposer: &Address,
+        proposer_reward: u128,
+        burned: u128,
+    ) -> Result<()> {
+        if proposer_reward > 0 {
+            // Read proposer account from overlay first (in case proposer submitted txs),
+            // falling back to DB if not present in the overlay.
+            let mut account = self.get_account_from_overlay(overlay, proposer)?;
+            account.balance = account
+                .balance
+                .checked_add(proposer_reward)
+                .ok_or_else(|| anyhow!("proposer balance overflow"))?;
+            self.update_account_in_batch(batch, account.clone())?;
+            // Overwrites the state_root entry already in the batch with the updated root.
+            self.update_state_root_incremental(&account, None, Some(batch))?;
+        }
+
+        if burned > 0 {
+            let current = self
+                .storage
+                .get(CF_METADATA, b"total_burned")?
+                .map(|bytes| {
+                    let mut arr = [0u8; 16];
+                    arr.copy_from_slice(&bytes[..16.min(bytes.len())]);
+                    u128::from_le_bytes(arr)
+                })
+                .unwrap_or(0);
+            let new_total = current.saturating_add(burned);
+            batch.put(
+                CF_METADATA,
+                b"total_burned".to_vec(),
+                new_total.to_le_bytes().to_vec(),
+            );
+        }
+
+        Ok(())
+    }
+
     /// Get the total amount of fees burned since genesis.
     pub fn total_burned(&self) -> u128 {
         self.storage
@@ -1838,6 +1888,105 @@ mod tests {
             matches!(&receipts[1].status, TransactionStatus::Failed { reason } if reason.contains("already spent")),
             "tx2 must fail as double-spend, got: {:?}",
             receipts[1].status
+        );
+    }
+
+    #[test]
+    fn test_fold_fee_distribution_credits_proposer() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let proposer_kp = Keypair::generate();
+        let proposer = Address::from_slice(&proposer_kp.to_address()).unwrap();
+
+        // Proposer starts with 0 balance.
+        let overlay = PendingOverlay::new();
+        let mut batch = StorageBatch::new();
+        let reward = 5_000u128;
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, reward, 0)
+            .unwrap();
+        ledger.write_batch(batch).unwrap();
+
+        let account = ledger.get_or_create_account(&proposer).unwrap();
+        assert_eq!(account.balance, reward, "proposer should receive reward");
+    }
+
+    #[test]
+    fn test_fold_fee_distribution_records_burned() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let proposer_kp = Keypair::generate();
+        let proposer = Address::from_slice(&proposer_kp.to_address()).unwrap();
+
+        let overlay = PendingOverlay::new();
+        let mut batch = StorageBatch::new();
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 0, 1_000)
+            .unwrap();
+        ledger.write_batch(batch).unwrap();
+
+        assert_eq!(ledger.total_burned(), 1_000);
+    }
+
+    #[test]
+    fn test_fold_fee_distribution_state_root_includes_proposer_credit() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let proposer_kp = Keypair::generate();
+        let proposer = Address::from_slice(&proposer_kp.to_address()).unwrap();
+
+        let root_before = ledger.state_root();
+
+        let overlay = PendingOverlay::new();
+        let mut batch = StorageBatch::new();
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 9_000, 0)
+            .unwrap();
+        ledger.write_batch(batch).unwrap();
+
+        let root_after = ledger.state_root();
+        assert_ne!(root_before, root_after, "state root must change after credit");
+    }
+
+    #[test]
+    fn test_fold_fee_distribution_uses_overlay_for_proposer_balance() {
+        // If the proposer has an updated balance in the overlay (e.g. they sent
+        // a transaction in this block), fold_fee_distribution_into_batch must use
+        // that overlay balance as the base for the credit, not the DB balance.
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let proposer_kp = Keypair::generate();
+        let proposer = Address::from_slice(&proposer_kp.to_address()).unwrap();
+
+        // Seed proposer with 1000 in the DB.
+        ledger.seed_account(&proposer, 1_000).unwrap();
+
+        // Build an overlay that reduces proposer balance to 800 (simulates a tx fee).
+        let reduced_account = Account::with_balance(proposer, 800);
+        let serialized = bincode::serialize(&reduced_account).unwrap();
+        let mut overlay = PendingOverlay::new();
+        overlay.put(CF_ACCOUNTS, proposer.as_bytes().to_vec(), serialized);
+        overlay.changed_accounts.push(proposer);
+
+        let mut batch = ledger.prepare_overlay_batch(&overlay).unwrap();
+        ledger
+            .fold_fee_distribution_into_batch(&mut batch, &overlay, &proposer, 200, 0)
+            .unwrap();
+        ledger.write_batch(batch).unwrap();
+
+        // Expected: overlay balance (800) + reward (200) = 1000
+        let account = ledger.get_or_create_account(&proposer).unwrap();
+        assert_eq!(
+            account.balance, 1_000,
+            "proposer balance should be overlay base (800) + reward (200)"
         );
     }
 }
