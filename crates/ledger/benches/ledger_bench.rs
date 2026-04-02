@@ -187,6 +187,65 @@ fn bench_state_root_computation(c: &mut Criterion) {
     });
 }
 
+fn bench_apply_block_speculatively(c: &mut Criterion) {
+    let mut group = c.benchmark_group("block_speculative_apply");
+    for count in [10, 50, 100, 500] {
+        // Each tx needs a unique sender (different nonce sequences)
+        let senders: Vec<Keypair> = (0..count).map(|_| Keypair::generate()).collect();
+        let sender_addrs: Vec<Address> = senders
+            .iter()
+            .map(|kp| H160::from_slice(&kp.to_address()).unwrap())
+            .collect();
+        let recipient = H160::from_slice(&[99u8; 20]).unwrap();
+
+        let txs: Vec<Transaction> = senders
+            .iter()
+            .map(|kp| make_transfer_tx(kp, recipient, 100, 0, 100))
+            .collect();
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(count),
+            &(sender_addrs.clone(), txs.clone()),
+            |b, (addrs, txs)| {
+                b.iter_with_setup(
+                    || {
+                        let mut ledger = temp_ledger();
+                        for addr in addrs {
+                            fund_account(&mut ledger, addr, 1_000_000_000);
+                        }
+                        ledger
+                    },
+                    |mut ledger| {
+                        black_box(ledger.apply_block_speculatively(txs).unwrap());
+                    },
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_batch_signature_verification(c: &mut Criterion) {
+    let mut group = c.benchmark_group("batch_sig_verify");
+    for count in [10, 50, 100] {
+        let keypairs: Vec<Keypair> = (0..count).map(|_| Keypair::generate()).collect();
+        let txs: Vec<Transaction> = keypairs
+            .iter()
+            .map(|kp| make_signed_tx(kp, 0, 100))
+            .collect();
+
+        group.bench_with_input(BenchmarkId::from_parameter(count), &txs, |b, txs| {
+            b.iter(|| {
+                for tx in txs {
+                    tx.verify_signature().unwrap();
+                }
+                black_box(());
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_signature_verification,
@@ -195,5 +254,7 @@ criterion_group!(
     bench_apply_transfer_tx,
     bench_sequential_transactions,
     bench_state_root_computation,
+    bench_apply_block_speculatively,
+    bench_batch_signature_verification,
 );
 criterion_main!(benches);
