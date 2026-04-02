@@ -44,6 +44,12 @@ impl fmt::Display for H256 {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct H160(pub [u8; 20]);
 
+impl From<[u8; 20]> for H160 {
+    fn from(bytes: [u8; 20]) -> Self {
+        H160(bytes)
+    }
+}
+
 impl H160 {
     pub fn from_slice(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() != 20 {

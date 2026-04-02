@@ -16,8 +16,8 @@ impl Default for ExecutionContext {
         ExecutionContext {
             block_number: 0,
             timestamp: 0,
-            caller: Address::from_slice(&[0u8; 20]).unwrap(),
-            contract_address: Address::from_slice(&[0u8; 20]).unwrap(),
+            caller: Address::from([0u8; 20]),
+            contract_address: Address::from([0u8; 20]),
         }
     }
 }
@@ -123,7 +123,7 @@ impl HostFunctions {
 
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(data);
-        Ok(H256::from_slice(&hash).unwrap())
+        Ok(H256::from(<[u8; 32]>::from(hash)))
     }
 
     /// Emit a log event

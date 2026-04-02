@@ -111,7 +111,7 @@ impl GenesisConfig {
                 state_root,
                 transactions_root: H256::zero(),
                 receipts_root: H256::zero(),
-                proposer: Address::from_slice(&[0u8; 20]).unwrap(),
+                proposer: Address::from([0u8; 20]),
                 vrf_proof: VrfProof {
                     output: [0u8; 32],
                     proof: vec![],
@@ -145,7 +145,7 @@ impl GenesisConfig {
             hasher.update(&validator.pubkey);
             hasher.update(validator.stake.to_le_bytes());
         }
-        H256::from_slice(&hasher.finalize()).unwrap()
+        H256::from(<[u8; 32]>::from(hasher.finalize()))
     }
 
     /// Extract VRF public keys for all validators (for consensus registration).

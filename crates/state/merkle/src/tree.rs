@@ -182,12 +182,13 @@ fn precompute_defaults(depth: usize) -> Vec<H256> {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update([0x00]); // Leaf domain separator with no key/value
-        H256::from_slice(&h.finalize()).unwrap()
+        H256::from(<[u8; 32]>::from(h.finalize()))
     };
     defaults.push(empty_leaf);
     for _ in 1..=depth {
-        let prev = defaults.last().unwrap();
-        defaults.push(internal_hash(prev, prev));
+        // Safety: we just pushed at least one element above
+        let prev = defaults[defaults.len() - 1];
+        defaults.push(internal_hash(&prev, &prev));
     }
     defaults
 }

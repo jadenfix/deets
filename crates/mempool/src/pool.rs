@@ -332,12 +332,14 @@ impl Mempool {
                     break;
                 }
 
-                let (tx, _submitted_slot) = self
+                let (tx, _submitted_slot) = match self
                     .queued
                     .get_mut(&sender)
-                    .unwrap()
-                    .remove(&expected)
-                    .unwrap();
+                    .and_then(|q| q.remove(&expected))
+                {
+                    Some(tx) => tx,
+                    None => break,
+                };
 
                 self.add_to_pending(tx);
 

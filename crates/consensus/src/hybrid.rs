@@ -343,7 +343,7 @@ impl HybridConsensus {
         hasher.update(self.epoch_randomness.as_bytes());
         hasher.update(block_vrf_output);
         hasher.update(self.current_epoch.to_le_bytes());
-        self.epoch_randomness = H256::from_slice(&hasher.finalize()).unwrap();
+        self.epoch_randomness = H256::from(<[u8; 32]>::from(hasher.finalize()));
         self.epoch_randomness_updated = true;
         true
     }
@@ -682,7 +682,7 @@ impl ConsensusEngine for HybridConsensus {
                 hasher.update(self.current_slot.to_le_bytes());
                 hasher.update(self.current_epoch.to_le_bytes());
                 let new_randomness = hasher.finalize();
-                self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
+                self.epoch_randomness = H256::from(<[u8; 32]>::from(new_randomness));
             }
             self.epoch_randomness_updated = false;
             self.current_epoch = self.current_epoch.saturating_add(1);
