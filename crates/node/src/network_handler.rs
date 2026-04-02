@@ -1,6 +1,7 @@
 use aether_p2p::network::NetworkEvent;
-use aether_types::{Block, Transaction, Vote};
+use aether_types::{Block, Slot, Transaction, Vote};
 use bincode::Options;
+use serde::{Deserialize, Serialize};
 
 /// Decoded message types from the P2P network.
 #[derive(Debug)]
@@ -9,6 +10,8 @@ pub enum NodeMessage {
     BlockReceived(Block),
     VoteReceived(Vote),
     TransactionReceived(Transaction),
+    /// A peer requested blocks in the given slot range for state sync.
+    BlockRangeRequested { from_slot: Slot, to_slot: Slot },
     PeerConnected,
     PeerDisconnected,
 }
@@ -20,12 +23,22 @@ pub enum OutboundMessage {
     BroadcastBlock(Block),
     BroadcastVote(Vote),
     BroadcastTransaction(Transaction),
+    /// Request a range of blocks from peers for state sync.
+    RequestBlockRange { from_slot: Slot, to_slot: Slot },
+}
+
+/// Wire format for sync request messages on the `/aether/1/sync` topic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRequest {
+    pub from_slot: Slot,
+    pub to_slot: Slot,
 }
 
 /// Maximum message sizes to prevent OOM from malicious peers.
 const MAX_BLOCK_SIZE: usize = 4 * 1024 * 1024; // 4MB
 const MAX_VOTE_SIZE: usize = 4 * 1024; // 4KB
 const MAX_TX_SIZE: usize = 128 * 1024; // 128KB
+const MAX_SYNC_SIZE: usize = 1024; // 1KB
 
 /// Deserialize with a bincode size limit to prevent DoS via deeply nested structures.
 fn deserialize_bounded<T: serde::de::DeserializeOwned>(data: &[u8], max_size: usize) -> Option<T> {
@@ -52,6 +65,14 @@ pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
         }
         NetworkEvent::TransactionReceived(data) if data.len() <= MAX_TX_SIZE => {
             deserialize_bounded(&data, MAX_TX_SIZE).map(NodeMessage::TransactionReceived)
+        }
+        NetworkEvent::SyncRequestReceived(data) if data.len() <= MAX_SYNC_SIZE => {
+            deserialize_bounded::<SyncRequest>(&data, MAX_SYNC_SIZE).map(|req| {
+                NodeMessage::BlockRangeRequested {
+                    from_slot: req.from_slot,
+                    to_slot: req.to_slot,
+                }
+            })
         }
         NetworkEvent::PeerConnected(_) => Some(NodeMessage::PeerConnected),
         NetworkEvent::PeerDisconnected(_) => Some(NodeMessage::PeerDisconnected),

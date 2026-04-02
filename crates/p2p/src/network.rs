@@ -18,6 +18,7 @@ pub const TOPIC_TX: &str = "/aether/1/tx";
 pub const TOPIC_BLOCK: &str = "/aether/1/block";
 pub const TOPIC_VOTE: &str = "/aether/1/vote";
 pub const TOPIC_SHRED: &str = "/aether/1/shred";
+pub const TOPIC_SYNC: &str = "/aether/1/sync";
 
 /// Per-topic maximum message sizes (bytes).
 /// Transactions are small (~1-2 KB typical, 64 KB generous max).
@@ -28,6 +29,7 @@ const MAX_TX_SIZE: usize = 64 * 1024; // 64 KB
 const MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
 const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_SYNC_MSG_SIZE: usize = 1024; // 1 KB (slot range requests are small)
 
 /// Events emitted by the P2P network to the node.
 #[derive(Debug)]
@@ -36,6 +38,7 @@ pub enum NetworkEvent {
     BlockReceived(Vec<u8>),
     VoteReceived(Vec<u8>),
     ShredReceived(Vec<u8>),
+    SyncRequestReceived(Vec<u8>),
     PeerConnected(PeerId),
     PeerDisconnected(PeerId),
 }
@@ -163,6 +166,7 @@ impl P2PNetwork {
         self.subscribe(TOPIC_BLOCK)?;
         self.subscribe(TOPIC_VOTE)?;
         self.subscribe(TOPIC_SHRED)?;
+        self.subscribe(TOPIC_SYNC)?;
 
         Ok(())
     }
@@ -285,6 +289,8 @@ impl P2PNetwork {
                             (MAX_VOTE_SIZE, NetworkEvent::VoteReceived)
                         } else if topic.contains("/shred") {
                             (MAX_SHRED_SIZE, NetworkEvent::ShredReceived)
+                        } else if topic.contains("/sync") {
+                            (MAX_SYNC_MSG_SIZE, NetworkEvent::SyncRequestReceived)
                         } else {
                             continue;
                         };
