@@ -12,7 +12,8 @@ mod serde_u128_as_u64 {
     where
         S: Serializer,
     {
-        serializer.serialize_u64(*value as u64)
+        let v = u64::try_from(*value).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_u64(v)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
