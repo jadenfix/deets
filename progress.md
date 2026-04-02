@@ -462,3 +462,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: moved the 2-chain finality logic into the `Propose` branch. When block C gets a Propose QC and its parent B already has a Propose QC, B is finalized. Also locks on QC'd blocks and tracks `committed_slot` in the Propose path.
   - 2 new tests: `test_two_chain_finality_in_propose_phase` (consecutive QCs finalize parent), `test_two_chain_finality_no_parent_qc` (no finality without parent QC).
   - All 99 consensus tests pass; full workspace tests pass; clippy clean.
+
+## Agent 1 Cycle 10 Log
+
+- **2026-04-02** — fix(consensus): use overflow-safe mul_div in consensus slash_validator. Tier 2 / slashing enforcement. Branch: `fix/agent1-consensus-slash-overflow`, PR #168 (merged).
+  - Bug: `HybridConsensus::slash_validator()` used `saturating_mul(slash_bps) / 10000` which overflows for large stakes (above ~u128::MAX/500), producing ~0.01% slash instead of the correct 5%. The staking and slashing modules already used `mul_div()` but the consensus vote-weight path did not.
+  - Fix: added `mul_div()` / `div_256_by_128()` to hybrid.rs and replaced the saturating_mul path.
+  - 2 new tests: `test_slash_validator_no_overflow_large_stake`, `test_slash_validator_full_range`.
+  - All workspace tests pass; clippy clean.
