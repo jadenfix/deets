@@ -14,3 +14,6 @@ sha2.workspace = true
 rand.workspace = true
 
 aether-types = { path = "../types" }
+
+[dev-dependencies]
+proptest.workspace = true
