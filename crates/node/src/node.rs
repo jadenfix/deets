@@ -80,6 +80,8 @@ pub struct Node {
     orphan_blocks: HashMap<H256, Vec<Block>>,
     /// Total number of orphan blocks buffered (across all parent hashes).
     orphan_count: usize,
+    /// Counter for outbound messages dropped due to backpressure.
+    outbound_drops: u64,
 }
 
 impl Node {
@@ -164,6 +166,7 @@ impl Node {
             peer_count: 0,
             orphan_blocks: HashMap::new(),
             orphan_count: 0,
+            outbound_drops: 0,
         })
     }
 
@@ -251,24 +254,47 @@ impl Node {
 
     fn broadcast(&mut self, msg: OutboundMessage) {
         if let Some(ref tx) = self.broadcast_tx {
+            // Drain buffered messages first (from before channel was available).
+            // Limit drain to 64 per call to avoid holding the lock too long.
+            let mut drained = 0usize;
+            while drained < 64 {
+                if self.outbound_buffer.is_empty() {
+                    break;
+                }
+                match tx.try_send(self.outbound_buffer[0].clone()) {
+                    Ok(()) => {
+                        self.outbound_buffer.remove(0);
+                        drained += 1;
+                    }
+                    Err(_) => break, // Channel full or closed — stop draining
+                }
+            }
             match tx.try_send(msg) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_msg)) => {
-                    // Backpressure: P2P layer can't keep up, drop the message
-                    tracing::warn!("P2P outbound channel full, dropping message");
+                    self.outbound_drops += 1;
+                    tracing::warn!(
+                        total_drops = self.outbound_drops,
+                        "P2P outbound channel full, dropping message"
+                    );
                 }
                 Err(mpsc::error::TrySendError::Closed(msg)) => {
-                    // Channel closed — fall back to buffer so message isn't lost
                     tracing::warn!("Broadcast channel closed");
                     if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
                         self.outbound_buffer.push(msg);
+                    } else {
+                        self.outbound_drops += 1;
                     }
                 }
             }
         } else if self.outbound_buffer.len() < MAX_OUTBOUND_BUFFER {
             self.outbound_buffer.push(msg);
         } else {
-            tracing::error!("Outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message");
+            self.outbound_drops += 1;
+            tracing::error!(
+                total_drops = self.outbound_drops,
+                "Outbound buffer full ({MAX_OUTBOUND_BUFFER}), dropping message"
+            );
         }
     }
 
@@ -1134,6 +1160,11 @@ impl Node {
         self.peer_count = count;
     }
 
+    /// Returns outbound message drop count (backpressure indicator).
+    pub fn outbound_drops(&self) -> u64 {
+        self.outbound_drops
+    }
+
     /// Returns the number of buffered orphan blocks.
     pub fn orphan_count(&self) -> usize {
         self.orphan_count
@@ -1529,6 +1560,91 @@ mod tests {
         }
 
         assert_eq!(node.outbound_buffer.len(), MAX_OUTBOUND_BUFFER);
+        // Verify drops were counted
+        assert_eq!(node.outbound_drops(), 100);
+    }
+
+    #[test]
+    fn outbound_drops_counted_on_full_channel() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Create a channel with capacity 1 to force drops quickly
+        let (tx, _rx) = mpsc::channel(1);
+        node.set_broadcast_tx(tx);
+
+        let vote = OutboundMessage::BroadcastVote(Vote {
+            slot: 0,
+            block_hash: H256::zero(),
+            validator: PublicKey::from_bytes(vec![0u8; 32]),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: 0,
+        });
+
+        // First send should succeed (fills the single slot)
+        node.broadcast(vote.clone());
+        assert_eq!(node.outbound_drops(), 0);
+
+        // Subsequent sends should be dropped since nobody is receiving
+        for _ in 0..10 {
+            node.broadcast(vote.clone());
+        }
+        assert!(node.outbound_drops() > 0, "drops should be counted");
+    }
+
+    #[test]
+    fn outbound_buffer_drains_when_channel_available() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let vote = OutboundMessage::BroadcastVote(Vote {
+            slot: 0,
+            block_hash: H256::zero(),
+            validator: PublicKey::from_bytes(vec![0u8; 32]),
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            stake: 0,
+        });
+
+        // Buffer messages without a channel
+        for _ in 0..5 {
+            node.broadcast(vote.clone());
+        }
+        assert_eq!(node.outbound_buffer.len(), 5);
+
+        // Now set a channel with enough capacity and send one more message
+        let (tx, mut rx) = mpsc::channel(64);
+        node.set_broadcast_tx(tx);
+        node.broadcast(vote);
+
+        // The buffered messages should have been drained into the channel
+        assert_eq!(node.outbound_buffer.len(), 0);
+
+        // We should receive the buffered messages + the new one
+        let mut received = 0;
+        while rx.try_recv().is_ok() {
+            received += 1;
+        }
+        assert_eq!(received, 6, "5 buffered + 1 new should all be delivered");
     }
 
     #[test]
