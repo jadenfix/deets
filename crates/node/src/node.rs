@@ -36,6 +36,11 @@ const MAX_CACHED_RECEIPTS: usize = 50_000;
 /// Maximum number of orphan blocks to buffer while waiting for parents.
 const MAX_ORPHAN_BLOCKS: usize = 256;
 
+/// Maximum number of seconds a block's timestamp may be in the future relative
+/// to wall clock. This prevents a malicious proposer from manufacturing far-future
+/// timestamps that could manipulate time-sensitive on-chain logic.
+const MAX_CLOCK_DRIFT_SECS: u64 = 15;
+
 type LoadedBlocks = (
     BTreeMap<Slot, H256>,
     HashMap<H256, Block>,
@@ -956,6 +961,37 @@ impl Node {
                 );
             }
             return Ok(());
+        }
+
+        // Validate block timestamp before heavier checks:
+        // 1. Must not be more than MAX_CLOCK_DRIFT_SECS in the future (prevents proposer
+        //    from manufacturing far-future timestamps to manipulate time-based on-chain logic).
+        // 2. Must be ≥ parent block timestamp (monotonicity).
+        if block.header.slot > 0 {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if block.header.timestamp > now_secs.saturating_add(MAX_CLOCK_DRIFT_SECS) {
+                bail!(
+                    "block timestamp {} is too far in the future (now={}, max_drift={}s)",
+                    block.header.timestamp,
+                    now_secs,
+                    MAX_CLOCK_DRIFT_SECS
+                );
+            }
+            // Timestamp must not precede parent's timestamp.
+            if block.header.parent_hash != H256::zero() {
+                if let Some(parent_block) = self.blocks_by_hash.get(&block.header.parent_hash) {
+                    if block.header.timestamp < parent_block.header.timestamp {
+                        bail!(
+                            "block timestamp {} precedes parent timestamp {}",
+                            block.header.timestamp,
+                            parent_block.header.timestamp
+                        );
+                    }
+                }
+            }
         }
 
         // Validate block via consensus (VRF proof, locked block check)
@@ -2915,6 +2951,100 @@ mod tests {
             node.committed_at_slot.get(&test_slot),
             Some(&first_hash),
             "committed_at_slot must still record the first block, not the fork"
+        );
+    }
+
+    /// A block whose timestamp is more than MAX_CLOCK_DRIFT_SECS in the future must be
+    /// rejected to prevent proposers from manufacturing far-future timestamps.
+    #[test]
+    fn block_with_future_timestamp_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let mut block = Block::new(
+            1,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        // Set timestamp 1 hour in the future — well beyond MAX_CLOCK_DRIFT_SECS.
+        block.header.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+
+        let result = node.on_block_received(block);
+        assert!(
+            result.is_err(),
+            "block with far-future timestamp must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("too far in the future"),
+            "error must mention future timestamp, got: {msg}"
+        );
+    }
+
+    /// A block whose timestamp precedes its parent's timestamp must be rejected.
+    #[test]
+    fn block_with_timestamp_before_parent_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Insert a parent block with a known timestamp.
+        let parent = Block::new(
+            0,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        let parent_hash = parent.hash();
+        let parent_ts = parent.header.timestamp;
+        node.blocks_by_hash.insert(parent_hash, parent);
+
+        // Build a child block with a timestamp *before* the parent's.
+        let mut child = Block::new(
+            1,
+            parent_hash,
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        // Set timestamp to parent_ts - 1 (one second before parent).
+        child.header.timestamp = parent_ts.saturating_sub(1);
+
+        let result = node.on_block_received(child);
+        assert!(
+            result.is_err(),
+            "block with timestamp before parent must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("precedes parent timestamp"),
+            "error must mention parent timestamp, got: {msg}"
         );
     }
 }
