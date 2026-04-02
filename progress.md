@@ -332,6 +332,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added regression test `test_calculate_slash_no_overflow_on_large_stakes`
   - Full audit of Tier 2 items: slashing enforcement, fork choice, epoch transitions all verified correct. All Tier 1+2 items now complete.
 
+- **2026-04-02** — fix(ledger): make epoch transition credits atomic with single WriteBatch. Tier 4 item (atomic state commits). Branch: `fix/agent1-ledger-atomic-state-commits`, PR #130 (merged).
+  - `process_epoch_transition()` called `credit_account()` per-validator — each a separate RocksDB write. Crash mid-epoch could credit some validators but not others.
+  - Added `credit_account_to_batch()` to accumulate credits into existing `StorageBatch`
+  - Refactored epoch transition to collect all emission + unbonding credits in one atomic WriteBatch
+  - Added test `epoch_transition_credits_are_atomic` with two unbonding entries
+  - Full audit of Tier 4: atomic commits ✓, block persistence ✓, pruning ✓, snapshot export/import ✓. All Tier 4 items now complete.
+
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
