@@ -9,6 +9,10 @@ const MAX_MEMPOOL_SIZE: usize = 50_000;
 const MIN_FEE: u128 = 1000;
 const MAX_TXS_PER_SENDER_PER_SECOND: u32 = 100;
 const RATE_LIMIT_WINDOW_SECS: u64 = 1;
+/// Maximum queued (future-nonce) transactions per sender.
+const MAX_QUEUED_PER_SENDER: usize = 64;
+/// Maximum nonce gap from the expected nonce.
+const MAX_NONCE_GAP: u64 = 256;
 /// Txs waiting longer than this many slots with sufficient fee must be included.
 const FORCED_INCLUSION_SLOTS: u64 = 10;
 
@@ -220,11 +224,39 @@ impl Mempool {
             // Promote any queued txs that are now sequential
             self.promote_queued(tx_hash);
         } else {
-            // Future nonce — queue it
-            self.queued
-                .entry(tx.sender)
-                .or_default()
-                .insert(tx.nonce, tx);
+            // Future nonce — enforce per-sender limits to prevent DoS
+            let nonce_gap = tx.nonce.saturating_sub(expected_nonce);
+            if nonce_gap > MAX_NONCE_GAP {
+                self.by_hash.remove(&tx_hash);
+                if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
+                    sender_txs.remove(&tx_hash);
+                    if sender_txs.is_empty() {
+                        self.by_sender.remove(&tx.sender);
+                    }
+                }
+                MEMPOOL_METRICS.rejected_total.inc();
+                anyhow::bail!(
+                    "nonce gap too large: tx nonce {} is {} ahead of expected {}",
+                    tx.nonce, nonce_gap, expected_nonce
+                );
+            }
+
+            let sender_queued = self.queued.entry(tx.sender).or_default();
+            if sender_queued.len() >= MAX_QUEUED_PER_SENDER {
+                self.by_hash.remove(&tx_hash);
+                if let Some(sender_txs) = self.by_sender.get_mut(&tx.sender) {
+                    sender_txs.remove(&tx_hash);
+                    if sender_txs.is_empty() {
+                        self.by_sender.remove(&tx.sender);
+                    }
+                }
+                MEMPOOL_METRICS.rejected_total.inc();
+                anyhow::bail!(
+                    "too many queued transactions for sender (max {})",
+                    MAX_QUEUED_PER_SENDER
+                );
+            }
+            sender_queued.insert(tx.nonce, tx);
         }
 
         MEMPOOL_METRICS.admitted_total.inc();
@@ -824,6 +856,49 @@ mod tests {
         // Nonce 1 should succeed
         let tx = create_test_tx_with_keypair(&kp, 1, 60_000);
         assert!(mempool.add_transaction(tx).is_ok());
+    }
+
+    #[test]
+    fn test_per_sender_queued_limit() {
+        let mut mempool = Mempool::with_defaults();
+        let kp = Keypair::generate();
+
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp, 0, 60_000))
+            .unwrap();
+
+        for i in 0..MAX_QUEUED_PER_SENDER {
+            let nonce = (i as u64) + 2;
+            mempool
+                .add_transaction(create_test_tx_with_keypair(&kp, nonce, 60_000))
+                .unwrap();
+        }
+        assert_eq!(mempool.queued_len(), MAX_QUEUED_PER_SENDER);
+
+        let overflow_nonce = (MAX_QUEUED_PER_SENDER as u64) + 2;
+        let result = mempool.add_transaction(create_test_tx_with_keypair(
+            &kp,
+            overflow_nonce,
+            60_000,
+        ));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too many queued"));
+    }
+
+    #[test]
+    fn test_nonce_gap_too_large_rejected() {
+        let mut mempool = Mempool::with_defaults();
+        let kp = Keypair::generate();
+
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp, 0, 60_000))
+            .unwrap();
+
+        let far_nonce = MAX_NONCE_GAP + 2;
+        let result =
+            mempool.add_transaction(create_test_tx_with_keypair(&kp, far_nonce, 60_000));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce gap too large"));
     }
 }
 
