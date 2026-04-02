@@ -29,11 +29,22 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 1000 aether && \
+    useradd --uid 1000 --gid aether --shell /bin/false aether
 
 WORKDIR /app
 
 COPY --from=builder /build/target/release/aether-node /usr/local/bin/
-RUN mkdir -p /data
+RUN mkdir -p /data && chown -R aether:aether /data
+
+EXPOSE 8545 9090
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8545/health || exit 1
+
+USER aether
 
 ENTRYPOINT ["aether-node"]
