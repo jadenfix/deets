@@ -315,6 +315,16 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 
 ---
 
+## Agent 1 Cycle Log
+
+- **2026-04-01** — fix(consensus): prune stale HotStuff state to prevent unbounded memory growth. Tier 2 item (HotStuff liveness). Branch: `fix/agent1-consensus-state-pruning`, PR #109 (awaiting review).
+  - `timeout_votes` HashMap never cleared → OOM in validators experiencing timeouts
+  - `block_parents`, `block_slots`, `qcs` maps grow monotonically → OOM over days
+  - Added pruning of timeout_votes after TimeoutCertificate processing
+  - Added `prune_finalized_state()` to clean block tracking and QCs below finalized_slot
+  - 3 new tests, all 94 consensus tests pass, clippy clean
+  - Audit notes: Tier 1 items (block validation, nonce, signatures, double-spend, overflow, WASM gas) all verified as addressed by prior PRs. Remaining: `saturating_mul() / divisor` pattern in staking rewards could silently produce wrong results on u128 overflow (low practical risk, future PR).
+
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.

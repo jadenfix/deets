@@ -370,6 +370,7 @@ impl HotStuffConsensus {
                                 slot: parent_slot,
                                 block_hash: parent_hash,
                             });
+                            self.prune_finalized_state();
                         }
                     }
                 }
@@ -537,6 +538,13 @@ impl HotStuffConsensus {
         self.current_slot += 1;
         self.current_phase = Phase::Propose;
         self.votes.clear();
+
+        // Prune timeout votes for completed rounds — they are never needed again.
+        // Without this, the timeout_votes map grows monotonically in any validator
+        // that experiences timeouts, eventually causing OOM.
+        let tc_round = tc.round;
+        self.timeout_votes.retain(|round, _| *round > tc_round);
+
         Ok(())
     }
 
@@ -714,6 +722,28 @@ impl HotStuffConsensus {
 
     pub fn validator_count(&self) -> usize {
         self.validators.len()
+    }
+
+    /// Prune consensus tracking state for slots that have been finalized.
+    ///
+    /// Without pruning, `block_parents`, `block_slots`, and `qcs` grow
+    /// monotonically — one entry per block/vote/QC for the entire chain
+    /// history. In a validator running for days, this causes OOM.
+    ///
+    /// Once a block is finalized, its parent/slot tracking and QCs cannot
+    /// affect future consensus decisions, so they can be safely removed.
+    /// We keep a small safety margin (2 slots) for in-flight messages.
+    fn prune_finalized_state(&mut self) {
+        if self.finalized_slot < 3 {
+            return;
+        }
+        let prune_below = self.finalized_slot - 2;
+
+        self.qcs.retain(|(slot, _, _), _| *slot >= prune_below);
+        self.block_slots.retain(|_, slot| *slot >= prune_below);
+        let known_hashes: HashSet<H256> = self.block_slots.keys().copied().collect();
+        self.block_parents
+            .retain(|hash, _| known_hashes.contains(hash));
     }
 }
 
@@ -1445,5 +1475,155 @@ mod tests {
             consensus.committed_slot = vote_slot;
         }
         assert_eq!(consensus.committed_slot, 12, "committed_slot should advance");
+    }
+
+    #[test]
+    fn test_timeout_votes_pruned_after_tc() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        // Accumulate timeout votes for rounds 1, 2, 3
+        for round in 1..=3u64 {
+            let addr = validators[0].pubkey.to_address();
+            let mut msg = Vec::new();
+            msg.extend_from_slice(b"timeout");
+            msg.extend_from_slice(&round.to_le_bytes());
+            msg.extend_from_slice(&0u64.to_le_bytes());
+            msg.extend_from_slice(H256::zero().as_bytes());
+            let signature = bls_keys[0].sign(&msg);
+
+            let tv = TimeoutVote {
+                round,
+                validator: addr,
+                validator_pubkey: validators[0].pubkey.clone(),
+                stake: 1000,
+                highest_qc_slot: 0,
+                highest_qc_hash: H256::zero(),
+                signature,
+            };
+            let _ = consensus.on_timeout_vote(tv);
+        }
+
+        assert_eq!(consensus.timeout_votes.len(), 3, "3 rounds accumulated");
+
+        // Process a TC for round 2 — rounds 1 and 2 should be pruned
+        let addrs: Vec<Address> = validators.iter().map(|v| v.pubkey.to_address()).collect();
+        let tc = TimeoutCertificate {
+            round: 2,
+            total_stake: 3000,
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![addrs[0], addrs[1], addrs[2]],
+        };
+        consensus.on_timeout_certificate(&tc).unwrap();
+
+        assert_eq!(
+            consensus.timeout_votes.len(),
+            1,
+            "only round 3 should remain after TC for round 2"
+        );
+        assert!(
+            consensus.timeout_votes.contains_key(&3),
+            "round 3 votes must survive pruning"
+        );
+        assert!(
+            !consensus.timeout_votes.contains_key(&1),
+            "round 1 votes must be pruned"
+        );
+        assert!(
+            !consensus.timeout_votes.contains_key(&2),
+            "round 2 votes must be pruned"
+        );
+    }
+
+    #[test]
+    fn test_prune_finalized_state_clears_old_tracking() {
+        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+
+        let hash_a = H256::from_slice(&[0xAA; 32]).unwrap();
+        let hash_b = H256::from_slice(&[0xBB; 32]).unwrap();
+        let hash_c = H256::from_slice(&[0xCC; 32]).unwrap();
+
+        // Simulate block tracking at various slots
+        consensus.block_slots.insert(hash_a, 1);
+        consensus.block_slots.insert(hash_b, 5);
+        consensus.block_slots.insert(hash_c, 10);
+        consensus.block_parents.insert(hash_a, H256::zero());
+        consensus.block_parents.insert(hash_b, hash_a);
+        consensus.block_parents.insert(hash_c, hash_b);
+
+        // Add QCs at different slots
+        consensus.qcs.insert(
+            (1, Phase::Prevote, hash_a),
+            AggregatedVote {
+                slot: 1,
+                block_hash: hash_a,
+                phase: Phase::Prevote,
+                total_stake: 3000,
+                signers: vec![],
+                aggregated_signature: vec![],
+                aggregated_pubkey: vec![],
+            },
+        );
+        consensus.qcs.insert(
+            (10, Phase::Prevote, hash_c),
+            AggregatedVote {
+                slot: 10,
+                block_hash: hash_c,
+                phase: Phase::Prevote,
+                total_stake: 3000,
+                signers: vec![],
+                aggregated_signature: vec![],
+                aggregated_pubkey: vec![],
+            },
+        );
+
+        // Finalize at slot 7 — prune_below = 7 - 2 = 5
+        consensus.finalized_slot = 7;
+        consensus.prune_finalized_state();
+
+        // Slot 1 < 5: pruned. Slot 5 >= 5: kept. Slot 10 >= 5: kept.
+        assert!(
+            !consensus.block_slots.contains_key(&hash_a),
+            "slot 1 block should be pruned"
+        );
+        assert!(
+            consensus.block_slots.contains_key(&hash_b),
+            "slot 5 block should be retained"
+        );
+        assert!(
+            consensus.block_slots.contains_key(&hash_c),
+            "slot 10 block should be retained"
+        );
+
+        // Parent tracking follows block_slots
+        assert!(!consensus.block_parents.contains_key(&hash_a));
+        assert!(consensus.block_parents.contains_key(&hash_b));
+        assert!(consensus.block_parents.contains_key(&hash_c));
+
+        // QC at slot 1 pruned, QC at slot 10 kept
+        assert!(!consensus
+            .qcs
+            .contains_key(&(1, Phase::Prevote, hash_a)));
+        assert!(consensus
+            .qcs
+            .contains_key(&(10, Phase::Prevote, hash_c)));
+    }
+
+    #[test]
+    fn test_prune_noop_for_low_finalized_slot() {
+        let (mut consensus, _validators, _bls_keys) = setup_bls_consensus(4);
+
+        let hash = H256::from_slice(&[0xAA; 32]).unwrap();
+        consensus.block_slots.insert(hash, 0);
+        consensus.block_parents.insert(hash, H256::zero());
+
+        // Finalized slot 2 → prune_below = 0 → early return, nothing pruned
+        consensus.finalized_slot = 2;
+        consensus.prune_finalized_state();
+
+        assert!(
+            consensus.block_slots.contains_key(&hash),
+            "no pruning when finalized_slot < 3"
+        );
     }
 }
