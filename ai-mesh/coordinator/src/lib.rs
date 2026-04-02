@@ -535,11 +535,14 @@ mod proptests {
 
             let assigned = coord.assign_job(vec![42], &base_reqs()).unwrap();
 
-            // Should assign to the worker with highest reputation
-            if rep_a >= rep_b {
+            // Should assign to the worker with highest reputation;
+            // on ties either is acceptable (iteration order is not guaranteed).
+            if rep_a > rep_b {
                 prop_assert_eq!(assigned, vec![1]);
-            } else {
+            } else if rep_b > rep_a {
                 prop_assert_eq!(assigned, vec![2]);
+            } else {
+                prop_assert!(assigned == vec![1] || assigned == vec![2]);
             }
         }
 
