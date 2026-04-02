@@ -18,3 +18,8 @@ aether-crypto-primitives = { path = "../crypto/primitives" }
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "types_bench"
+harness = false
