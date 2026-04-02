@@ -679,27 +679,9 @@ impl Ledger {
             }
         }
 
-        // Write to overlay (NOT to disk)
-        let sender_bytes = bincode::serialize(&sender_account)?;
-        overlay.put(CF_ACCOUNTS, tx.sender.as_bytes().to_vec(), sender_bytes);
-        overlay.changed_accounts.push(tx.sender);
-
-        // Update speculative merkle tree
-        let sender_hash = self.hash_account(&sender_account);
-        spec_tree.update(sender_account.address, sender_hash);
-
-        if let Some(ref recipient) = recipient_account {
-            let recipient_bytes = bincode::serialize(recipient)?;
-            overlay.put(
-                CF_ACCOUNTS,
-                recipient.address.as_bytes().to_vec(),
-                recipient_bytes,
-            );
-            overlay.changed_accounts.push(recipient.address);
-
-            let recipient_hash = self.hash_account(recipient);
-            spec_tree.update(recipient.address, recipient_hash);
-        }
+        // --- All validation BEFORE any overlay writes ---
+        // This ensures a failing transaction does not corrupt the overlay
+        // (e.g., nonce increment visible to later transactions in the block).
 
         // Reject duplicate UTxO inputs within a single transaction.
         // Without this check, an attacker could list the same input twice,
@@ -757,6 +739,30 @@ impl Ledger {
             }
         } else if total_input < total_output {
             bail!("UTxO inputs insufficient for outputs");
+        }
+
+        // --- All validation passed; now write to overlay ---
+
+        // Write account changes to overlay
+        let sender_bytes = bincode::serialize(&sender_account)?;
+        overlay.put(CF_ACCOUNTS, tx.sender.as_bytes().to_vec(), sender_bytes);
+        overlay.changed_accounts.push(tx.sender);
+
+        // Update speculative merkle tree
+        let sender_hash = self.hash_account(&sender_account);
+        spec_tree.update(sender_account.address, sender_hash);
+
+        if let Some(ref recipient) = recipient_account {
+            let recipient_bytes = bincode::serialize(recipient)?;
+            overlay.put(
+                CF_ACCOUNTS,
+                recipient.address.as_bytes().to_vec(),
+                recipient_bytes,
+            );
+            overlay.changed_accounts.push(recipient.address);
+
+            let recipient_hash = self.hash_account(recipient);
+            spec_tree.update(recipient.address, recipient_hash);
         }
 
         // Delete consumed UTxOs from overlay
@@ -2097,5 +2103,93 @@ mod tests {
             let slot = u64::from_be_bytes(key[..8].try_into().unwrap());
             assert_eq!(slot, 42);
         }
+    }
+
+    /// Regression test: a failed UTxO transaction in a speculative block must NOT
+    /// corrupt the overlay (e.g., by incrementing the sender's nonce). If it did,
+    /// a subsequent valid transaction from the same sender would fail with
+    /// "invalid nonce".
+    #[test]
+    fn test_failed_utxo_tx_does_not_corrupt_overlay_nonce() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let keypair = Keypair::generate();
+        let address = Address::from_slice(&keypair.to_address()).unwrap();
+
+        // Seed account with balance for the second (valid) transaction
+        ledger.seed_account(&address, 10_000).unwrap();
+
+        // tx1: UTxO transaction referencing a non-existent input — should FAIL
+        let bad_utxo_id = UtxoId {
+            tx_hash: H256::from_slice(&[0xDE; 32]).unwrap(),
+            output_index: 0,
+        };
+        let mut tx1 = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![bad_utxo_id],
+            outputs: vec![aether_types::UtxoOutput {
+                amount: 100,
+                owner: PublicKey::from_bytes(keypair.public_key()),
+                script_hash: None,
+            }],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 10,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash1 = tx1.hash();
+        tx1.signature = Signature::from_bytes(keypair.sign(hash1.as_bytes()));
+
+        // tx2: valid account-model transfer — should SUCCEED with nonce 0
+        let recipient_keypair = Keypair::generate();
+        let recipient = Address::from_slice(&recipient_keypair.to_address()).unwrap();
+        let payload = TransferPayload {
+            recipient,
+            amount: 500,
+            memo: None,
+        };
+        let mut tx2 = Transaction {
+            nonce: 0, // Same nonce — tx1 should NOT have consumed it
+            chain_id: 1,
+            sender: address,
+            sender_pubkey: PublicKey::from_bytes(keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: Some(TRANSFER_PROGRAM_ID),
+            data: bincode::serialize(&payload).unwrap(),
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash2 = tx2.hash();
+        tx2.signature = Signature::from_bytes(keypair.sign(hash2.as_bytes()));
+
+        let (receipts, _overlay) =
+            ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
+        assert_eq!(receipts.len(), 2);
+
+        // tx1 must have failed (non-existent UTxO)
+        assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { .. }),
+            "tx1 should fail, got: {:?}",
+            receipts[0].status
+        );
+
+        // tx2 must succeed — the failed tx1 should NOT have corrupted the nonce
+        assert!(
+            matches!(&receipts[1].status, TransactionStatus::Success),
+            "tx2 should succeed because tx1's failure did not corrupt the overlay nonce, got: {:?}",
+            receipts[1].status
+        );
     }
 }
