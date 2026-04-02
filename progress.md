@@ -552,3 +552,14 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Orphan blocks (waiting for parent) were never pruned — an attacker could fill the 256-block buffer with blocks referencing non-existent parents, permanently blocking legitimate orphans.
   - Added `prune_stale_orphans()` called from finalization cleanup path; removes orphans with slot ≤ finalized.
   - 2 new tests. All 92 node tests pass; clippy clean.
+
+## Agent 3 Cycle 12 Log
+
+- **2026-04-02** — fix(node): replace bare `.sum()` with saturating arithmetic for fee/gas aggregation. Tier 1 (integer overflow) item. Branch: `fix/agent3-saturating-fee-gas-sums`, PR #197 (merged).
+  - `Iterator::sum()` on u128 fees and u64 gas_limits panics in debug (wraps in release) on overflow. Replaced with `fold(0, |acc, x| acc.saturating_add(x))` in 4 crates:
+    - node.rs: block production + block reception fee/gas aggregation
+    - genesis.rs: total_stake and total_supply
+    - light-client/verifier.rs: total_stake in new() and update_validators()
+    - staking/state.rs: delegated_amount recomputation after slash
+  - Reviewed open PRs (none pending).
+  - 1 new test. All 400+ workspace tests pass; clippy clean.
