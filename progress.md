@@ -368,3 +368,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Ledger: instrumented commit_overlay and write_batch with STORAGE_METRICS.write_batch_ms histogram
   - Node main: spawns Prometheus HTTP exporter on AETHER_METRICS_PORT (default 9090) — all registered metrics now scraped at /metrics
   - Note: Tier 3 channel backpressure item already complete — all channels bounded with drop-on-full behavior
+
+## Agent 3 Cycle Log
+
+- **2026-04-02** — test(node): add e2e Byzantine fault detection tests across multi-node network. Tier 5 item (Byzantine fault test). Branch: `test/agent3-byzantine-fault-detection`, PR #139 (merged).
+  - 5 integration tests verifying full double-vote detection and slashing pipeline across 4 cooperating nodes
+  - Tests: cross-node slash propagation (5% of stake), continued block production post-Byzantine, state convergence, double-slash prevention, multi-Byzantine validator detection
+  - Bridges gap between consensus-level unit tests (byzantine_fault.rs) and single-node tests (node.rs)
+  - All Tier 5 items now complete. All Tier 1-6 items verified complete or merged.
