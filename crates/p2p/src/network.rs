@@ -1,4 +1,5 @@
-use aether_metrics::NET_METRICS;
+use aether_metrics::p2p::topic_label;
+use aether_metrics::{NET_METRICS, P2P_METRICS};
 use aether_types::{Block, Transaction};
 use anyhow::Result;
 use libp2p::connection_limits::{self, ConnectionLimits};
@@ -299,6 +300,7 @@ impl P2PNetwork {
                 )) => {
                     // Drop messages from banned peers that arrived before disconnect
                     if self.is_banned(&propagation_source) {
+                        P2P_METRICS.messages_dropped_banned.inc();
                         let _ = self.swarm.disconnect_peer_id(propagation_source);
                         continue;
                     }
@@ -323,6 +325,8 @@ impl P2PNetwork {
                             continue;
                         };
 
+                    let label = topic_label(&topic);
+
                     if size > max_size {
                         tracing::warn!(
                             peer = %propagation_source,
@@ -331,6 +335,10 @@ impl P2PNetwork {
                             max_size,
                             "dropping oversized gossipsub message, penalizing peer"
                         );
+                        P2P_METRICS
+                            .messages_dropped_oversized
+                            .with_label_values(&[label])
+                            .inc();
                         self.update_peer_score(&propagation_source, -10);
                         continue;
                     }
@@ -338,6 +346,10 @@ impl P2PNetwork {
                     let event = event_fn(data);
                     NET_METRICS.messages_received.inc();
                     NET_METRICS.message_size_bytes.observe(size as f64);
+                    P2P_METRICS
+                        .messages_received_by_topic
+                        .with_label_values(&[label])
+                        .inc();
 
                     return Some(event);
                 }
@@ -385,6 +397,7 @@ impl P2PNetwork {
             info.score += delta;
             if info.score < -100 {
                 // Ban for BAN_DURATION_SECS, disconnect
+                P2P_METRICS.peers_banned.inc();
                 let ban_expiry = current_timestamp() + BAN_DURATION_SECS;
                 self.banned_peers.insert(*peer_id, ban_expiry);
                 let _ = self.swarm.disconnect_peer_id(*peer_id);
