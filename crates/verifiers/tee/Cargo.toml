@@ -11,3 +11,6 @@ serde.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
+
+[dev-dependencies]
+proptest = "1"

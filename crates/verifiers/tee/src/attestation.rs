@@ -291,3 +291,220 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_measurement() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 48)
+    }
+
+    fn arb_nonce() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 32)
+    }
+
+    proptest! {
+        /// Any approved measurement verifies within the freshness window.
+        #[test]
+        fn approved_measurement_verifies(
+            measurement in arb_measurement(),
+            nonce in arb_nonce(),
+            age in 0u64..=59u64,
+        ) {
+            let ts = 10_000u64;
+            let current_time = ts + age;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(measurement.clone());
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement: measurement.clone(),
+                nonce,
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![vec![0u8; 32]],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, current_time).is_ok(),
+                "approved measurement within freshness window must pass"
+            );
+        }
+
+        /// Unapproved measurement always fails regardless of timestamp.
+        #[test]
+        fn unapproved_measurement_always_fails(
+            approved in arb_measurement(),
+            unapproved in arb_measurement(),
+        ) {
+            prop_assume!(approved != unapproved);
+            let ts = 10_000u64;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(approved);
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement: unapproved,
+                nonce: vec![0u8; 32],
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, ts + 1).is_err(),
+                "unapproved measurement must always fail"
+            );
+        }
+
+        /// Reports older than max_age_secs are always rejected.
+        #[test]
+        fn stale_reports_always_rejected(
+            measurement in arb_measurement(),
+            extra_age in 1u64..=100_000u64,
+        ) {
+            let ts = 10_000u64;
+            let max_age = 60u64;
+            let current_time = ts + max_age + extra_age;
+
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(measurement.clone());
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement,
+                nonce: vec![0u8; 32],
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, current_time).is_err(),
+                "reports older than max_age must be rejected"
+            );
+        }
+
+        /// Future-dated reports are always rejected.
+        #[test]
+        fn future_dated_reports_rejected(
+            measurement in arb_measurement(),
+            future_offset in 1u64..=1_000_000u64,
+        ) {
+            let current_time = 10_000u64;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(measurement.clone());
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement,
+                nonce: vec![0u8; 32],
+                timestamp: current_time + future_offset,
+                signature: vec![1u8; 64],
+                cert_chain: vec![],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, current_time).is_err(),
+                "future-dated reports must always be rejected"
+            );
+        }
+
+        /// Non-simulation TEE types without root cert always fail.
+        #[test]
+        fn non_simulation_without_root_cert_fails(measurement in arb_measurement()) {
+            let ts = 10_000u64;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(measurement.clone());
+            // Deliberately do NOT set a root cert
+
+            let report = AttestationReport {
+                tee_type: TeeType::SevSnp,
+                measurement,
+                nonce: vec![0u8; 32],
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![vec![0u8; 32]],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, ts + 1).is_err(),
+                "non-simulation TEE without root cert must fail"
+            );
+        }
+
+        /// add_approved_measurement never creates duplicates.
+        #[test]
+        fn no_duplicate_measurements(
+            m1 in arb_measurement(),
+            m2 in arb_measurement(),
+        ) {
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(m1.clone());
+            verifier.add_approved_measurement(m2.clone());
+            // Add both again — should not increase count
+            verifier.add_approved_measurement(m1.clone());
+            verifier.add_approved_measurement(m2.clone());
+
+            let expected = if m1 == m2 { 1 } else { 2 };
+            prop_assert_eq!(
+                verifier.approved_measurements.len(),
+                expected,
+                "no duplicate measurements should be stored"
+            );
+        }
+
+        /// Verification within window with multiple approved measurements: only exact match passes.
+        #[test]
+        fn only_matching_measurement_passes(
+            m_correct in arb_measurement(),
+            m_other in arb_measurement(),
+        ) {
+            prop_assume!(m_correct != m_other);
+            let ts = 10_000u64;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(m_other.clone());
+            // m_correct is NOT approved
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement: m_correct,
+                nonce: vec![0u8; 32],
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![],
+            };
+
+            prop_assert!(
+                verifier.verify(&report, ts + 1).is_err(),
+                "report with non-approved measurement must fail"
+            );
+        }
+
+        /// Boundary: report at exactly max_age_secs is accepted (not strictly over limit).
+        #[test]
+        fn report_at_exact_max_age_accepted(measurement in arb_measurement()) {
+            let ts = 10_000u64;
+            let max_age = 60u64;
+            let mut verifier = TeeVerifier::new();
+            verifier.add_approved_measurement(measurement.clone());
+
+            let report = AttestationReport {
+                tee_type: TeeType::Simulation,
+                measurement,
+                nonce: vec![0u8; 32],
+                timestamp: ts,
+                signature: vec![1u8; 64],
+                cert_chain: vec![],
+            };
+
+            // current_time - timestamp == max_age_secs → condition is `> max_age` → not triggered
+            prop_assert!(
+                verifier.verify(&report, ts + max_age).is_ok(),
+                "report at exactly max_age_secs boundary must be accepted"
+            );
+        }
+    }
+}
