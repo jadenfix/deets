@@ -25,6 +25,51 @@ use tokio::time;
 
 use aether_metrics::{CONSENSUS_METRICS, STORAGE_METRICS};
 
+/// Overflow-safe (a * b) / c using 256-bit intermediate product.
+/// Avoids silent truncation when a*b overflows u128 (e.g. emission * stake).
+fn mul_div(a: u128, b: u128, c: u128) -> u128 {
+    if c == 0 {
+        return 0;
+    }
+    let a_hi = a >> 64;
+    let a_lo = a & 0xFFFF_FFFF_FFFF_FFFF;
+    let b_hi = b >> 64;
+    let b_lo = b & 0xFFFF_FFFF_FFFF_FFFF;
+
+    let lo_lo = a_lo * b_lo;
+    let hi_lo = a_hi * b_lo;
+    let lo_hi = a_lo * b_hi;
+    let hi_hi = a_hi * b_hi;
+
+    let mid = hi_lo + (lo_lo >> 64);
+    let mid = mid + lo_hi;
+    let carry = if mid < lo_hi { 1u128 } else { 0u128 };
+
+    let product_lo = (mid << 64) | (lo_lo & 0xFFFF_FFFF_FFFF_FFFF);
+    let product_hi = hi_hi + (mid >> 64) + carry;
+
+    div_256_by_128(product_hi, product_lo, c)
+}
+
+fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> u128 {
+    if hi == 0 {
+        return lo / divisor;
+    }
+    if hi >= divisor {
+        return u128::MAX;
+    }
+    let mut remainder = hi;
+    let mut quotient: u128 = 0;
+    for i in (0..128).rev() {
+        remainder = (remainder << 1) | ((lo >> i) & 1);
+        if remainder >= divisor {
+            remainder -= divisor;
+            quotient |= 1u128 << i;
+        }
+    }
+    quotient
+}
+
 use crate::fork_choice::ForkChoice;
 use crate::network_handler::{decode_network_event, NodeMessage, OutboundMessage};
 use crate::poh::{PohMetrics, PohRecorder};
@@ -570,7 +615,7 @@ impl Node {
             let my_addr = my_pubkey.to_address();
             let my_stake = self.consensus.validator_stake(&my_addr);
             if my_stake > 0 {
-                let my_share = emission.checked_mul(my_stake).map(|n| n / total_stake).unwrap_or(0);
+                let my_share = mul_div(emission, my_stake, total_stake);
                 if my_share > 0 {
                     self.ledger.credit_account_to_batch(&mut epoch_batch, &my_addr, my_share)?;
                 }
@@ -3173,5 +3218,28 @@ mod tests {
             .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
             .count();
         assert_eq!(broadcast_count, 2);
+    }
+
+    #[test]
+    fn mul_div_no_overflow_large_emission_and_stake() {
+        // Regression: checked_mul(emission, stake) overflows u128 for large values,
+        // causing unwrap_or(0) to silently drop validator rewards.
+        let emission = u128::MAX / 2;
+        let stake = u128::MAX / 3;
+        let total_stake = u128::MAX / 3; // validator has 100% of stake
+
+        // With checked_mul this would overflow and return 0.
+        // With mul_div it should return ~emission (100% share).
+        let share = mul_div(emission, stake, total_stake);
+        assert_eq!(share, emission, "100% stake share should equal full emission");
+
+        // Partial stake: 50% of total
+        let half_stake = total_stake / 2;
+        let half_share = mul_div(emission, half_stake, total_stake);
+        let expected = emission / 2;
+        assert!(
+            half_share >= expected - 1 && half_share <= expected + 1,
+            "50% stake share should be ~{expected}, got {half_share}"
+        );
     }
 }
