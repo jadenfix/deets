@@ -722,3 +722,19 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Properly cleans up by_hash/by_sender tracking when rejecting over-limit txs.
   - 2 new regression tests; 25/25 mempool tests pass; clippy clean.
   - Note: pre-existing proptest `get_transactions_fee_ordered` failure unrelated to this change (upstream bug from Agent 3 cycle 15).
+
+## Agent 4 Cycle 17 Log
+
+- **2026-04-02** — test(aic-token): add proptest property-based tests for AIC token invariants. Tier 5 item. Branch: `test/agent4-aic-token-proptest`, PR #227 (merged).
+  - Added 10 proptest cases to `crates/programs/aic-token/src/lib.rs` covering:
+    - mint_increases_balance_and_supply: mint δ = balance δ = supply δ
+    - burn_decreases_supply_increases_burned: accounting consistency
+    - transfer_conserves_supply: no token creation/destruction
+    - transfer_from_reduces_allowance: allowance decremented exactly
+    - unauthorized_mint_rejected: non-authority cannot inflate supply
+    - burn_more_than_balance_rejected / transfer_more_than_balance_rejected: state unchanged on failure
+    - multiple_mints_accumulate: repeated mints sum correctly
+    - supply_equals_sum_of_balances: invariant holds after mixed ops
+    - transfer_from_no_allowance_consumed_on_failure: allowance preserved on failed transfer
+  - Added `proptest = "1"` to `[dev-dependencies]` in aic-token `Cargo.toml`.
+  - All 17 tests pass (7 unit + 10 proptest); clippy clean.
