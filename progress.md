@@ -964,6 +964,14 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **PR**: #316 (merged)
 - **Details**: Both `HybridConsensus::new()` and `VrfPosConsensus::new()` accepted `epoch_length=0` without validation, causing a division-by-zero panic in `advance_slot`'s epoch boundary check (`current_slot % epoch_length`). Fixed by clamping `epoch_length` to `>= 1` in constructors via `.max(1)`, plus belt-and-suspenders guard at the modulo site. Added 3 regression tests.
 
+## Agent 2 — Cycle 38 (2026-04-02)
+
+- **Task**: fix(da,types): replace silent truncating casts with safe conversions
+- **Tier**: 1 (Correctness & Safety)
+- **Branch**: `fix/agent2-da-safe-index-cast`
+- **PR**: #321 (merged)
+- **Details**: Replaced two silent truncating casts: (1) turbine broadcaster `idx as u32` → `u32::try_from(idx)?` to prevent shard index corruption on large erasure batches, (2) chain config TOML serializer `*value as u64` → `u64::try_from` to error instead of silently losing high bits on u128 balance values.
+
 ## Agent 3 — Cycle 38 (2026-04-02)
 
 - **Task**: bench(consensus): criterion benchmarks for vote processing, BLS, and quorum
