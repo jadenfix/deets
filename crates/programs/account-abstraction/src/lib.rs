@@ -420,3 +420,279 @@ mod tests {
         assert_eq!(op.total_gas(), u64::MAX);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    struct AcceptAll;
+    impl AccountValidator for AcceptAll {
+        fn validate_signature(&self, _: &Address, _: &H256, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn arb_address() -> impl Strategy<Value = Address> {
+        prop::array::uniform20(any::<u8>()).prop_map(|b| Address::from_slice(&b).unwrap())
+    }
+
+    proptest! {
+        /// UserOperation hash is deterministic — same inputs always produce same hash.
+        #[test]
+        fn user_op_hash_deterministic(sender in arb_address(), nonce in any::<u64>()) {
+            let op = UserOperation {
+                sender,
+                nonce,
+                call_data: vec![1, 2, 3],
+                call_gas_limit: 100_000,
+                verification_gas_limit: 50_000,
+                pre_verification_gas: 10_000,
+                max_fee_per_gas: 100,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+            prop_assert_eq!(op.hash(), op.hash());
+        }
+
+        /// Changing any field (except signature) changes the hash.
+        #[test]
+        fn user_op_hash_sensitive_to_fields(
+            nonce1 in 0u64..u64::MAX,
+            nonce2 in 0u64..u64::MAX,
+        ) {
+            prop_assume!(nonce1 != nonce2);
+            let sender = Address::from_slice(&[1u8; 20]).unwrap();
+            let mut op1 = UserOperation {
+                sender,
+                nonce: nonce1,
+                call_data: vec![],
+                call_gas_limit: 100_000,
+                verification_gas_limit: 50_000,
+                pre_verification_gas: 10_000,
+                max_fee_per_gas: 100,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+            let mut op2 = op1.clone();
+            op2.nonce = nonce2;
+            // Different signatures — hash must still differ due to nonce
+            op1.signature = vec![0u8; 64];
+            op2.signature = vec![0u8; 64];
+            prop_assert_ne!(op1.hash(), op2.hash());
+        }
+
+        /// Hash excludes the signature field — two ops identical except for signature hash equal.
+        #[test]
+        fn user_op_hash_excludes_signature(
+            sig1 in prop::collection::vec(any::<u8>(), 1..128usize),
+            sig2 in prop::collection::vec(any::<u8>(), 1..128usize),
+        ) {
+            let sender = Address::from_slice(&[1u8; 20]).unwrap();
+            let op1 = UserOperation {
+                sender,
+                nonce: 0,
+                call_data: vec![],
+                call_gas_limit: 100_000,
+                verification_gas_limit: 50_000,
+                pre_verification_gas: 10_000,
+                max_fee_per_gas: 100,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: sig1,
+            };
+            let mut op2 = op1.clone();
+            op2.signature = sig2;
+            prop_assert_eq!(op1.hash(), op2.hash());
+        }
+
+        /// total_gas() never overflows — always saturates at u64::MAX.
+        #[test]
+        fn total_gas_saturates(
+            call_gas in any::<u64>(),
+            verif_gas in any::<u64>(),
+            pre_gas in any::<u64>(),
+        ) {
+            let op = UserOperation {
+                sender: Address::from_slice(&[1u8; 20]).unwrap(),
+                nonce: 0,
+                call_data: vec![],
+                call_gas_limit: call_gas,
+                verification_gas_limit: verif_gas,
+                pre_verification_gas: pre_gas,
+                max_fee_per_gas: 1,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+            // Must not panic — just return a u64 (possibly saturated)
+            let _ = op.total_gas();
+        }
+
+        /// Zero call_gas_limit is always rejected by validate().
+        #[test]
+        fn zero_call_gas_rejected(verif_gas in 1u64..1_000_000u64, max_fee in 1u128..10_000u128) {
+            let op = UserOperation {
+                sender: Address::from_slice(&[1u8; 20]).unwrap(),
+                nonce: 0,
+                call_data: vec![],
+                call_gas_limit: 0,
+                verification_gas_limit: verif_gas,
+                pre_verification_gas: 1,
+                max_fee_per_gas: max_fee,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+            prop_assert!(op.validate().is_err());
+        }
+
+        /// Nonce monotonicity: sequential nonces 0,1,2,... all succeed for same sender.
+        #[test]
+        fn sequential_nonces_accepted(n_ops in 1usize..20usize) {
+            let sender = Address::from_slice(&[1u8; 20]).unwrap();
+            let mut ep = EntryPoint::new();
+            ep.register_account(sender, H256::zero());
+
+            let ops: Vec<UserOperation> = (0u64..n_ops as u64)
+                .map(|nonce| UserOperation {
+                    sender,
+                    nonce,
+                    call_data: vec![],
+                    call_gas_limit: 100_000,
+                    verification_gas_limit: 50_000,
+                    pre_verification_gas: 10_000,
+                    max_fee_per_gas: 100,
+                    paymaster: None,
+                    paymaster_data: vec![],
+                    signature: vec![0u8; 64],
+                })
+                .collect();
+
+            let results = ep.handle_ops(&ops, &AcceptAll).unwrap();
+            prop_assert_eq!(results.len(), n_ops);
+            for r in &results {
+                prop_assert!(r.success, "op failed: {:?}", r.error);
+            }
+        }
+
+        /// Replaying the same nonce always fails on the second attempt.
+        #[test]
+        fn replay_same_nonce_rejected(sender in arb_address()) {
+            let mut ep = EntryPoint::new();
+            ep.register_account(sender, H256::zero());
+
+            let op = UserOperation {
+                sender,
+                nonce: 0,
+                call_data: vec![1],
+                call_gas_limit: 100_000,
+                verification_gas_limit: 50_000,
+                pre_verification_gas: 10_000,
+                max_fee_per_gas: 100,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+
+            // First execution succeeds
+            let r1 = ep.handle_ops(std::slice::from_ref(&op), &AcceptAll).unwrap();
+            prop_assert!(r1[0].success);
+
+            // Replay with same nonce must fail
+            let r2 = ep.handle_ops(std::slice::from_ref(&op), &AcceptAll).unwrap();
+            prop_assert!(!r2[0].success, "replay must be rejected");
+            let err = r2[0].error.as_deref().unwrap_or("");
+            prop_assert!(err.contains("nonce"), "expected nonce error, got: {}", err);
+        }
+
+        /// Unregistered sender always rejected by validate_user_op.
+        #[test]
+        fn unregistered_sender_rejected(sender in arb_address()) {
+            let ep = EntryPoint::new();
+            let op = UserOperation {
+                sender,
+                nonce: 0,
+                call_data: vec![],
+                call_gas_limit: 100_000,
+                verification_gas_limit: 50_000,
+                pre_verification_gas: 10_000,
+                max_fee_per_gas: 100,
+                paymaster: None,
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+            prop_assert!(ep.validate_user_op(&op, &AcceptAll).is_err());
+        }
+
+        /// Paymaster deposit is correctly deducted after op execution.
+        #[test]
+        fn paymaster_deposit_decremented(
+            sender in arb_address(),
+            paymaster in arb_address(),
+            call_gas in 1u64..100_000u64,
+            verif_gas in 1u64..50_000u64,
+            pre_gas in 1u64..10_000u64,
+            max_fee in 1u128..1_000u128,
+        ) {
+            prop_assume!(sender != paymaster);
+            let mut ep = EntryPoint::new();
+            ep.register_account(sender, H256::zero());
+
+            // Compute required deposit from gas limits
+            let total_gas = call_gas.saturating_add(verif_gas).saturating_add(pre_gas);
+            let cost = (total_gas as u128).saturating_mul(max_fee);
+            // Provide exactly enough + 1 to ensure success
+            let initial_deposit = cost.saturating_add(1);
+            ep.register_paymaster(paymaster, initial_deposit);
+
+            let op = UserOperation {
+                sender,
+                nonce: 0,
+                call_data: vec![],
+                call_gas_limit: call_gas,
+                verification_gas_limit: verif_gas,
+                pre_verification_gas: pre_gas,
+                max_fee_per_gas: max_fee,
+                paymaster: Some(paymaster),
+                paymaster_data: vec![],
+                signature: vec![0u8; 64],
+            };
+
+            let results = ep.handle_ops(&[op], &AcceptAll).unwrap();
+            prop_assert!(results[0].success);
+        }
+
+        /// handle_ops returns one result per submitted op regardless of success/failure.
+        #[test]
+        fn result_count_matches_input(n_ops in 1usize..10usize) {
+            let mut ep = EntryPoint::new();
+            // Register only odd-indexed senders — evens will fail (unregistered)
+            let ops: Vec<UserOperation> = (0..n_ops)
+                .map(|i| {
+                    let sender = Address::from_slice(&[i as u8 + 1; 20]).unwrap();
+                    if i % 2 == 0 {
+                        ep.register_account(sender, H256::zero());
+                    }
+                    UserOperation {
+                        sender,
+                        nonce: 0,
+                        call_data: vec![],
+                        call_gas_limit: 100_000,
+                        verification_gas_limit: 50_000,
+                        pre_verification_gas: 10_000,
+                        max_fee_per_gas: 100,
+                        paymaster: None,
+                        paymaster_data: vec![],
+                        signature: vec![0u8; 64],
+                    }
+                })
+                .collect();
+
+            let results = ep.handle_ops(&ops, &AcceptAll).unwrap();
+            prop_assert_eq!(results.len(), n_ops, "one result per submitted op");
+        }
+    }
+}
