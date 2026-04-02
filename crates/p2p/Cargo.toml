@@ -18,3 +18,4 @@ sha2 = "0.10"
 bincode = "1.3"
 zstd = "0.13"
 serde.workspace = true
+aether-metrics = { path = "../metrics" }

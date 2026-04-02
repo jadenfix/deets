@@ -1,4 +1,5 @@
 use aether_crypto_primitives::ed25519;
+use aether_metrics::STORAGE_METRICS;
 use aether_state_merkle::SparseMerkleTree;
 use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
 use aether_types::{
@@ -850,7 +851,11 @@ impl Ledger {
     pub fn commit_overlay(&mut self, overlay: PendingOverlay) -> Result<()> {
         let _span = tracing::info_span!("commit_overlay").entered();
         let batch = self.prepare_overlay_batch(&overlay)?;
+        let start = Instant::now();
         self.storage.write_batch(batch)?;
+        STORAGE_METRICS
+            .write_batch_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
         Ok(())
     }
 
@@ -858,7 +863,12 @@ impl Ledger {
     /// Used when the caller has combined multiple logical operations (e.g. overlay
     /// commit + block persistence) into a single atomic batch.
     pub fn write_batch(&self, batch: StorageBatch) -> Result<()> {
-        self.storage.write_batch(batch)
+        let start = Instant::now();
+        self.storage.write_batch(batch)?;
+        STORAGE_METRICS
+            .write_batch_ms
+            .observe(start.elapsed().as_secs_f64() * 1000.0);
+        Ok(())
     }
 
     pub fn seed_account(&mut self, address: &Address, balance: u128) -> Result<()> {

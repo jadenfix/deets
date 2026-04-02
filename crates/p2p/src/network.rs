@@ -1,3 +1,4 @@
+use aether_metrics::NET_METRICS;
 use aether_types::{Block, Transaction};
 use anyhow::Result;
 use libp2p::futures::StreamExt;
@@ -192,11 +193,14 @@ impl P2PNetwork {
             .topics
             .get(topic_str)
             .ok_or_else(|| anyhow::anyhow!("not subscribed to topic: {}", topic_str))?;
+        let size = data.len();
         self.swarm
             .behaviour_mut()
             .gossipsub
             .publish(topic.clone(), data)
             .map_err(|e| anyhow::anyhow!("publish error: {}", e))?;
+        NET_METRICS.messages_sent.inc();
+        NET_METRICS.message_size_bytes.observe(size as f64);
         Ok(())
     }
 
@@ -308,6 +312,8 @@ impl P2PNetwork {
                     }
 
                     let event = event_fn(data);
+                    NET_METRICS.messages_received.inc();
+                    NET_METRICS.message_size_bytes.observe(size as f64);
 
                     return Some(event);
                 }
@@ -331,10 +337,13 @@ impl P2PNetwork {
                         connected_at: current_timestamp(),
                     };
                     self.peers.insert(peer_id, info);
+                    NET_METRICS.connections_total.inc();
+                    NET_METRICS.peers_connected.set(self.peers.len() as i64);
                     return Some(NetworkEvent::PeerConnected(peer_id));
                 }
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     self.peers.remove(&peer_id);
+                    NET_METRICS.peers_connected.set(self.peers.len() as i64);
                     return Some(NetworkEvent::PeerDisconnected(peer_id));
                 }
                 SwarmEvent::NewListenAddr { address, .. } => {

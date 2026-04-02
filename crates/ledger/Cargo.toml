@@ -18,6 +18,7 @@ aether-crypto-primitives = { path = "../crypto/primitives" }
 aether-types = { path = "../types" }
 aether-state-merkle = { path = "../state/merkle" }
 aether-state-storage = { path = "../state/storage" }
+aether-metrics = { path = "../metrics" }
 
 [dev-dependencies]
 tempfile = "3"
