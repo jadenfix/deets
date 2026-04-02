@@ -55,7 +55,7 @@ struct HostState {
 }
 
 impl WasmVm {
-    pub fn new(gas_limit: u64) -> Self {
+    pub fn new(gas_limit: u64) -> Result<Self> {
         let mut config = Config::new();
         config.consume_fuel(true);
         // Deterministic execution: disable non-deterministic features
@@ -72,9 +72,10 @@ impl WasmVm {
         // Dynamic memory guard size; static_memory_maximum_size caps growth.
         config.dynamic_memory_guard_size(64 * 1024);
 
-        let engine = Engine::new(&config).expect("failed to create Wasmtime engine");
+        let engine = Engine::new(&config)
+            .map_err(|e| anyhow::anyhow!("failed to create Wasmtime engine: {e}"))?;
 
-        WasmVm { engine, gas_limit }
+        Ok(WasmVm { engine, gas_limit })
     }
 
     /// Execute WASM bytecode with the given context and input.
@@ -130,7 +131,10 @@ impl WasmVm {
 
         let success = match func {
             Ok(f) => {
-                match f.call(&mut store, (0, input.len() as i32)) {
+                let input_len: i32 = input.len().try_into().map_err(|_| {
+                    anyhow::anyhow!("input too large for WASM (max {} bytes)", i32::MAX)
+                })?;
+                match f.call(&mut store, (0, input_len)) {
                     Ok(result_code) => result_code == 0,
                     Err(e) => {
                         // Out-of-fuel means out-of-gas: do NOT retry another entry point.
@@ -223,7 +227,10 @@ impl WasmVm {
                     Err(_) => return -1, // Fuel system unavailable
                 }
 
-                // Enforce key length limit (mirrors storage_write).
+                // Reject negative or oversized pointer/length values.
+                if key_ptr < 0 || key_len < 0 || val_ptr < 0 {
+                    return -1;
+                }
                 if key_len as usize > MAX_STORAGE_KEY_LEN {
                     return -1;
                 }
@@ -277,7 +284,17 @@ impl WasmVm {
              val_ptr: i32,
              val_len: i32|
              -> i32 {
-                // Charge fuel for host function call (base + per-byte)
+                // Reject negative or oversized pointer/length values.
+                if key_ptr < 0 || key_len < 0 || val_ptr < 0 || val_len < 0 {
+                    return -1;
+                }
+                if key_len as usize > MAX_STORAGE_KEY_LEN || val_len as usize > MAX_STORAGE_VAL_LEN
+                {
+                    return -1;
+                }
+
+                // Charge fuel after validation so negative values don't produce
+                // astronomically wrong gas costs via u64 wrapping.
                 let val_cost = (val_len as u64).saturating_mul(20);
                 let fuel_cost = 5000u64.saturating_add(val_cost);
                 match caller.get_fuel() {
@@ -288,12 +305,6 @@ impl WasmVm {
                     }
                     Ok(_) => return -1,
                     Err(_) => return -1,
-                }
-
-                // Reject oversized keys/values before touching memory.
-                if key_len as usize > MAX_STORAGE_KEY_LEN || val_len as usize > MAX_STORAGE_VAL_LEN
-                {
-                    return -1;
                 }
 
                 let memory = match caller.get_export("memory") {
@@ -335,7 +346,17 @@ impl WasmVm {
             "env",
             "emit_log",
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, data_ptr: i32, data_len: i32| -> i32 {
-                // Charge fuel for host function call
+                // Reject negative pointer/length values.
+                if data_ptr < 0 || data_len < 0 {
+                    return -1;
+                }
+
+                // Enforce log data size limit (before gas charge to avoid wrapping).
+                if data_len as usize > MAX_LOG_DATA_LEN {
+                    return -1;
+                }
+
+                // Charge fuel after validation so negative values can't wrap.
                 let log_byte_cost = (data_len as u64).saturating_mul(8);
                 let fuel_cost = 375u64.saturating_add(log_byte_cost);
                 match caller.get_fuel() {
@@ -360,11 +381,6 @@ impl WasmVm {
                     _ => return -1,
                 };
 
-                // Enforce log data size limit.
-                if data_len as usize > MAX_LOG_DATA_LEN {
-                    return -1;
-                }
-
                 let log_data = data[start..end].to_vec();
                 let mut state = match caller.data().lock() {
                     Ok(s) => s,
@@ -386,21 +402,26 @@ impl WasmVm {
             "env",
             "set_return",
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| -> i32 {
-                // Charge fuel proportional to data length (100 base + 1 per byte).
-                let fuel_cost = 100u64.saturating_add(len.max(0) as u64);
+                // Reject negative pointer/length values.
+                if ptr < 0 || len < 0 {
+                    return -1;
+                }
+
+                // Enforce return data size limit.
+                if len as usize > MAX_RETURN_DATA_LEN {
+                    return -1;
+                }
+
+                // Charge fuel after validation so negative values can't wrap.
+                let fuel_cost = 100u64.saturating_add(len as u64);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
                         if caller.set_fuel(fuel - fuel_cost).is_err() {
                             return -1;
                         }
                     }
-                    Ok(_) => return -1,  // Insufficient fuel
-                    Err(_) => return -1, // Fuel system unavailable
-                }
-
-                // Enforce return data size limit.
-                if len as usize > MAX_RETURN_DATA_LEN {
-                    return -1;
+                    Ok(_) => return -1,
+                    Err(_) => return -1,
                 }
 
                 let memory = match caller.get_export("memory") {
@@ -486,13 +507,13 @@ mod tests {
 
     #[test]
     fn test_vm_creation() {
-        let vm = WasmVm::new(100_000);
+        let vm = WasmVm::new(100_000).unwrap();
         assert_eq!(vm.gas_limit, 100_000);
     }
 
     #[test]
     fn test_wasm_validation_bad_magic() {
-        let mut vm = WasmVm::new(100_000);
+        let mut vm = WasmVm::new(100_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -508,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_wasm_validation_too_short() {
-        let mut vm = WasmVm::new(100_000);
+        let mut vm = WasmVm::new(100_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -523,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_execute_minimal_wasm() {
-        let mut vm = WasmVm::new(1_000_000);
+        let mut vm = WasmVm::new(1_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -555,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_execute_wasm_with_storage() {
-        let mut vm = WasmVm::new(1_000_000);
+        let mut vm = WasmVm::new(1_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -599,7 +620,7 @@ mod tests {
 
     #[test]
     fn test_execute_wasm_with_logging() {
-        let mut vm = WasmVm::new(1_000_000);
+        let mut vm = WasmVm::new(1_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -636,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_gas_consumption() {
-        let mut vm = WasmVm::new(100);
+        let mut vm = WasmVm::new(100).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -677,7 +698,7 @@ mod tests {
     #[test]
     fn test_gas_exhaustion_does_not_retry_entrypoint() {
         // When "execute" exhausts fuel the VM must NOT fall through to "main".
-        let mut vm = WasmVm::new(50);
+        let mut vm = WasmVm::new(50).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -709,7 +730,7 @@ mod tests {
 
     #[test]
     fn test_storage_key_size_limit() {
-        let mut vm = WasmVm::new(1_000_000);
+        let mut vm = WasmVm::new(1_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -751,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_memory_growth_beyond_limit_handled_gracefully() {
-        let mut vm = WasmVm::new(10_000_000);
+        let mut vm = WasmVm::new(10_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -790,7 +811,7 @@ mod tests {
 
     #[test]
     fn test_stack_overflow_handled_gracefully() {
-        let mut vm = WasmVm::new(100_000_000);
+        let mut vm = WasmVm::new(100_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -831,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_no_entrypoint_returns_failure() {
-        let mut vm = WasmVm::new(1_000_000);
+        let mut vm = WasmVm::new(1_000_000).unwrap();
         let context = ExecutionContext {
             contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
             caller: Address::from_slice(&[2u8; 20]).unwrap(),
@@ -848,6 +869,92 @@ mod tests {
         assert!(
             !result.success,
             "module with no entrypoint should not report success"
+        );
+    }
+
+    #[test]
+    fn test_negative_pointer_rejected_gracefully() {
+        let mut vm = WasmVm::new(1_000_000).unwrap();
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Contract calls storage_write with negative key_ptr (-1).
+        // Must return -1 (error) without panic or memory corruption.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (import "env" "storage_write" (func $sw (param i32 i32 i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "val")
+                (func (export "execute") (param i32 i32) (result i32)
+                    ;; storage_write(key_ptr=-1, key_len=4, val_ptr=0, val_len=3)
+                    i32.const -1
+                    i32.const 4
+                    i32.const 0
+                    i32.const 3
+                    call $sw
+                    drop
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"").unwrap();
+        assert!(result.success, "contract should succeed (write silently rejected)");
+        assert!(
+            result.storage_changes.is_empty(),
+            "negative pointer write must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_negative_length_rejected_gracefully() {
+        let mut vm = WasmVm::new(1_000_000).unwrap();
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Contract calls emit_log with negative data_len (-1).
+        // Must return -1 without consuming massive gas from u64 wrapping.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (import "env" "emit_log" (func $log (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "execute") (param i32 i32) (result i32)
+                    ;; emit_log(data_ptr=0, data_len=-1)
+                    i32.const 0
+                    i32.const -1
+                    call $log
+                    drop
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"").unwrap();
+        assert!(result.success, "contract should succeed (log silently rejected)");
+        assert!(result.logs.is_empty(), "negative length log must be rejected");
+        // Key check: gas_used should be small, not billions from u64-wrapped cost
+        assert!(
+            result.gas_used < 10_000,
+            "negative length must not cause excessive gas charge (got {})",
+            result.gas_used
         );
     }
 }
