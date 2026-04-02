@@ -363,7 +363,7 @@ impl Mempool {
 
         // Advance expected nonce
         let sender = tx.sender;
-        let next = tx.nonce + 1;
+        let next = tx.nonce.saturating_add(1);
         let current_expected = self.next_nonce.get(&sender).copied().unwrap_or(0);
         if next > current_expected {
             self.next_nonce.insert(sender, next);
@@ -375,7 +375,7 @@ impl Mempool {
             timestamp: self.current_time,
             submitted_slot: self.current_slot,
         });
-        self.current_time += 1;
+        self.current_time = self.current_time.saturating_add(1);
     }
 
     /// Handle a chain reorg: re-add reverted txs, remove invalid ones.
@@ -447,11 +447,11 @@ impl Mempool {
                 break;
             }
 
-            if total_gas + ptx.tx.gas_limit <= max_gas {
+            if total_gas.saturating_add(ptx.tx.gas_limit) <= max_gas {
                 let tx_hash = ptx.tx.hash();
                 if self.by_hash.contains_key(&tx_hash) {
                     selected.push(ptx.tx.clone());
-                    total_gas += ptx.tx.gas_limit;
+                    total_gas = total_gas.saturating_add(ptx.tx.gas_limit);
                 }
             } else {
                 temp_heap.push(ptx);
