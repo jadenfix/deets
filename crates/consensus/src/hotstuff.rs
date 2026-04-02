@@ -75,6 +75,10 @@ pub struct TimeoutCertificate {
     pub highest_qc_slot: Slot,
     pub highest_qc_hash: H256,
     pub signers: Vec<Address>,
+    /// Aggregated BLS signature over all timeout vote messages.
+    /// Verified on receipt to prevent forged TCs from malicious peers.
+    pub aggregated_signature: Vec<u8>,
+    pub aggregated_pubkey: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -476,7 +480,23 @@ impl HotStuffConsensus {
             }
         }
 
-        let signers = round_votes.iter().map(|v| v.validator).collect();
+        let signers: Vec<Address> = round_votes.iter().map(|v| v.validator).collect();
+
+        // Aggregate BLS signatures from all timeout votes into the TC.
+        // This allows on_timeout_certificate to verify TCs received over the network
+        // without re-collecting individual votes.
+        let signatures: Vec<Vec<u8>> = round_votes.iter().map(|v| v.signature.clone()).collect();
+        let pubkeys: Vec<Vec<u8>> = round_votes
+            .iter()
+            .map(|v| {
+                self.bls_pubkeys
+                    .get(&v.validator)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no BLS pubkey for {:?}", v.validator))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let aggregated_signature = aggregate_signatures(&signatures)?;
+        let aggregated_pubkey = aggregate_public_keys(&pubkeys)?;
 
         Ok(Some(TimeoutCertificate {
             round: tv.round,
@@ -484,6 +504,8 @@ impl HotStuffConsensus {
             highest_qc_slot,
             highest_qc_hash,
             signers,
+            aggregated_signature,
+            aggregated_pubkey,
         }))
     }
 
@@ -524,6 +546,34 @@ impl HotStuffConsensus {
                 voted_stake,
                 self.total_stake
             );
+        }
+
+        // Verify the aggregated BLS signature on the TC.
+        // Each signer signed: b"timeout" || round || highest_qc_slot || highest_qc_hash.
+        // We verify the aggregate against the aggregated pubkey from the TC,
+        // but first recompute the aggregated pubkey from our local validator set
+        // to prevent a forged pubkey from passing verification.
+        let signer_pubkeys: Vec<Vec<u8>> = tc
+            .signers
+            .iter()
+            .map(|s| {
+                self.bls_pubkeys
+                    .get(s)
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no BLS pubkey for TC signer {:?}", s))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let recomputed_agg_pk = aggregate_public_keys(&signer_pubkeys)?;
+
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&tc.round.to_le_bytes());
+        msg.extend_from_slice(&tc.highest_qc_slot.to_le_bytes());
+        msg.extend_from_slice(tc.highest_qc_hash.as_bytes());
+        let valid =
+            aether_crypto_bls::keypair::verify(&recomputed_agg_pk, &msg, &tc.aggregated_signature)?;
+        if !valid {
+            bail!("invalid aggregated BLS signature on timeout certificate for round {}", tc.round);
         }
 
         // Update locked block to the highest QC from the TC.
@@ -910,6 +960,53 @@ mod tests {
         (consensus, validators, bls_keys)
     }
 
+    /// Create a signed TimeoutCertificate for testing.
+    /// Signs the TC message with each signer's BLS key and aggregates.
+    fn create_signed_tc(
+        round: u64,
+        highest_qc_slot: Slot,
+        highest_qc_hash: H256,
+        signer_indices: &[usize],
+        validators: &[ValidatorInfo],
+        bls_keys: &[BlsKeypair],
+    ) -> TimeoutCertificate {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(b"timeout");
+        msg.extend_from_slice(&round.to_le_bytes());
+        msg.extend_from_slice(&highest_qc_slot.to_le_bytes());
+        msg.extend_from_slice(highest_qc_hash.as_bytes());
+
+        let signers: Vec<Address> = signer_indices
+            .iter()
+            .map(|&i| validators[i].pubkey.to_address())
+            .collect();
+        let signatures: Vec<Vec<u8>> = signer_indices
+            .iter()
+            .map(|&i| bls_keys[i].sign(&msg))
+            .collect();
+        let pubkeys: Vec<Vec<u8>> = signer_indices
+            .iter()
+            .map(|&i| bls_keys[i].public_key())
+            .collect();
+        let total_stake: u128 = signer_indices
+            .iter()
+            .map(|&i| validators[i].stake)
+            .sum();
+
+        let aggregated_signature = aggregate_signatures(&signatures).unwrap();
+        let aggregated_pubkey = aggregate_public_keys(&pubkeys).unwrap();
+
+        TimeoutCertificate {
+            round,
+            total_stake,
+            highest_qc_slot,
+            highest_qc_hash,
+            signers,
+            aggregated_signature,
+            aggregated_pubkey,
+        }
+    }
+
     #[test]
     fn test_timeout_vote_collection() {
         let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
@@ -1004,16 +1101,10 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_rejects_insufficient_stake() {
-        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
 
         // Only 1 signer = 1000/4000 = 25% — needs 66.7%
-        let tc = TimeoutCertificate {
-            round: 1,
-            total_stake: 1000,
-            highest_qc_slot: 0,
-            highest_qc_hash: H256::zero(),
-            signers: vec![validators[0].pubkey.to_address()],
-        };
+        let tc = create_signed_tc(1, 0, H256::zero(), &[0], &validators, &bls_keys);
 
         let result = consensus.on_timeout_certificate(&tc);
         assert!(
@@ -1024,21 +1115,11 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_updates_locked_block() {
-        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
 
         let highest_hash = H256::from_slice(&[0xAB; 32]).unwrap();
         // 3 signers = 3000/4000 = 75% quorum
-        let tc = TimeoutCertificate {
-            round: 1,
-            total_stake: 3000,
-            highest_qc_slot: 5,
-            highest_qc_hash: highest_hash,
-            signers: vec![
-                validators[0].pubkey.to_address(),
-                validators[1].pubkey.to_address(),
-                validators[2].pubkey.to_address(),
-            ],
-        };
+        let tc = create_signed_tc(1, 5, highest_hash, &[0, 1, 2], &validators, &bls_keys);
 
         consensus.on_timeout_certificate(&tc).unwrap();
         assert_eq!(consensus.locked_block, Some(highest_hash));
@@ -1112,18 +1193,10 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_advances_slot() {
-        let validators = create_test_validators(4);
-        let addrs: Vec<Address> = validators.iter().map(|v| v.pubkey.to_address()).collect();
-        let mut consensus = HotStuffConsensus::new(validators, None, None);
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
 
         let initial_slot = consensus.current_slot();
-        let tc = TimeoutCertificate {
-            round: 1,
-            total_stake: 3000,
-            highest_qc_slot: 0,
-            highest_qc_hash: H256::zero(),
-            signers: vec![addrs[0], addrs[1], addrs[2]],
-        };
+        let tc = create_signed_tc(1, 0, H256::zero(), &[0, 1, 2], &validators, &bls_keys);
 
         consensus.on_timeout_certificate(&tc).unwrap();
         assert_eq!(consensus.current_slot(), initial_slot + 1);
@@ -1141,6 +1214,8 @@ mod tests {
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),
             signers: vec![fake_addr],
+            aggregated_signature: vec![0u8; 96],
+            aggregated_pubkey: vec![0u8; 48],
         };
 
         let result = consensus.on_timeout_certificate(&tc);
@@ -1159,6 +1234,8 @@ mod tests {
             highest_qc_slot: 0,
             highest_qc_hash: H256::zero(),
             signers: vec![addr, addr, addr],
+            aggregated_signature: vec![0u8; 96],
+            aggregated_pubkey: vec![0u8; 48],
         };
 
         let result = consensus.on_timeout_certificate(&tc);
@@ -1167,17 +1244,11 @@ mod tests {
 
     #[test]
     fn test_timeout_certificate_rejects_inflated_total_stake() {
-        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
 
         // Only 1 real signer (1000 stake) but total_stake claims 3000
         // The fix recomputes stake from signers, so this should fail quorum
-        let tc = TimeoutCertificate {
-            round: 1,
-            total_stake: 3000, // lie — only 1000 from 1 signer
-            highest_qc_slot: 0,
-            highest_qc_hash: H256::zero(),
-            signers: vec![validators[0].pubkey.to_address()],
-        };
+        let tc = create_signed_tc(1, 0, H256::zero(), &[0], &validators, &bls_keys);
 
         let result = consensus.on_timeout_certificate(&tc);
         assert!(
@@ -1506,14 +1577,7 @@ mod tests {
         assert_eq!(consensus.timeout_votes.len(), 3, "3 rounds accumulated");
 
         // Process a TC for round 2 — rounds 1 and 2 should be pruned
-        let addrs: Vec<Address> = validators.iter().map(|v| v.pubkey.to_address()).collect();
-        let tc = TimeoutCertificate {
-            round: 2,
-            total_stake: 3000,
-            highest_qc_slot: 0,
-            highest_qc_hash: H256::zero(),
-            signers: vec![addrs[0], addrs[1], addrs[2]],
-        };
+        let tc = create_signed_tc(2, 0, H256::zero(), &[0, 1, 2], &validators, &bls_keys);
         consensus.on_timeout_certificate(&tc).unwrap();
 
         assert_eq!(
@@ -1624,6 +1688,51 @@ mod tests {
         assert!(
             consensus.block_slots.contains_key(&hash),
             "no pruning when finalized_slot < 3"
+        );
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_forged_signature() {
+        let (mut consensus, validators, _bls_keys) = setup_bls_consensus(4);
+
+        // Create a TC with valid signers but a garbage aggregated signature.
+        // This simulates a malicious peer forging a TC without actual BLS keys.
+        let tc = TimeoutCertificate {
+            round: 1,
+            total_stake: 3000,
+            highest_qc_slot: 0,
+            highest_qc_hash: H256::zero(),
+            signers: vec![
+                validators[0].pubkey.to_address(),
+                validators[1].pubkey.to_address(),
+                validators[2].pubkey.to_address(),
+            ],
+            aggregated_signature: vec![0xAB; 96],
+            aggregated_pubkey: vec![0xCD; 48],
+        };
+
+        let result = consensus.on_timeout_certificate(&tc);
+        assert!(
+            result.is_err(),
+            "TC with forged aggregated signature must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_timeout_certificate_rejects_wrong_round_signature() {
+        let (mut consensus, validators, bls_keys) = setup_bls_consensus(4);
+
+        // Sign for round 1 but claim round 2 — signature won't match
+        let tc_round1 = create_signed_tc(1, 0, H256::zero(), &[0, 1, 2], &validators, &bls_keys);
+        let tc_wrong = TimeoutCertificate {
+            round: 2, // claim round 2
+            ..tc_round1
+        };
+
+        let result = consensus.on_timeout_certificate(&tc_wrong);
+        assert!(
+            result.is_err(),
+            "TC with signature for wrong round must be rejected"
         );
     }
 }

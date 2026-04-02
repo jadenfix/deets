@@ -273,6 +273,8 @@ mod tests {
                 highest_qc_slot: 0,
                 highest_qc_hash: H256::zero(),
                 signers: vec![addr, addr, addr], // duplicate!
+                aggregated_signature: vec![0u8; 96],
+                aggregated_pubkey: vec![0u8; 48],
             };
             let result = consensus.on_timeout_certificate(&tc);
             prop_assert!(result.is_err(), "TC with duplicate signers must be rejected");
@@ -289,6 +291,8 @@ mod tests {
                 highest_qc_slot: 0,
                 highest_qc_hash: H256::zero(),
                 signers: vec![fake_addr],
+                aggregated_signature: vec![0u8; 96],
+                aggregated_pubkey: vec![0u8; 48],
             };
             let result = consensus.on_timeout_certificate(&tc);
             prop_assert!(result.is_err(), "TC with unknown signers must be rejected");
@@ -308,6 +312,8 @@ mod tests {
                     validators[0].pubkey.to_address(),
                     validators[1].pubkey.to_address(),
                 ],
+                aggregated_signature: vec![0u8; 96],
+                aggregated_pubkey: vec![0u8; 48],
             };
             let result = consensus.on_timeout_certificate(&tc);
             prop_assert!(result.is_err(), "TC with <2/3 stake must be rejected");

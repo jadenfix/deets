@@ -5,6 +5,7 @@
 
 use aether_consensus::hotstuff::*;
 use aether_consensus::pacemaker::Pacemaker;
+use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
 use aether_types::{PublicKey, ValidatorInfo, H256};
 use std::time::Duration;
 
@@ -20,6 +21,53 @@ fn create_validators(count: usize) -> Vec<ValidatorInfo> {
             }
         })
         .collect()
+}
+
+fn create_validators_with_bls(count: usize) -> (Vec<ValidatorInfo>, Vec<BlsKeypair>) {
+    let bls_keys: Vec<BlsKeypair> = (0..count).map(|_| BlsKeypair::generate()).collect();
+    let validators: Vec<ValidatorInfo> = bls_keys
+        .iter()
+        .map(|bk| {
+            let pk_bytes = bk.public_key();
+            ValidatorInfo {
+                pubkey: PublicKey::from_bytes(pk_bytes[..32].to_vec()),
+                stake: 1000,
+                commission: 0,
+                active: true,
+            }
+        })
+        .collect();
+    (validators, bls_keys)
+}
+
+fn make_signed_tc(
+    round: u64,
+    highest_qc_slot: u64,
+    highest_qc_hash: H256,
+    signer_indices: &[usize],
+    validators: &[ValidatorInfo],
+    bls_keys: &[BlsKeypair],
+) -> TimeoutCertificate {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"timeout");
+    msg.extend_from_slice(&round.to_le_bytes());
+    msg.extend_from_slice(&highest_qc_slot.to_le_bytes());
+    msg.extend_from_slice(highest_qc_hash.as_bytes());
+
+    let signers: Vec<_> = signer_indices.iter().map(|&i| validators[i].pubkey.to_address()).collect();
+    let sigs: Vec<Vec<u8>> = signer_indices.iter().map(|&i| bls_keys[i].sign(&msg)).collect();
+    let pks: Vec<Vec<u8>> = signer_indices.iter().map(|&i| bls_keys[i].public_key()).collect();
+    let total_stake: u128 = signer_indices.iter().map(|&i| validators[i].stake).sum();
+
+    TimeoutCertificate {
+        round,
+        total_stake,
+        highest_qc_slot,
+        highest_qc_hash,
+        signers,
+        aggregated_signature: aggregate_signatures(&sigs).unwrap(),
+        aggregated_pubkey: aggregate_public_keys(&pks).unwrap(),
+    }
 }
 
 /// Test: Pacemaker timeout fires when leader doesn't propose.
@@ -187,20 +235,20 @@ fn test_byzantine_double_vote_detected() {
 /// and reset to Propose phase.
 #[test]
 fn test_tc_advances_consensus() {
-    let validators = create_validators(4);
-    let addrs: Vec<_> = validators.iter().map(|v| v.pubkey.to_address()).collect();
-    let mut consensus = HotStuffConsensus::new(validators, None, None);
+    let (validators, bls_keys) = create_validators_with_bls(4);
+    let mut consensus = HotStuffConsensus::new(validators.clone(), Some(bls_keys[0].clone()), Some(validators[0].pubkey.to_address()));
+
+    // Register BLS keys
+    for (i, v) in validators.iter().enumerate() {
+        let addr = v.pubkey.to_address();
+        let pop = bls_keys[i].proof_of_possession();
+        consensus.register_bls_pubkey(addr, bls_keys[i].public_key(), &pop).unwrap();
+    }
 
     assert_eq!(consensus.current_slot(), 0);
     assert_eq!(*consensus.current_phase(), Phase::Propose);
 
-    let tc = TimeoutCertificate {
-        round: 1,
-        total_stake: 3000,
-        highest_qc_slot: 0,
-        highest_qc_hash: H256::zero(),
-        signers: vec![addrs[0], addrs[1], addrs[2]],
-    };
+    let tc = make_signed_tc(1, 0, H256::zero(), &[0, 1, 2], &validators, &bls_keys);
 
     consensus.on_timeout_certificate(&tc).unwrap();
     assert_eq!(consensus.current_slot(), 1, "slot should advance after TC");
