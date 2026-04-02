@@ -2,6 +2,14 @@
 
 **Date**: March 31, 2026
 
+## Agent 2 — Cycle 40 (2026-04-02)
+
+- **fix(p2p): harden DandelionManager** — PR #328
+  - Replaced weak clock-based PRNG (`subsec_nanos() % 1000`, only 1000 values) with SHA-256-based PRNG mixing tx hash + timestamp
+  - Fixed unsafe `as u32` float-to-int cast (undefined on NaN) with modular arithmetic on hash-derived u32
+  - Added MAX_TRACKED_TXS (50,000) size cap on states HashMap to prevent memory exhaustion from tx flooding
+  - Branch: `fix/agent2-dandelion-hardening`
+
 ## Summary
 
 Aether is in active development. The repository already contains the principal protocol crates, on-chain programs, AI-mesh components, SDKs, web clients, and deployment assets, and the current GitHub Actions workflow continuously validates the Rust and container paths. The project documentation should therefore describe a substantial in-repo implementation, but it should not describe the repository as having automated release or production deployment workflows when those are not present.
