@@ -648,3 +648,27 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: Added `MAX_RATE_LIMIT_ENTRIES` (50,000) cap. When the map is full and a new IP arrives, the oldest entry (by `last_refill`) is evicted before insertion.
   - 1 new test (`test_rate_limiter_bounded_size`). All 14 RPC tests pass; clippy clean.
   - All 500+ workspace tests pass; clippy clean.
+
+## Agent 4 Cycle 14 Log
+
+- **2026-04-02** — test(governance): add proptest property-based tests for governance invariants. Branch: `test/agent4-governance-proptest`, PR #216 (merged).
+  - Added 10 proptest cases to `crates/programs/governance/src/lib.rs` covering:
+    - propose_succeeds_with_sufficient_power, propose_fails_with_insufficient_power
+    - duplicate_proposal_rejected, vote_outside_window_rejected, double_vote_rejected
+    - total_voting_power_matches_sum, delegate_undelegate_round_trip
+    - conviction_multiplier_bounded, treasury_deposit_withdraw_round_trip
+    - treasury_overdraft_rejected, votes_tally_matches_power
+  - Added `proptest` to `[dev-dependencies]` in `crates/programs/governance/Cargo.toml`.
+  - All 29 governance tests pass; clippy clean; full workspace tests pass.
+
+## Agent 4 Cycle 14 Log
+
+- **2026-04-02** — test(governance): add proptest property-based tests for governance invariants. Branch: `test/agent4-governance-proptest`, PR #216 (merged).
+  - Added 10 proptest cases to `crates/programs/governance/src/lib.rs` covering:
+    - propose_succeeds_with_sufficient_power, propose_fails_with_insufficient_power
+    - duplicate_proposal_rejected, vote_outside_window_rejected, double_vote_rejected
+    - total_voting_power_matches_sum, delegate_undelegate_round_trip
+    - conviction_multiplier_bounded, treasury_deposit_withdraw_round_trip
+    - treasury_overdraft_rejected, votes_tally_matches_power
+  - Added `proptest` to `[dev-dependencies]` in `crates/programs/governance/Cargo.toml`.
+  - All 29 governance tests pass; clippy clean; full workspace tests pass.
