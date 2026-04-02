@@ -164,10 +164,7 @@ impl LiquidityPool {
             return Err("amount must be non-zero".to_string());
         }
 
-        let k_old = self
-            .reserve_a
-            .checked_mul(self.reserve_b)
-            .ok_or("overflow")?;
+        let k_old = BigUint::from(self.reserve_a) * BigUint::from(self.reserve_b);
 
         let amount_out = self.get_amount_out(amount_in, self.reserve_a, self.reserve_b)?;
 
@@ -185,7 +182,7 @@ impl LiquidityPool {
             .ok_or("reserve_b underflow")?;
 
         // Verify invariant: k must not decrease
-        self.check_invariant(k_old)?;
+        self.check_invariant_big(&k_old)?;
 
         Ok(amount_out)
     }
@@ -196,10 +193,7 @@ impl LiquidityPool {
             return Err("amount must be non-zero".to_string());
         }
 
-        let k_old = self
-            .reserve_b
-            .checked_mul(self.reserve_a)
-            .ok_or("overflow")?;
+        let k_old = BigUint::from(self.reserve_b) * BigUint::from(self.reserve_a);
 
         let amount_out = self.get_amount_out(amount_in, self.reserve_b, self.reserve_a)?;
 
@@ -217,13 +211,15 @@ impl LiquidityPool {
             .ok_or("reserve_a underflow")?;
 
         // Verify invariant: k must not decrease
-        self.check_invariant(k_old)?;
+        self.check_invariant_big(&k_old)?;
 
         Ok(amount_out)
     }
 
     /// Calculate output amount for a swap
-    /// Formula: amount_out = (amount_in * fee * reserve_out) / (reserve_in + amount_in * fee)
+    /// Formula: amount_out = (amount_in * fee * reserve_out) / (reserve_in * 10000 + amount_in * fee)
+    ///
+    /// Uses BigUint to avoid overflow when reserves or amounts are large.
     fn get_amount_out(
         &self,
         amount_in: u128,
@@ -234,42 +230,30 @@ impl LiquidityPool {
             return Err("invalid reserves".to_string());
         }
 
-        // Apply fee (basis points)
-        let fee_multiplier = 10000 - self.fee_bps;
-        let amount_in_with_fee = amount_in
-            .checked_mul(fee_multiplier as u128)
-            .ok_or("overflow")?;
+        let fee_multiplier = 10000u128 - self.fee_bps as u128;
+        let amount_in_with_fee =
+            BigUint::from(amount_in) * BigUint::from(fee_multiplier);
 
-        let numerator = amount_in_with_fee
-            .checked_mul(reserve_out)
-            .ok_or("overflow")?;
+        let numerator = &amount_in_with_fee * BigUint::from(reserve_out);
+        let denominator =
+            BigUint::from(reserve_in) * BigUint::from(10000u128) + &amount_in_with_fee;
 
-        let denominator = reserve_in
-            .checked_mul(10000)
-            .ok_or("overflow")?
-            .checked_add(amount_in_with_fee)
-            .ok_or("overflow")?;
-
-        let amount_out = numerator
-            .checked_div(denominator)
-            .ok_or("division overflow")?;
+        let amount_out = (&numerator / &denominator)
+            .to_u128()
+            .ok_or("swap output overflow")?;
 
         Ok(amount_out)
     }
 
-    /// Check constant product invariant: k_new must be >= k_old
-    fn check_invariant(&self, k_old: u128) -> Result<(), String> {
-        let k_new = self
-            .reserve_a
-            .checked_mul(self.reserve_b)
-            .ok_or("overflow")?;
+    /// Check constant product invariant using BigUint: k_new must be >= k_old
+    fn check_invariant_big(&self, k_old: &BigUint) -> Result<(), String> {
+        let k_new = BigUint::from(self.reserve_a) * BigUint::from(self.reserve_b);
 
-        if k_new == 0 {
+        if k_new == BigUint::ZERO {
             return Err("invariant violated: k = 0".to_string());
         }
 
-        // Invariant must not decrease (may increase slightly due to fees)
-        if k_new < k_old {
+        if k_new < *k_old {
             return Err("invariant violated: k decreased".to_string());
         }
 
@@ -580,6 +564,39 @@ mod tests {
             10001,
         );
         assert!(result.is_err(), "fee_bps > 10000 must be rejected");
+    }
+
+    #[test]
+    fn test_swap_large_reserves_no_overflow() {
+        // With u128 checked_mul, reserves above ~u64::MAX would overflow and
+        // reject swaps.  BigUint arithmetic handles this correctly.
+        let mut pool = test_pool();
+        let big = 1u128 << 100; // ~1.27e30
+        pool.reserve_a = big;
+        pool.reserve_b = big;
+        pool.lp_token_supply = big;
+
+        let amount_in = 1u128 << 80;
+        let out = pool.swap_a_to_b(amount_in, 0).unwrap();
+        assert!(out > 0);
+        assert!(out < amount_in, "output must be less than input due to fees and slippage");
+        // Invariant: reserves still positive
+        assert!(pool.reserve_a > big);
+        assert!(pool.reserve_b < big);
+    }
+
+    #[test]
+    fn test_swap_b_to_a_large_reserves() {
+        let mut pool = test_pool();
+        let big = 1u128 << 100;
+        pool.reserve_a = big;
+        pool.reserve_b = big;
+        pool.lp_token_supply = big;
+
+        let amount_in = 1u128 << 80;
+        let out = pool.swap_b_to_a(amount_in, 0).unwrap();
+        assert!(out > 0);
+        assert!(out < amount_in);
     }
 
     #[test]
