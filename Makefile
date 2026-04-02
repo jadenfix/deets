@@ -9,7 +9,7 @@
 # Production: make mainnet-build → make deploy-validator
 # ============================================================================
 
-.PHONY: all build test clean devnet testnet docs chaos validator-deploy
+.PHONY: all build test test-ts test-python test-all clean devnet testnet docs chaos validator-deploy
 
 # Default target
 all: build test
@@ -25,6 +25,17 @@ dev:
 # Run all tests
 test:
 	./cli-test --rust-only
+
+# Run TypeScript SDK tests
+test-ts:
+	cd sdks/typescript && npm ci && npm test
+
+# Run Python SDK tests
+test-python:
+	cd sdks/python && pip install -e '.[dev]' && PYTHONPATH=src python -m pytest tests/ -v
+
+# Run all tests (Rust + TypeScript + Python)
+test-all: test test-ts test-python
 
 # Run property tests
 proptest:
