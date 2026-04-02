@@ -810,7 +810,7 @@ fn test_slash_evidence_reduces_validator_stake() {
     // calls when processing slash_evidence entries in a block.
     let slashed = network.nodes[0]
         .staking_state_mut()
-        .slash(validator_addr, 500)
+        .slash(validator_addr, 500, 0)
         .expect("slash should succeed");
 
     let expected_slash = initial_stake * 500 / 10_000;
