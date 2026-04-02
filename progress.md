@@ -782,3 +782,6 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **2026-04-02** — test(types): proptest property-based tests for core type invariants. Branch: `test/agent3-types-proptest`, PR #256 (merged).
   - Added 22 proptest cases to aether-types: bincode roundtrips (H256, Address, Signature, PublicKey, Transaction, Account, UtxoId), hash determinism, signature exclusion, conflict symmetry, blob validation, fee overflow safety, slot/epoch monotonicity.
   - All 46 tests pass (200 cases each); clippy clean.
+- **2026-04-02** — test(light-client): proptest for verifier, header store, and state query invariants. Branch: `test/agent3-light-client-proptests`, PR #260 (merged).
+  - Added 13 proptest cases: verifier (slot monotonicity, increasing acceptance, quorum threshold, state root tracking, validator rotation), header store (capacity bounds, latest-is-highest, eviction, duplicate slots), state query (inclusion roundtrip, exclusion, wrong root rejection, root update).
+  - All 13 tests pass; clippy clean.
