@@ -633,3 +633,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Wired into `P2PNetwork::poll()` message receive path, oversized-drop path, banned-peer drop path, and `update_peer_score()` ban path.
   - Added `topic_label()` helper for canonical short Prometheus labels.
   - 2 new tests. All 500+ workspace tests pass; clippy clean.
+
+## Agent 3 Cycle 14 Log
+
+- **2026-04-02** — fix(staking): update total_staked after slash to fix reward distribution. Tier 2 item (slashing enforcement). Branch: `fix/agent3-staking-total-staked-after-slash`, PR #212 (merged).
+  - Bug: `StakingState::slash()` reduced individual validator/delegation/unbonding stakes but never decremented `total_staked`. This caused `distribute_rewards()` to use an inflated denominator, giving all validators smaller reward shares than correct after any slash.
+  - Fix: Added `self.total_staked = self.total_staked.saturating_sub(total_slash)` after computing the total slash amount.
+  - Added 2 regression tests: `test_slash` now asserts `total_staked`, new `test_slash_updates_total_staked_with_delegations` covers validator+delegation slash accounting.
+  - All 500+ workspace tests pass; clippy clean.
