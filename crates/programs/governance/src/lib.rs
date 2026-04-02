@@ -946,3 +946,248 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const MIN_STAKE: u128 = 1_000_000_000_000; // 1000 SWR
+
+    fn arb_address() -> impl Strategy<Value = Address> {
+        prop::array::uniform20(any::<u8>()).prop_map(|b| Address::from_slice(&b).unwrap())
+    }
+
+    fn arb_h256() -> impl Strategy<Value = H256> {
+        prop::array::uniform32(any::<u8>()).prop_map(|b| H256::from_slice(&b).unwrap())
+    }
+
+    proptest! {
+        /// A proposer with sufficient voting power can always create a proposal.
+        #[test]
+        fn propose_succeeds_with_sufficient_power(
+            addr in arb_address(),
+            pid in arb_h256(),
+            extra_power in 0u128..1_000_000_000_000u128,
+        ) {
+            let mut state = GovernanceState::new();
+            state.update_voting_power(addr, MIN_STAKE + extra_power);
+            let result = state.propose(
+                pid,
+                addr,
+                ProposalType::ParameterChange { parameter: "x".into(), value: 1 },
+                "desc".into(),
+                1000,
+            );
+            prop_assert!(result.is_ok(), "sufficient power must allow proposal: {:?}", result);
+        }
+
+        /// A proposer with insufficient power is always rejected.
+        #[test]
+        fn propose_fails_with_insufficient_power(
+            addr in arb_address(),
+            pid in arb_h256(),
+            power in 0u128..999_999_999_999u128, // strictly less than 1000 SWR
+        ) {
+            let mut state = GovernanceState::new();
+            state.update_voting_power(addr, power);
+            let result = state.propose(
+                pid,
+                addr,
+                ProposalType::ParameterChange { parameter: "y".into(), value: 0 },
+                "desc".into(),
+                1000,
+            );
+            prop_assert!(result.is_err(), "insufficient power must be rejected");
+        }
+
+        /// Duplicate proposal IDs are always rejected.
+        #[test]
+        fn duplicate_proposal_rejected(
+            addr in arb_address(),
+            pid in arb_h256(),
+        ) {
+            let mut state = GovernanceState::new();
+            state.update_voting_power(addr, MIN_STAKE * 2);
+            state.propose(
+                pid,
+                addr,
+                ProposalType::EmergencyAction { action: "test".into() },
+                "first".into(),
+                0,
+            ).unwrap();
+            let result = state.propose(
+                pid,
+                addr,
+                ProposalType::EmergencyAction { action: "test".into() },
+                "second".into(),
+                1,
+            );
+            prop_assert!(result.is_err(), "duplicate proposal id must be rejected");
+        }
+
+        /// Voting outside the voting window always fails.
+        #[test]
+        fn vote_outside_window_rejected(
+            proposer in arb_address(),
+            voter in arb_address(),
+            pid in arb_h256(),
+        ) {
+            prop_assume!(proposer != voter);
+            let mut state = GovernanceState::new();
+            state.update_voting_power(proposer, MIN_STAKE * 2);
+            state.update_voting_power(voter, MIN_STAKE);
+            state.propose(
+                pid,
+                proposer,
+                ProposalType::ParameterChange { parameter: "z".into(), value: 0 },
+                "desc".into(),
+                1000,
+            ).unwrap();
+
+            let proposal = state.get_proposal(&pid).unwrap();
+            let end_slot = proposal.end_slot;
+
+            // Vote before start
+            let before = state.vote(pid, voter, true, 0);
+            prop_assert!(before.is_err(), "vote before window must fail");
+
+            // Vote after end
+            let after = state.vote(pid, voter, true, end_slot + 1);
+            prop_assert!(after.is_err(), "vote after window must fail");
+        }
+
+        /// Double voting is always rejected.
+        #[test]
+        fn double_vote_rejected(
+            proposer in arb_address(),
+            voter in arb_address(),
+            pid in arb_h256(),
+        ) {
+            prop_assume!(proposer != voter);
+            let mut state = GovernanceState::new();
+            state.update_voting_power(proposer, MIN_STAKE * 2);
+            state.update_voting_power(voter, MIN_STAKE);
+            state.propose(
+                pid,
+                proposer,
+                ProposalType::ParameterChange { parameter: "z".into(), value: 0 },
+                "desc".into(),
+                1000,
+            ).unwrap();
+            state.vote(pid, voter, true, 1500).unwrap();
+            let second = state.vote(pid, voter, false, 1500);
+            prop_assert!(second.is_err(), "double vote must be rejected");
+        }
+
+        /// total_voting_power always matches the sum of all registered powers.
+        #[test]
+        fn total_voting_power_matches_sum(
+            entries in prop::collection::vec((arb_address(), 1u128..1_000_000u128), 1..10),
+        ) {
+            let mut state = GovernanceState::new();
+            // Deduplicate by address (last write wins)
+            let mut map: std::collections::HashMap<Address, u128> = std::collections::HashMap::new();
+            for (addr, power) in &entries {
+                map.insert(*addr, *power);
+            }
+            for (addr, power) in &map {
+                state.update_voting_power(*addr, *power);
+            }
+            let expected: u128 = map.values().copied().fold(0u128, |a, b| a.saturating_add(b));
+            prop_assert_eq!(state.total_voting_power, expected);
+        }
+
+        /// Delegating and then undelegating restores original effective power.
+        #[test]
+        fn delegate_undelegate_round_trip(
+            delegator in arb_address(),
+            delegate in arb_address(),
+            d_power in 1u128..1_000_000u128,
+            g_power in 1u128..1_000_000u128,
+        ) {
+            prop_assume!(delegator != delegate);
+            let mut state = GovernanceState::new();
+            state.update_voting_power(delegator, d_power);
+            state.update_voting_power(delegate, g_power);
+
+            let orig_d = state.effective_voting_power(&delegator);
+            let orig_g = state.effective_voting_power(&delegate);
+
+            state.delegate(delegator, delegate).unwrap();
+            state.undelegate(delegator).unwrap();
+
+            prop_assert_eq!(state.effective_voting_power(&delegator), orig_d,
+                "delegator power must be restored after undelegate");
+            prop_assert_eq!(state.effective_voting_power(&delegate), orig_g,
+                "delegate power must be restored after undelegate");
+        }
+
+        /// Conviction multiplier is always in [1, 6].
+        #[test]
+        fn conviction_multiplier_bounded(lock_slots in any::<u64>()) {
+            let state = GovernanceState::new();
+            let m = state.conviction_multiplier(lock_slots);
+            prop_assert!(m >= 1, "multiplier must be >= 1");
+            prop_assert!(m <= 6, "multiplier must be <= 6");
+        }
+
+        /// Treasury deposit + full withdrawal leaves balance at zero.
+        #[test]
+        fn treasury_deposit_withdraw_round_trip(amount in 1u128..1_000_000_000u128) {
+            let mut state = GovernanceState::new();
+            let addr = Address::from_slice(&[42u8; 20]).unwrap();
+            state.deposit_treasury(amount).unwrap();
+            let (_, returned) = state.execute_treasury_allocation(&addr, amount).unwrap();
+            prop_assert_eq!(returned, amount);
+            prop_assert_eq!(state.treasury_balance, 0);
+        }
+
+        /// Treasury withdrawal beyond balance is always rejected.
+        #[test]
+        fn treasury_overdraft_rejected(
+            balance in 0u128..1_000_000u128,
+            excess in 1u128..1_000u128,
+        ) {
+            let mut state = GovernanceState::new();
+            let addr = Address::from_slice(&[1u8; 20]).unwrap();
+            if balance > 0 {
+                state.deposit_treasury(balance).unwrap();
+            }
+            let result = state.execute_treasury_allocation(&addr, balance.saturating_add(excess));
+            prop_assert!(result.is_err(), "overdraft must be rejected");
+        }
+
+        /// After a valid vote, votes_for + votes_against == sum of voting powers of voters.
+        #[test]
+        fn votes_tally_matches_power(
+            proposer in arb_address(),
+            voter1 in arb_address(),
+            voter2 in arb_address(),
+            pid in arb_h256(),
+            p1 in 1u128..1_000_000u128,
+            p2 in 1u128..1_000_000u128,
+        ) {
+            prop_assume!(proposer != voter1 && proposer != voter2 && voter1 != voter2);
+            let mut state = GovernanceState::new();
+            state.update_voting_power(proposer, MIN_STAKE * 2);
+            state.update_voting_power(voter1, p1);
+            state.update_voting_power(voter2, p2);
+            state.propose(
+                pid,
+                proposer,
+                ProposalType::ParameterChange { parameter: "t".into(), value: 0 },
+                "test".into(),
+                1000,
+            ).unwrap();
+            state.vote(pid, voter1, true, 1500).unwrap();
+            state.vote(pid, voter2, false, 1500).unwrap();
+            let proposal = state.get_proposal(&pid).unwrap();
+            prop_assert_eq!(
+                proposal.votes_for.saturating_add(proposal.votes_against),
+                p1.saturating_add(p2),
+                "total votes must equal sum of voter powers"
+            );
+        }
+    }
+}
