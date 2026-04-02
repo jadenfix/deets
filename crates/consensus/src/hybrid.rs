@@ -658,7 +658,7 @@ impl ConsensusEngine for HybridConsensus {
     }
 
     fn advance_slot(&mut self) {
-        self.current_slot += 1;
+        self.current_slot = self.current_slot.saturating_add(1);
         self.current_phase = Phase::Propose;
         self.votes.clear();
 
@@ -685,7 +685,7 @@ impl ConsensusEngine for HybridConsensus {
                 self.epoch_randomness = H256::from_slice(&new_randomness).unwrap();
             }
             self.epoch_randomness_updated = false;
-            self.current_epoch += 1;
+            self.current_epoch = self.current_epoch.saturating_add(1);
 
             // Snapshot the current validator set for the new epoch.
             // Leader election uses this frozen snapshot so mid-epoch slashing

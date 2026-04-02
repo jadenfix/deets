@@ -28,7 +28,7 @@ impl SimpleConsensus {
     }
 
     pub fn advance_slot(&mut self) {
-        self.current_slot += 1;
+        self.current_slot = self.current_slot.saturating_add(1);
     }
 
     // Simplified leader election - round-robin by stake

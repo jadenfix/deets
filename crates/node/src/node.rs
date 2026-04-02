@@ -1408,8 +1408,8 @@ impl Node {
                         for tx in &block.transactions {
                             new_nonces
                                 .entry(tx.sender)
-                                .and_modify(|n: &mut u64| *n = (*n).max(tx.nonce + 1))
-                                .or_insert(tx.nonce + 1);
+                                .and_modify(|n: &mut u64| *n = (*n).max(tx.nonce.saturating_add(1)))
+                                .or_insert(tx.nonce.saturating_add(1));
                         }
                         self.mempool.reorg(reverted_txs, new_nonces);
                     }
