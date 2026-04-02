@@ -673,24 +673,23 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `proptest` to `[dev-dependencies]` in `crates/programs/governance/Cargo.toml`.
   - All 29 governance tests pass; clippy clean; full workspace tests pass.
 
----
+## Agent 4 Cycle 15 Log
 
-## Agent 2 — Cycle 15 (2026-04-02)
+- **2026-04-02** — test(reputation): add proptest property-based tests for scoring invariants + fix recompute_score bug. Tier 5 item. Branch: `test/agent4-reputation-proptest`, PR #222 (merged).
+  - Added 10 proptest cases to `crates/programs/reputation/src/scoring.rs`:
+    - score_always_in_bounds, failure_never_raises_score, success_with_perfect_metrics_non_decreasing
+    - dispute_loss_never_raises_score, dispute_win_never_lowers_score_after_success
+    - dispute_win_never_lowers_fresh_provider_score, job_counters_monotone
+    - recompute_score_idempotent_after_success, recompute_score_idempotent_on_fresh_provider
+    - lower_latency_yields_higher_score
+  - Found and fixed real bug: `recompute_score()` used `success_rate=0.0` for providers with 0 jobs, producing 30.0 instead of initial 50.0. This caused dispute wins to *lower* score on fresh providers. Fixed by using neutral `success_rate=0.5` when `total_jobs=0`.
+  - Added `proptest` to `[dev-dependencies]` in reputation crate.
+  - All 21 tests pass; clippy clean.
 
-- **Task**: fix(mempool): advance sender nonces after block application to prevent replay
-- **Tier**: 1 (Nonce/replay protection)
-- **Branch**: `fix/agent2-nonce-replay-protection`
-- **PR**: #219 (merged)
-- **What**: After block application (both self-produced and received), the node now calls `advance_sender_nonce()` for each included transaction. This prevents the mempool from accepting replays of already-executed transactions, particularly from senders whose txs were never in the local pool. Added `Mempool::advance_sender_nonce()` — a monotonic variant that never moves backward, safe for unordered block tx processing.
-- **Tests**: 2 new mempool tests. All 15 mempool tests pass, all node tests pass, clippy clean.
 
----
+## Agent 4 Cycle 15 Log
 
-## Agent 2 — Cycle 15 (2026-04-02)
-
-- **Task**: fix(mempool): advance sender nonces after block application to prevent replay
-- **Tier**: 1 (Nonce/replay protection)
-- **Branch**: `fix/agent2-nonce-replay-protection`
-- **PR**: #219 (merged)
-- **What**: After block application (both self-produced and received), the node now calls `advance_sender_nonce()` for each included transaction. This prevents the mempool from accepting replays of already-executed transactions, particularly from senders whose txs were never in the local pool. Added `Mempool::advance_sender_nonce()` — a monotonic variant that never moves backward, safe for unordered block tx processing.
-- **Tests**: 2 new mempool tests. All 15 mempool tests pass, all node tests pass, clippy clean.
+- **2026-04-02** — test(reputation): add proptest property-based tests for scoring invariants + fix recompute_score bug. Tier 5 item. Branch: `test/agent4-reputation-proptest`, PR #222 (merged).
+  - Added 10 proptest cases to `crates/programs/reputation/src/scoring.rs`.
+  - Found and fixed real bug: `recompute_score()` used `success_rate=0.0` for providers with 0 jobs, producing 30.0 instead of initial 50.0. Fixed by using neutral `success_rate=0.5` when `total_jobs=0`.
+  - All 21 tests pass; clippy clean.

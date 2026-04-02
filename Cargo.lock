@@ -433,6 +433,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -487,6 +488,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
 ]
 
@@ -511,6 +513,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
 ]
 
@@ -520,6 +523,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -565,6 +569,7 @@ name = "aether-rpc-json"
 version = "0.1.0"
 dependencies = [
  "aether-ledger",
+ "aether-metrics",
  "aether-types",
  "anyhow",
  "bincode",
