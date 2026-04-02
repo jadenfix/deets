@@ -338,6 +338,26 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_commitment_rejected() {
+        let mut pool = CommitRevealPool::new(2, 100);
+        let tx = make_tx(1, 0);
+        let salt = [42u8; 32];
+        let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+        let commitment = TransactionCommitment {
+            commitment_hash: hash,
+            sender: tx.sender,
+            commit_slot: 10,
+            commit_fee: 1000,
+        };
+
+        pool.submit_commitment(commitment.clone()).unwrap();
+        let result = pool.submit_commitment(commitment);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("duplicate"));
+    }
+
+    #[test]
     fn test_revealed_transactions_deterministic_order() {
         // Insert multiple reveals and verify ordering is deterministic
         // (sorted by commit_slot, then commitment_hash), not HashMap-random.
@@ -413,6 +433,269 @@ mod tests {
                     "same-slot txs must be sorted by commitment_hash"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_types::*;
+    use proptest::prelude::*;
+
+    fn arb_salt() -> impl Strategy<Value = [u8; 32]> {
+        prop::array::uniform32(any::<u8>())
+    }
+
+    fn arb_tx(sender_byte: u8, nonce: u64) -> Transaction {
+        Transaction {
+            nonce,
+            chain_id: 1,
+            sender: Address::from_slice(&[sender_byte; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(vec![sender_byte; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21000,
+            fee: 1000,
+            signature: Signature::from_bytes(vec![0u8; 64]),
+        }
+    }
+
+    proptest! {
+        /// Commitment hash is deterministic: same tx + salt always yields same hash.
+        #[test]
+        fn commitment_hash_deterministic(
+            sender_byte in 1u8..=255,
+            nonce in 0u64..1000,
+            salt in arb_salt(),
+        ) {
+            let tx = arb_tx(sender_byte, nonce);
+            let h1 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+            let h2 = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+            prop_assert_eq!(h1, h2);
+        }
+
+        /// Different salts produce different commitment hashes (collision resistance).
+        #[test]
+        fn different_salts_different_hashes(
+            sender_byte in 1u8..=255,
+            nonce in 0u64..1000,
+            salt_a in arb_salt(),
+            salt_b in arb_salt(),
+        ) {
+            prop_assume!(salt_a != salt_b);
+            let tx = arb_tx(sender_byte, nonce);
+            let h1 = CommitRevealPool::create_commitment(&tx, &salt_a).unwrap();
+            let h2 = CommitRevealPool::create_commitment(&tx, &salt_b).unwrap();
+            prop_assert_ne!(h1, h2);
+        }
+
+        /// Different transactions with the same salt produce different hashes.
+        #[test]
+        fn different_txs_different_hashes(
+            sender_a in 1u8..=127,
+            sender_b in 128u8..=255,
+            salt in arb_salt(),
+        ) {
+            let tx_a = arb_tx(sender_a, 0);
+            let tx_b = arb_tx(sender_b, 0);
+            let h1 = CommitRevealPool::create_commitment(&tx_a, &salt).unwrap();
+            let h2 = CommitRevealPool::create_commitment(&tx_b, &salt).unwrap();
+            prop_assert_ne!(h1, h2);
+        }
+
+        /// A valid commit-reveal roundtrip always succeeds when timing is correct.
+        #[test]
+        fn valid_roundtrip_succeeds(
+            sender_byte in 1u8..=255,
+            nonce in 0u64..1000,
+            salt in arb_salt(),
+            reveal_delay in 1u64..10,
+            commit_slot in 0u64..1000,
+        ) {
+            let ttl = 100u64;
+            let mut pool = CommitRevealPool::new(reveal_delay, ttl);
+            let tx = arb_tx(sender_byte, nonce);
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot,
+                commit_fee: 1000,
+            }).unwrap();
+
+            let reveal_slot = commit_slot.saturating_add(reveal_delay);
+            pool.reveal(tx, salt, reveal_slot).unwrap();
+            prop_assert_eq!(pool.pending_reveals(), 1);
+        }
+
+        /// Reveal before delay always fails.
+        #[test]
+        fn early_reveal_rejected(
+            sender_byte in 1u8..=255,
+            salt in arb_salt(),
+            reveal_delay in 2u64..20,
+            commit_slot in 10u64..1000,
+            early_offset in 0u64..10,
+        ) {
+            let early_slot = commit_slot.saturating_add(early_offset.min(reveal_delay - 1));
+            prop_assume!(early_slot < commit_slot.saturating_add(reveal_delay));
+
+            let mut pool = CommitRevealPool::new(reveal_delay, 1000);
+            let tx = arb_tx(sender_byte, 0);
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot,
+                commit_fee: 1000,
+            }).unwrap();
+
+            let result = pool.reveal(tx, salt, early_slot);
+            prop_assert!(result.is_err());
+        }
+
+        /// Reveal after TTL always fails with expiry.
+        #[test]
+        fn expired_reveal_rejected(
+            sender_byte in 1u8..=255,
+            salt in arb_salt(),
+            commit_slot in 0u64..100,
+            ttl in 5u64..50,
+            extra in 1u64..100,
+        ) {
+            let mut pool = CommitRevealPool::new(1, ttl);
+            let tx = arb_tx(sender_byte, 0);
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot,
+                commit_fee: 1000,
+            }).unwrap();
+
+            let expired_slot = commit_slot.saturating_add(ttl).saturating_add(extra);
+            let result = pool.reveal(tx, salt, expired_slot);
+            prop_assert!(result.is_err());
+        }
+
+        /// cleanup_expired removes exactly the expired commitments.
+        #[test]
+        fn cleanup_removes_only_expired(
+            commit_slots in prop::collection::vec(0u64..100, 1..10),
+            ttl in 5u64..20,
+            cleanup_slot in 0u64..200,
+        ) {
+            let mut pool = CommitRevealPool::new(1, ttl);
+            let mut expected_remaining = 0usize;
+
+            for (i, &slot) in commit_slots.iter().enumerate() {
+                let tx = arb_tx((i as u8).wrapping_add(1), i as u64);
+                let salt = [i as u8; 32];
+                let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+                pool.submit_commitment(TransactionCommitment {
+                    commitment_hash: hash,
+                    sender: tx.sender,
+                    commit_slot: slot,
+                    commit_fee: 1000,
+                }).unwrap();
+
+                if cleanup_slot <= slot.saturating_add(ttl) {
+                    expected_remaining += 1;
+                }
+            }
+
+            pool.cleanup_expired(cleanup_slot);
+            prop_assert_eq!(pool.pending_commitments(), expected_remaining);
+        }
+
+        /// Revealed transactions are always sorted by commit_slot then hash.
+        #[test]
+        fn revealed_order_invariant(
+            count in 2usize..8,
+        ) {
+            let mut pool = CommitRevealPool::new(1, 1000);
+
+            for i in 0..count {
+                let tx = arb_tx((i as u8).wrapping_add(1), i as u64);
+                let salt = [i as u8; 32];
+                let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+                let commit_slot = (i as u64) % 3; // create slot ties
+
+                pool.submit_commitment(TransactionCommitment {
+                    commitment_hash: hash,
+                    sender: tx.sender,
+                    commit_slot,
+                    commit_fee: 1000,
+                }).unwrap();
+
+                pool.reveal(tx, salt, commit_slot + 1).unwrap();
+            }
+
+            let revealed = pool.get_revealed_transactions();
+            for w in revealed.windows(2) {
+                let slot_a = pool.commitments.get(&w[0].commitment_hash).unwrap().commit_slot;
+                let slot_b = pool.commitments.get(&w[1].commitment_hash).unwrap().commit_slot;
+                prop_assert!(slot_a <= slot_b);
+                if slot_a == slot_b {
+                    prop_assert!(w[0].commitment_hash.0 <= w[1].commitment_hash.0);
+                }
+            }
+        }
+
+        /// remove() cleans up both commitment and reveal.
+        #[test]
+        fn remove_clears_both(
+            sender_byte in 1u8..=255,
+            salt in arb_salt(),
+        ) {
+            let mut pool = CommitRevealPool::new(1, 100);
+            let tx = arb_tx(sender_byte, 0);
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+            pool.submit_commitment(TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot: 0,
+                commit_fee: 1000,
+            }).unwrap();
+            pool.reveal(tx, salt, 1).unwrap();
+
+            prop_assert_eq!(pool.pending_commitments(), 1);
+            prop_assert_eq!(pool.pending_reveals(), 1);
+
+            pool.remove(&hash);
+            prop_assert_eq!(pool.pending_commitments(), 0);
+            prop_assert_eq!(pool.pending_reveals(), 0);
+        }
+
+        /// Duplicate commitment submission is always rejected.
+        #[test]
+        fn duplicate_commitment_rejected(
+            sender_byte in 1u8..=255,
+            salt in arb_salt(),
+        ) {
+            let mut pool = CommitRevealPool::new(1, 100);
+            let tx = arb_tx(sender_byte, 0);
+            let hash = CommitRevealPool::create_commitment(&tx, &salt).unwrap();
+
+            let commitment = TransactionCommitment {
+                commitment_hash: hash,
+                sender: tx.sender,
+                commit_slot: 0,
+                commit_fee: 1000,
+            };
+
+            pool.submit_commitment(commitment.clone()).unwrap();
+            prop_assert!(pool.submit_commitment(commitment).is_err());
         }
     }
 }
