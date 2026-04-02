@@ -378,11 +378,13 @@ name = "aether-mempool"
 version = "0.1.0"
 dependencies = [
  "aether-crypto-primitives",
+ "aether-metrics",
  "aether-types",
  "anyhow",
  "bincode",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -475,6 +477,7 @@ dependencies = [
  "anyhow",
  "num-bigint",
  "num-traits",
+ "proptest",
  "serde",
 ]
 
