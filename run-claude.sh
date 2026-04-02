@@ -214,7 +214,17 @@ run_agent() {
         echo "" | tee -a "$RUNNER_LOG"
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Cycle $CYCLE" | tee -a "$RUNNER_LOG"
 
-        # ── Sync to latest main ──
+        # ── Recreate worktree if directory was deleted ──
+        if [ ! -d "$WORK_DIR" ]; then
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: Work dir gone, recreating worktree..." | tee -a "$RUNNER_LOG"
+            git -C "$REPO_DIR" worktree prune 2>/dev/null || true
+            git -C "$REPO_DIR" worktree add --detach "$WORK_DIR" HEAD 2>&1 | tee -a "$RUNNER_LOG"
+            cd "$WORK_DIR"
+        fi
+
+        # ── Clean dirty state, then sync to latest main ──
+        git checkout -- . 2>/dev/null || true
+        git clean -fd 2>/dev/null || true
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Syncing to latest main..." | tee -a "$RUNNER_LOG"
         git fetch origin main 2>&1 | tee -a "$RUNNER_LOG" || true
         git checkout --detach origin/main 2>&1 | tee -a "$RUNNER_LOG" || true
