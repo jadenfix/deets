@@ -396,13 +396,15 @@ fn test_e2e_state_consistency() {
 fn test_e2e_vote_distribution() {
     let mut network = TestNetwork::new(4);
 
-    network.run_slots(30);
+    // Use 50 slots to reduce VRF flakiness — with tau=0.8 and 4 validators,
+    // each validator produces ~10 blocks on average in 50 slots.
+    network.run_slots(50);
 
-    let total_blocks = network.block_count(0, 30);
-    println!("Node 0 has {} blocks over 30 slots", total_blocks);
+    let total_blocks = network.block_count(0, 50);
+    println!("Node 0 has {} blocks over 50 slots", total_blocks);
     assert!(
         total_blocks >= 3,
-        "Expected at least 3 blocks across 30 slots"
+        "Expected at least 3 blocks across 50 slots"
     );
 
     // Verify finality state exists and is non-negative
