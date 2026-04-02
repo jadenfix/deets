@@ -4,6 +4,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wasmtime::*;
 
+/// Maximum WASM linear memory: 16 MB (256 pages × 64 KB).
+const MAX_MEMORY_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum WASM table elements per instance.
+const MAX_TABLE_ELEMENTS: u32 = 10_000;
+
+// ResourceLimiter is implemented on StoreData below to enforce hard caps on
+// memory and table allocations per contract execution.  The engine's
+// `static_memory_maximum_size` only controls virtual-address-space reservation,
+// not actual growth.  Without a ResourceLimiter a malicious module could
+// allocate unbounded tables and exhaust host RAM.
+
 /// WASM Virtual Machine for Smart Contract Execution
 ///
 /// Uses Wasmtime with fuel-based gas metering, deterministic configuration
@@ -52,6 +63,31 @@ struct HostState {
     logs: Vec<Log>,
     return_data: Vec<u8>,
     context: ExecutionContext,
+}
+
+/// Store data that wraps host state and enforces resource limits.
+struct StoreData {
+    host: Arc<Mutex<HostState>>,
+}
+
+impl ResourceLimiter for StoreData {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool> {
+        Ok(desired <= MAX_MEMORY_BYTES && desired >= current)
+    }
+
+    fn table_growing(
+        &mut self,
+        current: u32,
+        desired: u32,
+        _maximum: Option<u32>,
+    ) -> Result<bool> {
+        Ok(desired <= MAX_TABLE_ELEMENTS && desired >= current)
+    }
 }
 
 impl WasmVm {
@@ -105,7 +141,11 @@ impl WasmVm {
             context: context.clone(),
         }));
 
-        let mut store = Store::new(&self.engine, host_state.clone());
+        let store_data = StoreData {
+            host: host_state.clone(),
+        };
+        let mut store = Store::new(&self.engine, store_data);
+        store.limiter(|data| data);
         store.set_fuel(context.gas_limit)?;
 
         // Create linker with host functions
@@ -203,7 +243,7 @@ impl WasmVm {
 
     /// Register host functions that WASM modules can import.
     fn register_host_functions(
-        linker: &mut Linker<Arc<Mutex<HostState>>>,
+        linker: &mut Linker<StoreData>,
         _host_state: Arc<Mutex<HostState>>,
     ) -> Result<()> {
         // env.storage_read(key_ptr: i32, key_len: i32, val_ptr: i32) -> i32
@@ -211,7 +251,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "storage_read",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              key_ptr: i32,
              key_len: i32,
              val_ptr: i32|
@@ -251,7 +291,7 @@ impl WasmVm {
                 };
 
                 let value = {
-                    let state = match caller.data().lock() {
+                    let state = match caller.data().host.lock() {
                         Ok(s) => s,
                         Err(_) => return -1,
                     };
@@ -278,7 +318,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "storage_write",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              key_ptr: i32,
              key_len: i32,
              val_ptr: i32,
@@ -327,7 +367,7 @@ impl WasmVm {
                 let key = data[key_start..key_end].to_vec();
                 let value = data[val_start..val_end].to_vec();
 
-                let mut state = match caller.data().lock() {
+                let mut state = match caller.data().host.lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
@@ -345,7 +385,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "emit_log",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, data_ptr: i32, data_len: i32| -> i32 {
+            |mut caller: Caller<'_, StoreData>, data_ptr: i32, data_len: i32| -> i32 {
                 // Reject negative pointer/length values.
                 if data_ptr < 0 || data_len < 0 {
                     return -1;
@@ -382,7 +422,7 @@ impl WasmVm {
                 };
 
                 let log_data = data[start..end].to_vec();
-                let mut state = match caller.data().lock() {
+                let mut state = match caller.data().host.lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
@@ -401,7 +441,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "set_return",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| -> i32 {
+            |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> i32 {
                 // Reject negative pointer/length values.
                 if ptr < 0 || len < 0 {
                     return -1;
@@ -437,7 +477,7 @@ impl WasmVm {
                 };
 
                 let ret_data = data[start..end].to_vec();
-                let mut state = match caller.data().lock() {
+                let mut state = match caller.data().host.lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
@@ -450,8 +490,8 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "block_number",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i64 {
-                let state = match caller.data().lock() {
+            |caller: Caller<'_, StoreData>| -> i64 {
+                let state = match caller.data().host.lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
@@ -463,8 +503,8 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "timestamp",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i64 {
-                let state = match caller.data().lock() {
+            |caller: Caller<'_, StoreData>| -> i64 {
+                let state = match caller.data().host.lock() {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
@@ -956,5 +996,39 @@ mod tests {
             "negative length must not cause excessive gas charge (got {})",
             result.gas_used
         );
+    }
+
+    #[test]
+    fn test_large_table_allocation_rejected() {
+        let mut vm = WasmVm::new(10_000_000).unwrap();
+        let context = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 10_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+
+        // Module with a table of 100_000 elements — exceeds MAX_TABLE_ELEMENTS.
+        // ResourceLimiter should reject instantiation or table.grow.
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (table 100000 funcref)
+                (func (export "execute") (param i32 i32) (result i32)
+                    i32.const 0
+                )
+            )
+            "#,
+        )
+        .unwrap();
+
+        let result = vm.execute(&wasm, &context, b"");
+        // Should either fail to instantiate or report failure — must not OOM
+        match result {
+            Err(_) => {} // instantiation rejected — correct
+            Ok(r) => assert!(!r.success, "large table allocation must not succeed"),
+        }
     }
 }
