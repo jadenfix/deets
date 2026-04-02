@@ -94,3 +94,54 @@ mod tests {
         assert_eq!(snapshot.metadata.height, 10);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_state_storage::{Storage, CF_METADATA};
+    use proptest::prelude::*;
+    use tempfile::TempDir;
+
+    proptest! {
+        /// Encode-then-decode preserves height for any u64 height.
+        #[test]
+        fn encode_decode_preserves_height(height in any::<u64>()) {
+            let dir = TempDir::new().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.put(CF_METADATA, b"state_root", &[1u8; 32]).unwrap();
+            let bytes = generate_snapshot(&storage, height).unwrap();
+            let snapshot = decode_snapshot(&bytes).unwrap();
+            prop_assert_eq!(snapshot.metadata.height, height);
+        }
+
+        /// Encoding is deterministic for the same storage state.
+        #[test]
+        fn decode_encode_deterministic(height in 0u64..10000) {
+            let dir = TempDir::new().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.put(CF_METADATA, b"state_root", &[42u8; 32]).unwrap();
+            let a = generate_snapshot(&storage, height).unwrap();
+            let sa = decode_snapshot(&a).unwrap();
+            let b = generate_snapshot(&storage, height).unwrap();
+            let sb = decode_snapshot(&b).unwrap();
+            // Heights and state roots must match; generated_at may differ by a second
+            prop_assert_eq!(sa.metadata.height, sb.metadata.height);
+            prop_assert_eq!(sa.state_root, sb.state_root);
+            prop_assert_eq!(sa.accounts.len(), sb.accounts.len());
+            prop_assert_eq!(sa.utxos.len(), sb.utxos.len());
+        }
+
+        /// Decode rejects truncated data.
+        #[test]
+        fn truncated_data_errors(height in 0u64..1000, cut in 1usize..64) {
+            let dir = TempDir::new().unwrap();
+            let storage = Storage::open(dir.path()).unwrap();
+            storage.put(CF_METADATA, b"state_root", &[1u8; 32]).unwrap();
+            let bytes = generate_snapshot(&storage, height).unwrap();
+            if cut < bytes.len() {
+                let truncated = &bytes[..bytes.len() - cut];
+                prop_assert!(decode_snapshot(truncated).is_err());
+            }
+        }
+    }
+}
