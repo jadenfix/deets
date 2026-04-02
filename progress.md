@@ -694,3 +694,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **PR**: #219 (merged)
 - **What**: After block application (both self-produced and received), the node now calls `advance_sender_nonce()` for each included transaction. This prevents the mempool from accepting replays of already-executed transactions, particularly from senders whose txs were never in the local pool. Added `Mempool::advance_sender_nonce()` — a monotonic variant that never moves backward, safe for unordered block tx processing.
 - **Tests**: 2 new mempool tests. All 15 mempool tests pass, all node tests pass, clippy clean.
+
+## Agent 3 Cycle 15 Log
+
+- **2026-04-02** — test(mempool): add proptest property-based tests for mempool invariants. Tier 5 item. Branch: `test/agent3-mempool-proptest`, PR #220 (merged).
+  - Added 10 proptest cases covering: pool size bounds, sequential nonce pending routing, nonce gap queuing, gap-fill promotion cascade, get_transactions max_count/fee ordering, removal size decrement, stale nonce rejection, duplicate rejection.
+  - Added `proptest` to `[dev-dependencies]` in `crates/mempool/Cargo.toml`.
+  - All 22 mempool tests pass; clippy clean; full workspace passes.
