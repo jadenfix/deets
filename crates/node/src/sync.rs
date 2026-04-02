@@ -1,4 +1,4 @@
-use aether_types::{Block, Slot};
+use aether_types::{Block, H256, Slot};
 use std::time::{Duration, Instant};
 
 /// Maximum blocks to buffer during sync to prevent OOM.
@@ -35,10 +35,14 @@ pub struct SyncManager {
     sync_buffer: Vec<Block>,
     /// Highest slot we have successfully applied so far.
     next_expected_slot: Slot,
+    /// Parent hash expected for the next block (for chain continuity validation).
+    expected_parent_hash: Option<H256>,
     /// Last time we made progress (received a useful block).
     last_progress: Option<Instant>,
     /// End of the current batch being requested.
     current_batch_end: Slot,
+    /// Count of blocks successfully applied during this sync session.
+    blocks_applied: u64,
 }
 
 impl SyncManager {
@@ -48,8 +52,10 @@ impl SyncManager {
             sync_threshold,
             sync_buffer: Vec::new(),
             next_expected_slot: 0,
+            expected_parent_hash: None,
             last_progress: None,
             current_batch_end: 0,
+            blocks_applied: 0,
         }
     }
 
@@ -60,6 +66,7 @@ impl SyncManager {
                 self.next_expected_slot = my_latest_slot + 1;
                 self.current_batch_end = 0;
                 self.last_progress = Some(Instant::now());
+                self.blocks_applied = 0;
             }
             self.state = SyncState::Syncing {
                 from_slot: my_latest_slot,
@@ -96,8 +103,9 @@ impl SyncManager {
     }
 
     /// Drain buffered blocks that form a contiguous sequence starting at
-    /// `next_expected_slot`. Returns them sorted by slot.
-    /// Blocks that don't continue the chain are kept in the buffer.
+    /// `next_expected_slot`. Returns them sorted by slot, validated for
+    /// parent hash chain continuity. Blocks that don't continue the chain
+    /// or fail parent hash checks are kept in the buffer.
     pub fn drain_ready(&mut self) -> Vec<Block> {
         if self.sync_buffer.is_empty() {
             return Vec::new();
@@ -109,6 +117,17 @@ impl SyncManager {
 
         for block in self.sync_buffer.drain(..) {
             if block.header.slot == self.next_expected_slot {
+                // Validate parent hash chain continuity when we have an expected parent.
+                if let Some(expected) = self.expected_parent_hash {
+                    if block.header.parent_hash != expected
+                        && block.header.parent_hash != H256::zero()
+                    {
+                        // Parent mismatch — keep in buffer (might be from a different fork).
+                        remaining.push(block);
+                        continue;
+                    }
+                }
+                self.expected_parent_hash = Some(block.hash());
                 self.next_expected_slot += 1;
                 ready.push(block);
             } else if block.header.slot > self.next_expected_slot {
@@ -120,8 +139,19 @@ impl SyncManager {
         // Continue draining any that now form a contiguous sequence
         remaining.sort_by_key(|b| b.header.slot);
         while !remaining.is_empty() && remaining[0].header.slot == self.next_expected_slot {
+            let block = &remaining[0];
+            // Validate parent hash chain for continuation blocks too.
+            if let Some(expected) = self.expected_parent_hash {
+                if block.header.parent_hash != expected
+                    && block.header.parent_hash != H256::zero()
+                {
+                    break;
+                }
+            }
+            let block = remaining.remove(0);
+            self.expected_parent_hash = Some(block.hash());
             self.next_expected_slot += 1;
-            ready.push(remaining.remove(0));
+            ready.push(block);
         }
 
         self.sync_buffer = remaining;
@@ -179,6 +209,25 @@ impl SyncManager {
         self.state = SyncState::Synced;
         self.sync_buffer.clear();
         self.current_batch_end = 0;
+        self.expected_parent_hash = None;
+        self.blocks_applied = 0;
+    }
+
+    /// Set the expected parent hash for chain continuity validation.
+    /// Should be called with the hash of the last locally-applied block
+    /// before sync begins.
+    pub fn set_expected_parent(&mut self, hash: H256) {
+        self.expected_parent_hash = Some(hash);
+    }
+
+    /// Record that a synced block was successfully applied.
+    pub fn record_applied(&mut self) {
+        self.blocks_applied += 1;
+    }
+
+    /// Get the number of blocks applied during this sync session.
+    pub fn blocks_applied(&self) -> u64 {
+        self.blocks_applied
     }
 
     /// Get the range of slots we need to sync.
@@ -210,7 +259,7 @@ mod tests {
     fn make_block(slot: Slot) -> Block {
         Block::new(
             slot,
-            aether_types::H256::zero(),
+            H256::zero(),
             aether_types::Address::from_slice(&[1u8; 20]).unwrap(),
             aether_types::VrfProof {
                 output: [0u8; 32],
@@ -218,6 +267,27 @@ mod tests {
             },
             vec![],
         )
+    }
+
+    /// Create a chain of blocks with valid parent hash links.
+    fn make_chain(start_slot: Slot, count: usize, parent: H256) -> Vec<Block> {
+        let mut blocks = Vec::with_capacity(count);
+        let mut prev_hash = parent;
+        for i in 0..count {
+            let block = Block::new(
+                start_slot + i as u64,
+                prev_hash,
+                aether_types::Address::from_slice(&[1u8; 20]).unwrap(),
+                aether_types::VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
+                vec![],
+            );
+            prev_hash = block.hash();
+            blocks.push(block);
+        }
+        blocks
     }
 
     #[test]
@@ -376,6 +446,113 @@ mod tests {
 
         sync.mark_synced();
         assert_eq!(sync.state(), &SyncState::Synced);
+        assert_eq!(sync.buffer_len(), 0);
+    }
+
+    #[test]
+    fn test_drain_validates_parent_hash_chain() {
+        let mut sync = SyncManager::new(10);
+        sync.check_sync_needed(0, 100);
+        // next_expected = 1
+
+        // Create a valid chain: genesis -> block1 -> block2 -> block3
+        let genesis_hash = H256::zero();
+        let chain = make_chain(1, 3, genesis_hash);
+
+        // Set expected parent to genesis
+        sync.set_expected_parent(genesis_hash);
+
+        // Buffer in reverse order
+        sync.buffer_block(chain[2].clone());
+        sync.buffer_block(chain[0].clone());
+        sync.buffer_block(chain[1].clone());
+
+        let ready = sync.drain_ready();
+        assert_eq!(ready.len(), 3);
+        assert_eq!(ready[0].header.slot, 1);
+        assert_eq!(ready[1].header.slot, 2);
+        assert_eq!(ready[2].header.slot, 3);
+        // Parent hash chain is valid
+        assert_eq!(ready[0].header.parent_hash, genesis_hash);
+        assert_eq!(ready[1].header.parent_hash, ready[0].hash());
+        assert_eq!(ready[2].header.parent_hash, ready[1].hash());
+    }
+
+    #[test]
+    fn test_drain_rejects_wrong_parent_hash() {
+        let mut sync = SyncManager::new(10);
+        sync.check_sync_needed(0, 100);
+
+        let genesis_hash = H256::zero();
+        sync.set_expected_parent(genesis_hash);
+
+        // Create a valid chain from genesis
+        let chain = make_chain(1, 1, genesis_hash);
+        // Create a block at slot 2 with a wrong parent (not chain[0].hash())
+        let wrong_parent = Block::new(
+            2,
+            H256::from_slice(&[0xAA; 32]).unwrap(),
+            aether_types::Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+
+        sync.buffer_block(chain[0].clone());
+        sync.buffer_block(wrong_parent);
+
+        let ready = sync.drain_ready();
+        // Only the first block should be drained; slot 2 has wrong parent
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].header.slot, 1);
+        // The wrong-parent block stays in the buffer
+        assert_eq!(sync.buffer_len(), 1);
+    }
+
+    #[test]
+    fn test_blocks_applied_tracking() {
+        let mut sync = SyncManager::new(10);
+        assert_eq!(sync.blocks_applied(), 0);
+
+        sync.check_sync_needed(0, 100);
+        assert_eq!(sync.blocks_applied(), 0);
+
+        sync.record_applied();
+        sync.record_applied();
+        assert_eq!(sync.blocks_applied(), 2);
+
+        sync.mark_synced();
+        assert_eq!(sync.blocks_applied(), 0);
+    }
+
+    #[test]
+    fn test_drain_chain_out_of_order_with_parent_validation() {
+        let mut sync = SyncManager::new(10);
+        sync.check_sync_needed(0, 100);
+
+        let genesis_hash = H256::zero();
+        let chain = make_chain(1, 5, genesis_hash);
+        sync.set_expected_parent(genesis_hash);
+
+        // Buffer slots 1,2,5 (gap at 3,4)
+        sync.buffer_block(chain[4].clone()); // slot 5
+        sync.buffer_block(chain[1].clone()); // slot 2
+        sync.buffer_block(chain[0].clone()); // slot 1
+
+        let ready = sync.drain_ready();
+        assert_eq!(ready.len(), 2); // only 1,2 (contiguous)
+        assert_eq!(sync.next_expected(), 3);
+        assert_eq!(sync.buffer_len(), 1); // slot 5 still buffered
+
+        // Now buffer 3,4 to fill the gap
+        sync.buffer_block(chain[2].clone()); // slot 3
+        sync.buffer_block(chain[3].clone()); // slot 4
+
+        let ready = sync.drain_ready();
+        assert_eq!(ready.len(), 3); // 3,4,5
+        assert_eq!(sync.next_expected(), 6);
         assert_eq!(sync.buffer_len(), 0);
     }
 }
