@@ -28,6 +28,7 @@
 // ============================================================================
 
 use aether_types::{Address, H256};
+use aether_verifiers_vcr::{VerifiableComputeReceipt, VcrValidator};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -204,11 +205,16 @@ impl JobEscrowState {
         Ok(())
     }
 
-    /// Verify and complete job
+    /// Verify and complete job.
+    ///
+    /// `vcr_validator` is used to cryptographically verify the stored VCR proof
+    /// (TEE attestation + KZG trace commitment + worker signature).  The job
+    /// transitions to `Completed` only when verification passes.
     pub fn verify_job(
         &mut self,
         job_id: H256,
         current_slot: u64,
+        vcr_validator: &VcrValidator,
     ) -> Result<Option<(Address, u128)>, String> {
         let (requester, provider, payment) = {
             let job = self.jobs.get_mut(&job_id).ok_or("job not found")?;
@@ -224,8 +230,14 @@ impl JobEscrowState {
                 }
             }
 
-            // TODO(security): Implement actual VCR proof verification before mainnet.
-            // Currently accepts all submitted results without cryptographic validation.
+            // Cryptographically verify the VCR proof (TEE attestation, KZG trace
+            // commitment, and worker signature) before releasing payment.
+            let proof_bytes = job.vcr_proof.as_deref().ok_or("missing VCR proof")?;
+            let receipt: VerifiableComputeReceipt =
+                serde_json::from_slice(proof_bytes).map_err(|e| format!("invalid VCR proof encoding: {e}"))?;
+            vcr_validator
+                .verify(&receipt)
+                .map_err(|e| format!("VCR proof verification failed: {e}"))?;
 
             let provider = job.provider.ok_or("job has no provider")?;
             let requester = job.requester;
@@ -344,9 +356,70 @@ impl Default for JobEscrowState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto_primitives::Keypair;
+    use aether_verifiers_tee::{AttestationReport, TeeType};
 
     fn addr(n: u8) -> Address {
         Address::from_slice(&[n; 20]).unwrap()
+    }
+
+    /// Build a valid serialized VCR for use in tests.
+    fn make_valid_vcr_bytes(job_id: H256) -> Vec<u8> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let worker = Keypair::generate();
+        let report = AttestationReport {
+            tee_type: TeeType::Simulation,
+            measurement: vec![1u8; 48],
+            nonce: vec![2u8; 32],
+            timestamp: now,
+            signature: vec![3u8; 64],
+            cert_chain: vec![vec![4u8; 16]],
+        };
+        let kzg = aether_crypto_kzg::KzgVerifier::new_insecure_test(16);
+        let mut coeffs = [[0u8; 32]; 2];
+        coeffs[0][0] = 3;
+        coeffs[1][0] = 1;
+        let commitment = kzg.commit(&coeffs).unwrap();
+        let mut z = [0u8; 32];
+        z[0] = 4;
+        let proof = kzg.create_proof(&coeffs, &z).unwrap();
+        let mut vcr = VerifiableComputeReceipt {
+            job_id,
+            worker_id: worker.public_key(),
+            model_hash: H256::zero(),
+            input_hash: H256::zero(),
+            output_hash: H256::zero(),
+            trace_commitment: commitment.commitment,
+            trace_proof: proof.proof,
+            trace_evaluation: proof.evaluation,
+            trace_point: z.to_vec(),
+            tee_attestation: serde_json::to_vec(&report).unwrap(),
+            timestamp: now,
+            signature: Vec::new(),
+        };
+        // Sign using the same signing_message logic exposed via verify
+        // (we replicate the hash construction used inside VerifiableComputeReceipt)
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"VCR-v1");
+        hasher.update(vcr.job_id.as_bytes());
+        hasher.update(&vcr.worker_id);
+        hasher.update(vcr.model_hash.as_bytes());
+        hasher.update(vcr.input_hash.as_bytes());
+        hasher.update(vcr.output_hash.as_bytes());
+        hasher.update(&vcr.trace_commitment);
+        hasher.update(&vcr.trace_proof);
+        hasher.update(&vcr.trace_evaluation);
+        hasher.update(&vcr.trace_point);
+        hasher.update(&vcr.tee_attestation);
+        hasher.update(vcr.timestamp.to_le_bytes());
+        let msg: Vec<u8> = hasher.finalize().to_vec();
+        vcr.signature = worker.sign(&msg);
+        serde_json::to_vec(&vcr).unwrap()
     }
 
     #[test]
@@ -383,20 +456,22 @@ mod tests {
     fn test_submit_and_verify() {
         let mut state = JobEscrowState::new();
         let job_id = H256::zero();
+        let vcr_bytes = make_valid_vcr_bytes(job_id);
+        let validator = VcrValidator::new_for_test();
 
         state
             .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
             .unwrap();
         state.accept_job(job_id, addr(2)).unwrap();
         state
-            .submit_result(job_id, addr(2), H256::zero(), vec![1, 2, 3], 150)
+            .submit_result(job_id, addr(2), H256::zero(), vcr_bytes, 150)
             .unwrap();
 
         let job = state.get_job(&job_id).unwrap();
         assert_eq!(job.status, JobStatus::Submitted);
 
         // Verify after challenge period
-        let result = state.verify_job(job_id, 200).unwrap();
+        let result = state.verify_job(job_id, 200, &validator).unwrap();
         assert!(result.is_some());
         let (provider, payment) = result.unwrap();
         assert_eq!(provider, addr(2));
@@ -407,6 +482,30 @@ mod tests {
         assert_eq!(state.escrowed_balance_of(&addr(1)), 0);
         assert_eq!(state.claimable_balance_of(&addr(2)), 1000);
         assert_eq!(state.get_provider_reputation(&addr(2)), 1);
+    }
+
+    #[test]
+    fn test_verify_job_rejects_invalid_vcr() {
+        let mut state = JobEscrowState::new();
+        let job_id = H256::zero();
+        let validator = VcrValidator::new_for_test();
+
+        state
+            .post_job(job_id, addr(1), H256::zero(), H256::zero(), 1000, 100, 1000)
+            .unwrap();
+        state.accept_job(job_id, addr(2)).unwrap();
+        // Submit garbage bytes as the VCR proof
+        state
+            .submit_result(job_id, addr(2), H256::zero(), vec![0xde, 0xad, 0xbe, 0xef], 150)
+            .unwrap();
+
+        let err = state.verify_job(job_id, 200, &validator).unwrap_err();
+        assert!(
+            err.contains("invalid VCR proof encoding") || err.contains("VCR proof verification failed"),
+            "unexpected error: {err}"
+        );
+        // Job must remain Submitted (not completed) after a failed verification
+        assert_eq!(state.get_job(&job_id).unwrap().status, JobStatus::Submitted);
     }
 
     #[test]
