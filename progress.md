@@ -434,6 +434,17 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - 3 new tests: mid-epoch slash quorum safety, create_vote epoch stake, epoch boundary snapshot update
   - All 35 consensus tests pass; full workspace tests and clippy clean
 
+## Agent 3 Cycle 5 Log
+
+- **2026-04-02** — feat(storage): add epoch-based spent-UTXO tracking and pruning. Tier 4 item (state pruning). Branch: `feat/agent3-epoch-state-pruning`, PR #165 (merged).
+  - Added `CF_SPENT_UTXOS` column family to track consumed UTXOs by slot (8-byte BE slot prefix + serialized UtxoId key)
+  - `Ledger::record_spent_utxos()` writes records atomically within the same WriteBatch as block commits, in both block production and reception paths
+  - `pruning::prune_spent_utxos()` removes old spent-UTXO records at epoch boundaries based on `retention_epochs` config
+  - Also compacts `CF_UTXOS` to reclaim tombstone space from regular UTXO consumption (spend = delete)
+  - Enables light-client fraud proofs: can verify a UTXO was spent at a specific slot
+  - 3 new tests: pruning correctness, empty-CF edge case, record creation verification
+  - All workspace tests pass; clippy clean
+
 ## Agent 4 Cycle 6 Log
 
 - **2026-04-02** — fix(node): prevent UTXO set corruption when fork-choice switches canonical at same slot. Tier 2 / fork choice correctness. Branch: `fix/agent4-fork-reorg-double-commit`, PR #163 (merged).
