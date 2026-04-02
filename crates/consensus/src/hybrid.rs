@@ -150,6 +150,8 @@ impl HybridConsensus {
         my_bls_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
+        // Guard against division-by-zero in advance_slot epoch boundary check.
+        let epoch_length = epoch_length.max(1);
         let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
@@ -674,7 +676,7 @@ impl ConsensusEngine for HybridConsensus {
         self.block_parents.retain(|k, _| slots_to_keep.contains(k));
 
         // Check for epoch transition
-        if self.current_slot % self.epoch_length == 0 {
+        if self.epoch_length > 0 && self.current_slot % self.epoch_length == 0 {
             // If no real VRF output arrived this epoch, apply deterministic fallback.
             if !self.epoch_randomness_updated {
                 let mut hasher = Sha256::new();
@@ -2024,5 +2026,25 @@ mod tests {
             slashed > wrong_old_value,
             "slash {slashed} should be much larger than old wrong value {wrong_old_value}"
         );
+    }
+
+    #[test]
+    fn epoch_length_zero_does_not_panic() {
+        // epoch_length=0 would cause division-by-zero in advance_slot.
+        // Constructor must clamp it to >= 1.
+        let consensus = HybridConsensus::new(vec![], 0.5, 0, None, None, None);
+        // Should not panic — epoch_length internally clamped to 1
+        assert_eq!(consensus.epoch_length, 1);
+    }
+
+    #[test]
+    fn epoch_length_one_transitions_every_slot() {
+        let mut consensus = HybridConsensus::new(vec![], 0.5, 1, None, None, None);
+        assert_eq!(consensus.current_epoch, 0);
+        consensus.advance_slot();
+        // epoch_length=1 means epoch transition every slot
+        assert_eq!(consensus.current_epoch, 1);
+        consensus.advance_slot();
+        assert_eq!(consensus.current_epoch, 2);
     }
 }
