@@ -643,10 +643,27 @@ impl ConsensusEngine for HybridConsensus {
             bail!("invalid leader proof");
         }
 
-        // Check block extends from locked block (if any)
+        // HotStuff safe node predicate: accept block if it extends the locked block,
+        // OR if its parent is at a slot >= our locked slot (meaning a quorum has moved
+        // past our lock, making it safe to vote for a new branch after a view change).
+        // Without this, validators can deadlock after a timeout if the locked block's
+        // chain stalls — the new leader's block extending a different branch would be
+        // permanently rejected.
         if let Some(locked) = &self.locked_block {
             if block.header.parent_hash != *locked {
-                bail!("block does not extend locked block");
+                let parent_slot = self
+                    .block_slots
+                    .get(&block.header.parent_hash)
+                    .copied()
+                    .unwrap_or(0);
+                if parent_slot < self.locked_slot {
+                    bail!(
+                        "block does not extend locked block and parent slot {} < locked slot {} \
+                         (safe node predicate failed)",
+                        parent_slot,
+                        self.locked_slot
+                    );
+                }
             }
         }
 
@@ -737,6 +754,7 @@ impl ConsensusEngine for HybridConsensus {
 mod tests {
     use super::*;
     use aether_crypto_primitives::Keypair;
+    use aether_types::BlockHeader;
 
     fn create_test_validator(stake: u128) -> ValidatorInfo {
         let keypair = Keypair::generate();
@@ -1466,6 +1484,168 @@ mod tests {
         assert!(
             consensus.committed_slot >= 1,
             "committed_slot must not regress"
+        );
+    }
+
+    // --- Safe node predicate tests ---
+
+    /// Helper: create a HybridConsensus with a single validator that is always
+    /// eligible (tau=1.0, 100% stake). Returns (consensus, vrf_keypair, proposer_address).
+    fn create_single_validator_consensus() -> (HybridConsensus, VrfKeypair, Address) {
+        let vrf_kp = VrfKeypair::generate();
+        let ed_kp = Keypair::generate();
+        let pubkey = PublicKey::from_bytes(ed_kp.public_key());
+        let addr = pubkey.to_address();
+        let vi = ValidatorInfo {
+            pubkey,
+            stake: 1_000_000,
+            commission: 0,
+            active: true,
+        };
+        let mut consensus =
+            HybridConsensus::new(vec![vi], 1.0, 100, Some(vrf_kp.clone()), None, Some(addr));
+        consensus.register_vrf_pubkey(addr, *vrf_kp.public_key());
+        (consensus, vrf_kp, addr)
+    }
+
+    /// Build a block at `slot` with the given `parent_hash` and a valid VRF proof.
+    fn make_valid_block(
+        consensus: &HybridConsensus,
+        vrf_kp: &VrfKeypair,
+        proposer: Address,
+        slot: Slot,
+        parent_hash: H256,
+    ) -> Block {
+        let mut input = Vec::new();
+        input.extend_from_slice(consensus.epoch_randomness.as_bytes());
+        input.extend_from_slice(&slot.to_le_bytes());
+        let proof = vrf_kp.prove(&input);
+        Block {
+            header: BlockHeader {
+                version: aether_types::PROTOCOL_VERSION,
+                slot,
+                parent_hash,
+                state_root: H256::zero(),
+                transactions_root: H256::zero(),
+                receipts_root: H256::zero(),
+                proposer,
+                vrf_proof: aether_types::VrfProof {
+                    output: proof.output,
+                    proof: proof.proof,
+                },
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            },
+            transactions: vec![],
+            aggregated_vote: None,
+            slash_evidence: vec![],
+        }
+    }
+
+    #[test]
+    fn test_validate_block_no_lock_accepts_any_parent() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        consensus.current_slot = 5;
+        let block = make_valid_block(
+            &consensus,
+            &vrf_kp,
+            proposer,
+            3,
+            H256::from_slice(&[0xAA; 32]).unwrap(),
+        );
+        // No lock set — should accept any parent
+        assert!(consensus.validate_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_locked_accepts_extending_block() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        let locked_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.locked_block = Some(locked_hash);
+        consensus.locked_slot = 2;
+        consensus.current_slot = 5;
+
+        // Block extends the locked block — should be accepted
+        let block = make_valid_block(&consensus, &vrf_kp, proposer, 3, locked_hash);
+        assert!(consensus.validate_block(&block).is_ok());
+    }
+
+    #[test]
+    fn test_validate_block_locked_rejects_lower_parent_slot() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        let locked_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.locked_block = Some(locked_hash);
+        consensus.locked_slot = 5;
+        consensus.current_slot = 10;
+
+        // Parent is at slot 3, which is BELOW our locked_slot of 5
+        let other_parent = H256::from_slice(&[0xCC; 32]).unwrap();
+        consensus.block_slots.insert(other_parent, 3);
+
+        let block = make_valid_block(&consensus, &vrf_kp, proposer, 7, other_parent);
+        let result = consensus.validate_block(&block);
+        assert!(result.is_err(), "should reject: parent slot 3 < locked slot 5");
+        assert!(
+            result.unwrap_err().to_string().contains("safe node predicate"),
+            "error message should mention safe node predicate"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_safe_unlock_accepts_higher_parent_slot() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        let locked_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.locked_block = Some(locked_hash);
+        consensus.locked_slot = 3;
+        consensus.current_slot = 10;
+
+        // Parent is at slot 5, which is ABOVE our locked_slot of 3.
+        // This justifies unlocking — the network has moved past our lock.
+        let other_parent = H256::from_slice(&[0xDD; 32]).unwrap();
+        consensus.block_slots.insert(other_parent, 5);
+
+        let block = make_valid_block(&consensus, &vrf_kp, proposer, 7, other_parent);
+        assert!(
+            consensus.validate_block(&block).is_ok(),
+            "should accept: parent slot 5 >= locked slot 3 (safe unlock)"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_safe_unlock_accepts_equal_parent_slot() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        let locked_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.locked_block = Some(locked_hash);
+        consensus.locked_slot = 5;
+        consensus.current_slot = 10;
+
+        // Parent is at slot 5, EQUAL to locked_slot — should accept (>= threshold)
+        let other_parent = H256::from_slice(&[0xEE; 32]).unwrap();
+        consensus.block_slots.insert(other_parent, 5);
+
+        let block = make_valid_block(&consensus, &vrf_kp, proposer, 7, other_parent);
+        assert!(
+            consensus.validate_block(&block).is_ok(),
+            "should accept: parent slot == locked slot (equal counts as safe)"
+        );
+    }
+
+    #[test]
+    fn test_validate_block_unknown_parent_defaults_to_slot_zero() {
+        let (mut consensus, vrf_kp, proposer) = create_single_validator_consensus();
+        let locked_hash = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.locked_block = Some(locked_hash);
+        consensus.locked_slot = 3;
+        consensus.current_slot = 10;
+
+        // Parent hash not in block_slots → defaults to slot 0, which < locked_slot 3
+        let unknown_parent = H256::from_slice(&[0xFF; 32]).unwrap();
+        let block = make_valid_block(&consensus, &vrf_kp, proposer, 7, unknown_parent);
+        assert!(
+            consensus.validate_block(&block).is_err(),
+            "should reject: unknown parent defaults to slot 0 < locked slot 3"
         );
     }
 }
