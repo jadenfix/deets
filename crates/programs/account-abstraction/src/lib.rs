@@ -195,7 +195,12 @@ impl EntryPoint {
                         });
                         continue;
                     }
-                    self.nonces.insert(op.sender, expected_nonce + 1);
+                    self.nonces.insert(
+                        op.sender,
+                        expected_nonce
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("nonce overflow"))?,
+                    );
 
                     // Deduct paymaster deposit if applicable
                     if let Some(paymaster) = &op.paymaster {
