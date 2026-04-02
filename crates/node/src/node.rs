@@ -1502,18 +1502,52 @@ impl Node {
     }
 
     pub fn get_block_by_slot(&self, slot: Slot) -> Option<Block> {
-        self.blocks_by_slot
+        // Check in-memory cache first
+        if let Some(block) = self
+            .blocks_by_slot
             .get(&slot)
             .and_then(|hash| self.blocks_by_hash.get(hash))
-            .cloned()
+        {
+            return Some(block.clone());
+        }
+        // Fall back to RocksDB: slot index → hash → block
+        let slot_key = format!("slot:{}", slot);
+        let hash_bytes = self
+            .ledger
+            .storage()
+            .get(CF_METADATA, slot_key.as_bytes())
+            .ok()
+            .flatten()?;
+        let hash = H256::from_slice(&hash_bytes).ok()?;
+        self.get_block_by_hash(hash)
     }
 
     pub fn get_block_by_hash(&self, hash: H256) -> Option<Block> {
-        self.blocks_by_hash.get(&hash).cloned()
+        // Check in-memory cache first (recent blocks)
+        if let Some(block) = self.blocks_by_hash.get(&hash) {
+            return Some(block.clone());
+        }
+        // Fall back to RocksDB for older/pre-restart blocks
+        self.ledger
+            .storage()
+            .get(CF_BLOCKS, hash.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| bincode::deserialize(&bytes).ok())
     }
 
     pub fn get_transaction_receipt(&self, tx_hash: H256) -> Option<TransactionReceipt> {
-        self.receipts.get(&tx_hash).cloned()
+        // Check in-memory cache first (recent receipts)
+        if let Some(receipt) = self.receipts.get(&tx_hash) {
+            return Some(receipt.clone());
+        }
+        // Fall back to RocksDB for older/pre-restart receipts
+        self.ledger
+            .storage()
+            .get(CF_RECEIPTS, tx_hash.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|bytes| bincode::deserialize(&bytes).ok())
     }
 
     pub fn get_account(&self, address: Address) -> Result<Option<Account>> {
@@ -2449,5 +2483,66 @@ mod tests {
         // No snapshot_dir set — should not panic or error.
         node.process_epoch_transition(1).unwrap();
         // No assertion needed — just verifying no panic and clean return.
+    }
+
+    #[test]
+    fn rpc_queries_survive_restart() {
+        // Verify that get_block_by_hash and get_block_by_slot fall back to
+        // RocksDB after restart (when in-memory caches are empty).
+        let temp_dir = TempDir::new().unwrap();
+
+        // Phase 1: produce a block, record its hash and slot
+        let (saved_block_hash, saved_block_slot) = {
+            let keypair = Keypair::generate();
+            let validators = vec![validator_info_from_key(&keypair)];
+            let consensus = Box::new(SimpleConsensus::new(validators));
+            let mut node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            for _ in 0..10 {
+                node.tick().unwrap();
+                if node.latest_block_slot().is_some() {
+                    break;
+                }
+            }
+
+            let slot = node.latest_block_slot().expect("block should be produced");
+            let block = node
+                .get_block_by_slot(slot)
+                .expect("block should exist in cache");
+
+            (block.hash(), slot)
+        };
+
+        // Phase 2: re-open node, verify queries still work via RocksDB fallback
+        {
+            let keypair2 = Keypair::generate();
+            let validators2 = vec![validator_info_from_key(&keypair2)];
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair2),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            assert!(
+                node.get_block_by_hash(saved_block_hash).is_some(),
+                "get_block_by_hash should fall back to RocksDB after restart"
+            );
+
+            assert!(
+                node.get_block_by_slot(saved_block_slot).is_some(),
+                "get_block_by_slot should fall back to RocksDB after restart"
+            );
+        }
     }
 }
