@@ -538,3 +538,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: added early `< 0` checks on all pointer/length params before any cast or gas charge. Moved gas charging after validation in storage_write, emit_log, set_return.
   - Also: changed `WasmVm::new()` from `Self` to `Result<Self>` so engine creation errors propagate instead of panicking the validator via `.expect()`. Added `try_into()` guard on `input.len() as i32` to reject >2GB inputs.
   - 2 new regression tests. All 31 runtime tests pass; full workspace tests pass; clippy clean.
+
+## Agent 2 Cycle 11 Log
+
+- **2026-04-02** — feat(metrics): add Prometheus metrics for node sync state and slot tracking. Tier 6 item. Branch: `feat/agent2-node-sync-metrics`, PR #194 (merged).
+  - Added 6 Prometheus metrics in new `crates/metrics/src/node.rs`: sync_active (gauge), sync_slot_lag (gauge), sync_blocks_applied_total (counter), sync_stalls_total (counter), current_slot (gauge), sync_buffer_size (gauge).
+  - Wired into `drive_sync()` for sync state transitions and `process_slot()` for slot tracking.
+  - All metrics and node tests pass; clippy clean.
