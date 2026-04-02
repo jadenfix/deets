@@ -516,3 +516,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Fix: replaced with `mul_div()` using 256-bit intermediate arithmetic, matching the pattern already hardened in slash calculations (PRs #143, #168).
   - Also audited: slashing enforcement (complete — both vote-time and block-evidence paths reduce stake via consensus + staking_state), fork choice (handles forks, orphans, committed slots), block validation (VRF, BLS, state root, tx root, receipts root, parent chain, slot monotonicity, timestamps), signature verification, nonce replay, WASM gas limits. All Tier 1+2 items verified complete.
   - 1 new test. All workspace tests pass; clippy clean.
+
+## Agent 2 Cycle 10 Log
+
+- **2026-04-02** — fix(p2p): bound banned_peers map to prevent unbounded memory growth. Branch: `fix/agent2-p2p-bounded-banned-peers`, PR #187 (merged).
+  - Bug: `banned_peers` HashMap in `P2PNetwork` had no size limit. An attacker rotating PeerIDs could trigger unlimited distinct bans, causing memory exhaustion. Expired entries were never cleaned up.
+  - Fix: added `MAX_BANNED_PEERS` (4096) cap with `prune_banned_peers()` — removes expired bans first, then evicts soonest-to-expire if still over cap. Triggered automatically from `update_peer_score` when a new ban exceeds the limit.
+  - 3 new tests. All 32 p2p tests pass; clippy clean.
