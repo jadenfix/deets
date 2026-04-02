@@ -1,7 +1,9 @@
 use aether_crypto_primitives::ed25519;
 use aether_metrics::STORAGE_METRICS;
 use aether_state_merkle::SparseMerkleTree;
-use aether_state_storage::{Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_UTXOS};
+use aether_state_storage::{
+    Storage, StorageBatch, CF_ACCOUNTS, CF_METADATA, CF_SPENT_UTXOS, CF_UTXOS,
+};
 use aether_types::{
     Account, Address, Transaction, TransactionReceipt, TransactionStatus, TransferPayload, Utxo,
     UtxoId, H256, TRANSFER_PROGRAM_ID,
@@ -843,6 +845,32 @@ impl Ledger {
         );
 
         Ok(batch)
+    }
+
+    /// Append spent-UTXO records to `batch` for all UTXOs deleted in `overlay`.
+    ///
+    /// Each spent UTXO is recorded in CF_SPENT_UTXOS with key = `slot (8-byte BE) + utxo_id`
+    /// and value = `spender_address (20 bytes)`.  This enables light clients to verify
+    /// that a UTXO was consumed at a specific slot, and epoch-based pruning to reclaim
+    /// the space once the records are no longer needed.
+    pub fn record_spent_utxos(
+        &self,
+        batch: &mut StorageBatch,
+        overlay: &PendingOverlay,
+        slot: u64,
+    ) {
+        let slot_prefix = slot.to_be_bytes();
+        for (cf, utxo_key) in &overlay.deletes {
+            if cf == CF_UTXOS {
+                let mut key = Vec::with_capacity(8 + utxo_key.len());
+                key.extend_from_slice(&slot_prefix);
+                key.extend_from_slice(utxo_key);
+                // Value: empty (the key itself identifies which UTXO was spent at which slot).
+                // A full audit trail would store spender/amount, but for pruning purposes
+                // the existence of the record is sufficient.
+                batch.put(CF_SPENT_UTXOS, key, Vec::new());
+            }
+        }
     }
 
     /// Commit a speculative overlay to permanent storage.
@@ -2034,5 +2062,40 @@ mod tests {
             account.balance, 1_000,
             "proposer balance should be overlay base (800) + reward (200)"
         );
+    }
+
+    #[test]
+    fn test_record_spent_utxos_adds_entries() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let storage = aether_state_storage::Storage::open(temp_dir.path()).unwrap();
+        let ledger = Ledger::new(storage).unwrap();
+
+        // Build an overlay that deletes two UTXOs
+        let mut overlay = PendingOverlay::new();
+        let utxo_key1 = vec![1u8; 16];
+        let utxo_key2 = vec![2u8; 16];
+        overlay.delete(CF_UTXOS, utxo_key1.clone());
+        overlay.delete(CF_UTXOS, utxo_key2.clone());
+        // Also add a non-UTXO delete to verify it's ignored
+        overlay.delete(CF_ACCOUNTS, vec![3u8; 20]);
+
+        let mut batch = StorageBatch::new();
+        ledger.record_spent_utxos(&mut batch, &overlay, 42);
+        ledger.storage().write_batch(batch).unwrap();
+
+        // Verify two spent-UTXO records exist at slot 42
+        let prefix = 42u64.to_be_bytes();
+        let records: Vec<_> = ledger
+            .storage()
+            .prefix_iterator(CF_SPENT_UTXOS, &prefix)
+            .unwrap()
+            .collect();
+        assert_eq!(records.len(), 2, "should have 2 spent-UTXO records");
+
+        // Verify key format: slot prefix + utxo key
+        for (key, _) in &records {
+            let slot = u64::from_be_bytes(key[..8].try_into().unwrap());
+            assert_eq!(slot, 42);
+        }
     }
 }

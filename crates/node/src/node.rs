@@ -578,6 +578,21 @@ impl Node {
                 ),
                 Err(e) => tracing::warn!(err = %e, "Block/receipt pruning failed"),
             }
+            // Prune spent-UTXO records older than the retention window and
+            // compact CF_UTXOS to reclaim tombstone space from regular UTXO consumption.
+            match pruning::prune_spent_utxos(self.ledger.storage(), prune_before_slot) {
+                Ok(pruned) => {
+                    if pruned > 0 {
+                        tracing::info!(
+                            new_epoch,
+                            prune_before_slot,
+                            pruned,
+                            "Pruned spent-UTXO records"
+                        );
+                    }
+                }
+                Err(e) => tracing::warn!(err = %e, "Spent-UTXO pruning failed"),
+            }
         }
 
         // Write an epoch snapshot for fast-sync if a snapshot directory is configured.
@@ -763,6 +778,8 @@ impl Node {
             fee_result.proposer_reward,
             fee_result.burned,
         )?;
+        // Record spent UTXOs for light-client audit and epoch-based pruning.
+        self.ledger.record_spent_utxos(&mut batch, &overlay, slot);
         let write_start = Instant::now();
         self.ledger.write_batch(batch)?;
         STORAGE_METRICS
@@ -1131,6 +1148,9 @@ impl Node {
                 fee_result.proposer_reward,
                 fee_result.burned,
             )?;
+            // Record spent UTXOs for light-client audit and epoch-based pruning.
+            self.ledger
+                .record_spent_utxos(&mut batch, &overlay, block.header.slot);
             self.ledger.write_batch(batch)?;
             // Record that this block's state is now durably committed at this slot.
             self.committed_at_slot.insert(block.header.slot, block_hash);
