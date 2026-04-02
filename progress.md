@@ -454,3 +454,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - `committed_at_slot` entries are pruned at finalization boundaries to bound memory.
   - Regression test: `fork_block_does_not_double_commit_state` verifies the first-committed block remains the chain tip when a competing lower-hash fork arrives.
   - All workspace tests pass; clippy clean.
+
+## Agent 1 Cycle 9 Log
+
+- **2026-04-02** — fix(consensus): wire 2-chain finality rule into Propose phase QC path. Tier 2 / finality rule. Branch: `fix/agent1-finality-rule-dead-code`, PR #167 (merged).
+  - Critical bug: `advance_slot()` resets `current_phase` to `Propose` every tick, so in multi-validator mode only Propose-phase QCs ever form. The 2-chain finality check was only in the `Precommit` branch — dead code that never executed. **Blocks were never finalized in multi-validator setups.**
+  - Fix: moved the 2-chain finality logic into the `Propose` branch. When block C gets a Propose QC and its parent B already has a Propose QC, B is finalized. Also locks on QC'd blocks and tracks `committed_slot` in the Propose path.
+  - 2 new tests: `test_two_chain_finality_in_propose_phase` (consecutive QCs finalize parent), `test_two_chain_finality_no_parent_qc` (no finality without parent QC).
+  - All 99 consensus tests pass; full workspace tests pass; clippy clean.
