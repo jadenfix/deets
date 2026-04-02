@@ -713,3 +713,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
     - total_jobs_counter_monotone
   - Added `proptest = "1"` to `[dev-dependencies]` in job-escrow `Cargo.toml`.
   - All 19 tests pass (8 unit + 11 proptest); clippy clean.
+
+## Agent 1 Cycle 15 Log
+
+- **2026-04-02** — fix(mempool): add per-sender queue limits and max nonce gap to prevent DoS. Tier 3/Networking & Resilience. Branch: `fix/agent1-mempool-per-sender-queue-limit`, PR #226 (merged).
+  - Without per-sender limits, an attacker could fill all 50K mempool slots with future-nonce txs from a single address, starving legitimate users.
+  - Added MAX_QUEUED_PER_SENDER (64) and MAX_NONCE_GAP (256) constants.
+  - Properly cleans up by_hash/by_sender tracking when rejecting over-limit txs.
+  - 2 new regression tests; 25/25 mempool tests pass; clippy clean.
+  - Note: pre-existing proptest `get_transactions_fee_ordered` failure unrelated to this change (upstream bug from Agent 3 cycle 15).
