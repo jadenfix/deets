@@ -50,7 +50,7 @@ impl Shred {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(payload);
-        H256::from_slice(&hasher.finalize()).unwrap()
+        H256::from(<[u8; 32]>::from(hasher.finalize()))
     }
 
     /// Canonical message used for Ed25519 signing and verification.

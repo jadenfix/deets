@@ -48,7 +48,7 @@ impl MerkleProof {
                 use sha2::{Digest, Sha256};
                 let mut h = Sha256::new();
                 h.update([0x00]); // Leaf domain separator with no key/value
-                H256::from_slice(&h.finalize()).unwrap()
+                H256::from(<[u8; 32]>::from(h.finalize()))
             }
         };
 
@@ -73,7 +73,7 @@ pub(crate) fn internal_hash(left: &H256, right: &H256) -> H256 {
     hasher.update([0x01]); // Internal node prefix
     hasher.update(left.as_bytes());
     hasher.update(right.as_bytes());
-    H256::from_slice(&hasher.finalize()).unwrap()
+    H256::from(<[u8; 32]>::from(hasher.finalize()))
 }
 
 /// Hash a leaf node (key + value).
@@ -82,7 +82,7 @@ pub(crate) fn leaf_hash(key: &Address, value_hash: &H256) -> H256 {
     hasher.update([0x00]); // Leaf node prefix
     hasher.update(key.as_bytes());
     hasher.update(value_hash.as_bytes());
-    H256::from_slice(&hasher.finalize()).unwrap()
+    H256::from(<[u8; 32]>::from(hasher.finalize()))
 }
 
 /// Convert an Address (20 bytes = 160 bits) to a bit path.
