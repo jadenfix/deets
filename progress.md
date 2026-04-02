@@ -768,3 +768,10 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Consolidated duplicate `get_block_by_slot` lookups in `check_finality` into a single call.
   - These were the last two unwired ConsensusMetrics — all 8 metrics now observed in production.
   - All tests pass; clippy clean.
+
+## Agent 3 Cycle 21 Log
+
+- **2026-04-02** — test(staking): proptest property-based tests for staking program invariants. Branch: `test/agent3-staking-proptest`, PR #251 (merged).
+  - Added 17 proptest cases covering registration, delegation, unbonding, slashing, reward distribution.
+  - Includes stake conservation invariant checker validating total_staked consistency.
+  - All tests pass (200 cases each); clippy clean.
