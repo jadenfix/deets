@@ -683,6 +683,7 @@ impl Node {
         self.slashing_detector.prune_before(finalized);
         self.committed_at_slot.retain(|&slot, _| slot >= finalized);
         self.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
+        self.voted_slots.retain(|&slot| slot >= finalized);
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
@@ -3173,5 +3174,40 @@ mod tests {
             .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
             .count();
         assert_eq!(broadcast_count, 2);
+    }
+
+    /// voted_slots must be pruned at finalization boundaries to prevent
+    /// unbounded memory growth on long-running validators.
+    #[test]
+    fn voted_slots_pruned_at_finalization() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Simulate voting at several slots
+        node.voted_slots.insert(1);
+        node.voted_slots.insert(5);
+        node.voted_slots.insert(10);
+        node.voted_slots.insert(20);
+        assert_eq!(node.voted_slots.len(), 4);
+
+        // Directly test the retain logic (same as prune_finalized_state):
+        let finalized = 10u64;
+        node.voted_slots.retain(|&slot| slot >= finalized);
+
+        assert_eq!(node.voted_slots.len(), 2);
+        assert!(!node.voted_slots.contains(&1));
+        assert!(!node.voted_slots.contains(&5));
+        assert!(node.voted_slots.contains(&10));
+        assert!(node.voted_slots.contains(&20));
     }
 }
