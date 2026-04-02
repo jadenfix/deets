@@ -36,6 +36,12 @@ services:
       - "9001:9000"
     networks:
       - aether-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8545/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
 
   validator2:
     build:
@@ -53,6 +59,12 @@ services:
       - "9002:9000"
     networks:
       - aether-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8545/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
 
   validator3:
     build:
@@ -70,6 +82,12 @@ services:
       - "9003:9000"
     networks:
       - aether-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8545/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
 
   validator4:
     build:
@@ -87,6 +105,12 @@ services:
       - "9004:9000"
     networks:
       - aether-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8545/health"]
+      interval: 10s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
 
   rpc:
     build:

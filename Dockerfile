@@ -39,7 +39,12 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Run as non-root for security
+RUN groupadd --gid 1000 aether && \
+    useradd --uid 1000 --gid aether --shell /bin/false aether
 
 WORKDIR /app
 
@@ -50,14 +55,21 @@ COPY --from=builder /build/target/release/genesis-ceremony /usr/local/bin/
 # Copy config and scripts
 COPY config/genesis.toml /app/config/
 COPY scripts/docker-entrypoint.sh /app/scripts/
+RUN chmod +x /app/scripts/docker-entrypoint.sh
 
-# Create data directory
-RUN mkdir -p /app/data
+# Create data directory owned by non-root user
+RUN mkdir -p /app/data && chown -R aether:aether /app/data
 
 EXPOSE 8545 9000
 
 ENV AETHER_CONFIG_PATH=/app/config/genesis.toml
 ENV AETHER_NODE_DB_PATH=/app/data
+
+# Health check via the /health HTTP endpoint
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8545/health || exit 1
+
+USER aether
 
 ENTRYPOINT ["aether-node"]
 CMD ["--config", "/app/config/genesis.toml", "--data-dir", "/app/data"]
