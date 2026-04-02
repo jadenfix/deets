@@ -80,6 +80,7 @@ dependencies = [
  "aether-verifiers-tee",
  "anyhow",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
 ]
@@ -89,6 +90,7 @@ name = "aether-ai-router"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "tokio",
 ]
@@ -108,7 +110,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hex",
+ "proptest",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -126,6 +130,7 @@ dependencies = [
  "dirs",
  "hex",
  "predicates",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",
@@ -139,6 +144,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "borsh",
+ "proptest",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -152,6 +158,7 @@ dependencies = [
  "aether-crypto-vrf",
  "aether-types",
  "anyhow",
+ "criterion",
  "proptest",
  "serde",
  "sha2",
@@ -164,6 +171,7 @@ dependencies = [
 name = "aether-contract-sdk"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -175,6 +183,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blst",
+ "proptest",
  "rand 0.8.5",
  "rayon",
  "serde",
@@ -188,6 +197,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ed25519-dalek",
+ "proptest",
  "rand 0.8.5",
  "serde",
  "sha2",
@@ -201,6 +211,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blst",
+ "proptest",
  "rand 0.8.5",
  "serde",
  "sha2",
@@ -213,6 +224,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
+ "proptest",
  "rand 0.8.5",
  "rayon",
  "sha2",
@@ -251,6 +263,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "proptest",
  "serde",
  "sha2",
 ]
@@ -264,6 +277,7 @@ dependencies = [
  "aether-da-shreds",
  "aether-types",
  "anyhow",
+ "proptest",
  "rand 0.8.5",
  "sha2",
  "tokio",
@@ -279,6 +293,7 @@ dependencies = [
  "hex",
  "hyper 1.7.0",
  "parking_lot 0.12.5",
+ "proptest",
  "regex",
  "serde",
  "serde_json",
@@ -295,6 +310,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "libp2p",
+ "proptest",
  "sha2",
  "tokio",
 ]
@@ -308,6 +324,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "hex",
+ "proptest",
  "rocksdb",
  "serde",
  "serde_json",
@@ -323,6 +340,7 @@ dependencies = [
  "aether-crypto-primitives",
  "anyhow",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -357,6 +375,7 @@ dependencies = [
  "aether-state-merkle",
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -371,6 +390,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "tokio",
@@ -410,6 +430,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "proptest",
  "rand 0.8.5",
  "serde",
  "sha2",
@@ -458,6 +479,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "libp2p",
+ "proptest",
  "serde",
  "sha2",
  "tokio",
@@ -557,6 +579,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "proptest",
  "serde",
  "sha2",
 ]
@@ -581,6 +604,7 @@ dependencies = [
  "bincode",
  "futures",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "tokio",
@@ -595,6 +619,7 @@ dependencies = [
  "aether-ledger",
  "aether-types",
  "anyhow",
+ "criterion",
  "proptest",
  "rayon",
  "serde",
@@ -612,6 +637,7 @@ dependencies = [
  "anyhow",
  "clap",
  "pretty_assertions",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -626,6 +652,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "hex",
+ "proptest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -653,6 +680,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "proptest",
  "serde",
  "sha2",
  "tempfile",
@@ -664,6 +692,7 @@ dependencies = [
 name = "aether-state-storage"
 version = "0.1.0"
 dependencies = [
+ "aether-metrics",
  "aether-types",
  "anyhow",
  "bincode",
@@ -681,6 +710,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "hex",
+ "proptest",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -704,6 +734,7 @@ name = "aether-verifiers-tee"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "sha2",
  "thiserror 1.0.69",
@@ -719,6 +750,7 @@ dependencies = [
  "aether-verifiers-tee",
  "anyhow",
  "bincode",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -1203,7 +1235,21 @@ version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
 dependencies = [
+ "borsh-derive",
  "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd1d3c0c2f5833f22386f252fe8ed005c7f59fdcddeef025c01b4c3b9fd9ac3"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
 ]
 
 [[package]]
@@ -4091,6 +4137,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-crate"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "219cb19e96be00ab2e37d6e299658a0cfa83e52429179969b0f0121b4ac46983"
+dependencies = [
+ "toml_edit 0.23.10+spec-1.0.0",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5328,8 +5383,8 @@ checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
 dependencies = [
  "serde",
  "serde_spanned",
- "toml_datetime",
- "toml_edit",
+ "toml_datetime 0.6.11",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]
@@ -5342,6 +5397,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_edit"
 version = "0.22.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5350,8 +5414,29 @@ dependencies = [
  "indexmap",
  "serde",
  "serde_spanned",
- "toml_datetime",
+ "toml_datetime 0.6.11",
  "toml_write",
+ "winnow",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.23.10+spec-1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84c8b9f757e028cee9fa244aea147aab2a9ec09d5325a9b01e0a49730c2b5269"
+dependencies = [
+ "indexmap",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "winnow",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.0.9+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "702d4415e08923e7e1ef96cd5727c0dfed80b4d2fa25db9647fe5eb6f7c5a4c4"
+dependencies = [
  "winnow",
 ]
 
