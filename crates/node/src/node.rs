@@ -734,6 +734,7 @@ impl Node {
         }
 
         self.fork_choice.add_block(slot, block_hash);
+        self.fork_choice.mark_committed(slot);
         self.latest_block_hash = block_hash;
         self.latest_block_slot = Some(slot);
         self.blocks_by_slot.insert(slot, block_hash);
@@ -1054,6 +1055,10 @@ impl Node {
                 fee_result.burned,
             )?;
             self.ledger.write_batch(batch)?;
+
+            // Lock this slot against future fork-choice reorgs — state is now
+            // committed and we have no rollback mechanism.
+            self.fork_choice.mark_committed(block.header.slot);
 
             // Apply slash evidence: verify cryptographic proof before reducing stake.
             // Only applied for canonical blocks to prevent non-canonical forks from
