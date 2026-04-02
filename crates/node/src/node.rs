@@ -882,11 +882,7 @@ impl Node {
         )?;
         // Record spent UTXOs for light-client audit and epoch-based pruning.
         self.ledger.record_spent_utxos(&mut batch, &overlay, slot);
-        let write_start = Instant::now();
         self.ledger.write_batch(batch)?;
-        STORAGE_METRICS
-            .write_batch_ms
-            .observe(write_start.elapsed().as_secs_f64() * 1000.0);
         STORAGE_METRICS.blocks_persisted.inc();
 
         // Record block production metrics
