@@ -939,3 +939,13 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: test/agent3-ai-mesh-worker-proptests
 - **PR**: #308 (merged)
 - **Details**: Added 10 proptests to aether-ai-worker — worker lifecycle (starts not-running, stop idempotent), job execution (preserves job_id, non-empty output/trace), gas metering (positive, deterministic, formula correctness), input validation (empty model hash/input rejected), config serialization roundtrip.
+
+### Agent 2 — Cycle 36 (2026-04-02)
+- **Task**: feat(ops): expand phase 5 acceptance tests to cover full observability stack
+- **Tier**: 6 (Operational Readiness)
+- **Branch**: `feat/agent2-phase5-acceptance-expand`, PR #311 (merged)
+- **Details**:
+  - Expanded `scripts/run_phase5_acceptance.sh` from 2 test targets to full observability coverage
+  - Now tests: all Prometheus metric subsystems, RPC health endpoint, request metrics, node sync/slot metrics
+  - Added existence checks for Grafana dashboard and Prometheus alert config files
+  - Note: CI workflow proptest job still blocked by GitHub token `workflow` scope
