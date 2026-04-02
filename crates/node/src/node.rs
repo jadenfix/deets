@@ -1209,6 +1209,12 @@ impl Node {
     /// Checks for double-signing before processing. If a validator votes for two
     /// different blocks in the same slot, they are slashed (5% of stake).
     pub fn on_vote_received(&mut self, vote: Vote) -> Result<()> {
+        let _span = tracing::debug_span!(
+            "on_vote_received",
+            slot = vote.slot,
+            validator = ?vote.validator.to_address(),
+        )
+        .entered();
         let validator_address = vote.validator.to_address();
 
         // Check for double-signing before accepting the vote
@@ -1282,6 +1288,7 @@ impl Node {
 
     /// Handle a raw network event from the P2P layer.
     pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
+        let _span = tracing::debug_span!("handle_network_event").entered();
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(block)) => {
                 CONSENSUS_METRICS.blocks_received.inc();
