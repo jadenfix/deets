@@ -12,7 +12,7 @@ use aether_rpc_json::{JsonRpcServer, RpcBackend};
 use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, H256};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 struct NodeRpcBackend {
     node: Arc<RwLock<Node>>,
@@ -116,8 +116,15 @@ async fn run_slot_loop(
     node: Arc<RwLock<Node>>,
     mut net_rx: mpsc::Receiver<aether_p2p::network::NetworkEvent>,
     slot_ms: u64,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
+        // Check for shutdown signal before each tick
+        if *shutdown_rx.borrow() {
+            tracing::info!("Slot loop received shutdown signal, stopping");
+            return Ok(());
+        }
+
         // Drain all pending network messages
         while let Ok(event) = net_rx.try_recv() {
             let mut guard = node
@@ -132,7 +139,15 @@ async fn run_slot_loop(
                 .map_err(|_| anyhow::anyhow!("node lock poisoned"))?;
             guard.tick()?;
         }
-        tokio::time::sleep(Duration::from_millis(slot_ms)).await;
+
+        // Sleep with shutdown awareness — wake early if shutdown is signaled
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(slot_ms)) => {}
+            _ = shutdown_rx.changed() => {
+                tracing::info!("Slot loop received shutdown signal, stopping");
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -141,9 +156,15 @@ async fn run_p2p_outbound(
     mut p2p: P2PNetwork,
     mut outbound_rx: mpsc::Receiver<OutboundMessage>,
     net_tx: mpsc::Sender<aether_p2p::network::NetworkEvent>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
         tokio::select! {
+            // Check for shutdown signal
+            _ = shutdown_rx.changed() => {
+                tracing::info!("P2P outbound loop received shutdown signal, stopping");
+                return Ok(());
+            }
             // Poll for inbound P2P events
             event = p2p.poll() => {
                 if let Some(event) = event {
@@ -325,12 +346,26 @@ async fn main() -> Result<()> {
     const P2P_INBOUND_CAPACITY: usize = 4096;
     let (net_tx, net_rx) = mpsc::channel(P2P_INBOUND_CAPACITY);
 
+    // Shutdown coordination: a watch channel that signals all tasks to stop.
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
     let shared_node = Arc::new(RwLock::new(node));
 
     let backend = NodeRpcBackend {
         node: shared_node.clone(),
     };
-    let rpc_server = JsonRpcServer::new(backend, rpc_port);
+
+    // Create RPC shutdown signal from the watch channel
+    let rpc_shutdown_rx = shutdown_rx.clone();
+    let rpc_server = JsonRpcServer::new(backend, rpc_port).set_shutdown_signal(async move {
+        let mut rx = rpc_shutdown_rx;
+        // Wait until the value changes to true
+        while !*rx.borrow() {
+            if rx.changed().await.is_err() {
+                return;
+            }
+        }
+    });
 
     // Initialize P2P network
     let mut p2p = P2PNetwork::new_random()?;
@@ -364,10 +399,16 @@ async fn main() -> Result<()> {
     }
 
     let slot_ms = chain_config.chain.slot_ms;
-    let slot_task = tokio::spawn(run_slot_loop(shared_node, net_rx, slot_ms));
+    let slot_task = tokio::spawn(run_slot_loop(
+        shared_node.clone(),
+        net_rx,
+        slot_ms,
+        shutdown_rx.clone(),
+    ));
     let rpc_task = tokio::spawn(async move { rpc_server.run().await });
-    let p2p_task = tokio::spawn(run_p2p_outbound(p2p, outbound_rx, net_tx));
+    let p2p_task = tokio::spawn(run_p2p_outbound(p2p, outbound_rx, net_tx, shutdown_rx));
 
+    // Wait for a shutdown signal (SIGINT or SIGTERM)
     tokio::select! {
         res = slot_task => {
             match res {
@@ -388,12 +429,32 @@ async fn main() -> Result<()> {
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received SIGINT, shutting down...");
+            tracing::info!("Received SIGINT, initiating graceful shutdown...");
         }
         _ = sigterm_recv() => {
-            tracing::info!("Received SIGTERM, shutting down...");
+            tracing::info!("Received SIGTERM, initiating graceful shutdown...");
         }
     }
 
+    // Signal all tasks to stop
+    let _ = shutdown_tx.send(true);
+
+    // Give tasks a bounded window to finish in-flight work
+    tracing::info!("Waiting for tasks to finish (5s deadline)...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Flush node state to disk
+    match shared_node.write() {
+        Ok(mut node) => {
+            if let Err(e) = node.shutdown() {
+                tracing::error!("Error during node shutdown: {e}");
+            }
+        }
+        Err(_) => {
+            tracing::error!("Node lock poisoned — cannot flush state");
+        }
+    }
+
+    tracing::info!("Aether node exited cleanly");
     Ok(())
 }

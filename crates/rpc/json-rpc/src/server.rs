@@ -161,6 +161,8 @@ pub struct JsonRpcServer<B: RpcBackend> {
     /// every `aeth_sendTransaction` transaction so callers cannot forge
     /// cross-chain replays via this endpoint.
     chain_id: u64,
+    /// Optional future that resolves when the server should shut down.
+    shutdown_signal: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
 }
 
 impl<B: RpcBackend + 'static> JsonRpcServer<B> {
@@ -171,6 +173,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             port,
             // Default to mainnet chain_id = 1; use `with_chain_id` to override.
             chain_id: 1,
+            shutdown_signal: None,
         }
     }
 
@@ -181,7 +184,17 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             subscriptions: Arc::new(SubscriptionManager::new()),
             port,
             chain_id,
+            shutdown_signal: None,
         }
+    }
+
+    /// Set a shutdown signal that will gracefully stop the server when resolved.
+    pub fn set_shutdown_signal<F: std::future::Future<Output = ()> + Send + 'static>(
+        mut self,
+        signal: F,
+    ) -> Self {
+        self.shutdown_signal = Some(Box::pin(signal));
+        self
     }
 
     /// Get a reference to the subscription manager for event broadcasting.
@@ -254,8 +267,16 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
 
         tracing::info!("JSON-RPC server listening on 127.0.0.1:{}", self.port);
         tracing::info!("WebSocket subscriptions on ws://127.0.0.1:{}/ws", self.port);
-        warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
 
+        if let Some(signal) = self.shutdown_signal {
+            let (_, server) = warp::serve(routes)
+                .bind_with_graceful_shutdown(([127, 0, 0, 1], self.port), signal);
+            server.await;
+        } else {
+            warp::serve(routes).run(([127, 0, 0, 1], self.port)).await;
+        }
+
+        tracing::info!("RPC server stopped");
         Ok(())
     }
 }
