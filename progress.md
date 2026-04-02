@@ -397,6 +397,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Bridges gap between consensus-level unit tests (byzantine_fault.rs) and single-node tests (node.rs)
   - All Tier 5 items now complete. All Tier 1-6 items verified complete or merged.
 
+- **2026-04-02** — fix(consensus): prevent honest validators from double-voting on fork blocks. **Critical consensus safety fix**. Branch: `fix/agent3-prevent-honest-double-vote`, PR #151 (merged).
+  - Root cause: `on_block_received` calls `vote_on_block` for every block, including fork blocks at the same slot. When two VRF leaders produce at the same slot, honest validators receiving both blocks would vote for both — creating a real double-vote that gets detected and slashed (5% of stake per occurrence).
+  - Fix: added `last_voted_slot` field to `Node` — `vote_on_block` skips if the node has already voted at the current or later slot.
+  - Added regression test `vote_on_block_refuses_duplicate_slot`.
+  - Fixed flaky `test_multiple_byzantine_validators_independently_slashed` (was failing ~40% of runs).
+
 ## Agent 4 Cycle 5 Log
 
 - **2026-04-02** — feat(sdk): add typed AetherSdkError enum to Rust SDK public API. Tier 7 / SDK quality. Branch: `feat/agent4-sdk-typed-error`, PR #145 (merged).
