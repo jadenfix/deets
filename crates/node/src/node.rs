@@ -744,6 +744,12 @@ impl Node {
         self.committed_at_slot.retain(|&slot, _| slot >= finalized);
         self.slashed_offenses.retain(|&(_, slot)| slot >= finalized);
         self.voted_slots.retain(|&slot| slot >= finalized);
+
+        // Prune stale orphan blocks whose slots are at or before the finalized slot.
+        // These can never be applied (on_block_received rejects slots ≤ finalized),
+        // so keeping them wastes memory and lets an attacker permanently fill the
+        // orphan buffer with blocks referencing non-existent parents.
+        self.prune_stale_orphans(finalized);
     }
 
     fn produce_block(&mut self, slot: Slot) -> Result<()> {
@@ -1501,6 +1507,26 @@ impl Node {
         self.orphan_count
     }
 
+    /// Remove orphan blocks whose slot is at or before `min_slot`.
+    /// Blocks at finalized or earlier slots can never be applied, so keeping
+    /// them just wastes memory and lets an attacker permanently fill the buffer.
+    fn prune_stale_orphans(&mut self, min_slot: u64) {
+        if min_slot == 0 {
+            return;
+        }
+        let mut pruned = 0usize;
+        self.orphan_blocks.retain(|_parent_hash, blocks| {
+            let before = blocks.len();
+            blocks.retain(|b| b.header.slot > min_slot);
+            pruned += before - blocks.len();
+            !blocks.is_empty()
+        });
+        if pruned > 0 {
+            self.orphan_count = self.orphan_count.saturating_sub(pruned);
+            tracing::debug!(pruned, remaining = self.orphan_count, min_slot, "Pruned stale orphan blocks");
+        }
+    }
+
     // ========================================================================
     // Vote Reception (Phase C)
     // ========================================================================
@@ -2169,6 +2195,90 @@ mod tests {
 
         // Should be capped
         assert!(node.orphan_count() <= MAX_ORPHAN_BLOCKS);
+    }
+
+    #[test]
+    fn stale_orphans_pruned_at_finalization() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Buffer orphan blocks at various slots
+        for slot in [3u64, 5, 10, 15, 20] {
+            let parent = H256::from_slice(&[slot as u8; 32]).unwrap();
+            let orphan = Block::new(
+                slot,
+                parent,
+                Address::from_slice(&[1u8; 20]).unwrap(),
+                aether_types::VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
+                vec![],
+            );
+            let _ = node.on_block_received(orphan);
+        }
+        assert_eq!(node.orphan_count(), 5);
+
+        // Prune orphans with slot ≤ 10
+        node.prune_stale_orphans(10);
+
+        // Slots 3, 5, 10 should be pruned; 15, 20 remain
+        assert_eq!(node.orphan_count(), 2);
+        // Verify the remaining blocks are the ones with slot > 10
+        let remaining_slots: Vec<u64> = node
+            .orphan_blocks
+            .values()
+            .flat_map(|blocks| blocks.iter().map(|b| b.header.slot))
+            .collect();
+        assert!(remaining_slots.contains(&15));
+        assert!(remaining_slots.contains(&20));
+        assert!(!remaining_slots.contains(&10));
+        assert!(!remaining_slots.contains(&5));
+        assert!(!remaining_slots.contains(&3));
+    }
+
+    #[test]
+    fn prune_stale_orphans_noop_at_slot_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let parent = H256::from_slice(&[0xAB; 32]).unwrap();
+        let orphan = Block::new(
+            1,
+            parent,
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        let _ = node.on_block_received(orphan);
+        assert_eq!(node.orphan_count(), 1);
+
+        // min_slot=0 should be a no-op (don't prune genesis-era blocks)
+        node.prune_stale_orphans(0);
+        assert_eq!(node.orphan_count(), 1);
     }
 
     #[test]
