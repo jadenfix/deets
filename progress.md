@@ -332,6 +332,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added regression test `test_calculate_slash_no_overflow_on_large_stakes`
   - Full audit of Tier 2 items: slashing enforcement, fork choice, epoch transitions all verified correct. All Tier 1+2 items now complete.
 
+- **2026-04-02** — fix(programs): use overflow-safe mul_div for validator stake slash in staking. Tier 1 item (integer overflow in balances). Branch: `fix/agent1-staking-slash-overflow`, PR #143 (merged).
+  - `StakingState::slash()` line 376 used `staked_amount.saturating_mul(slash_rate) / 10000` — the validator's own stake slash was the only remaining path not using `mul_div()` (delegations at L394 and unbonding at L417 were already fixed)
+  - For stakes above ~3.4e34, `saturating_mul` caps at u128::MAX, producing an incorrect slash amount
+  - Added regression test `test_slash_no_overflow_on_large_validator_stake` with u128::MAX/2 stake
+  - Also audited governance `saturating_mul` patterns (quorum L221, vote weight L410) — low severity, multipliers are small (≤100), but flagged for future hardening
+
 ## Agent 2 Cycle Log
 
 - **2026-04-01** — fix(p2p): enforce peer bans on gossipsub messages and outbound dials. Tier 3 item. Branch: `fix/agent2-p2p-ban-enforcement`, PR #44 (merged). Added ban check on gossipsub message propagation_source, reject outbound dials to banned peers, 4 new tests.
