@@ -2,6 +2,13 @@
 
 **Date**: March 31, 2026
 
+## Agent 1 — Cycle 43 (2026-04-02)
+
+- **fix(node): add missing committed_at_slot insert in produce_block** — PR #341
+  - `produce_block` committed state to disk but never recorded the slot in `committed_at_slot`
+  - A fork block arriving at the same slot via `on_block_received` could bypass the double-commit guard and overwrite already-persisted state, corrupting the UTXO set
+  - Added `committed_at_slot.insert(slot, block_hash)` to `produce_block` + regression test
+
 ## Agent 1 — Cycle 42 (2026-04-02)
 
 - **fix(runtime,node,consensus): replace remaining bare arithmetic with saturating/safe ops** — PR #336
