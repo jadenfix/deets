@@ -508,3 +508,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Atomic writes (tmp file + rename) prevent partial snapshots on crash
   - Zero-padded filenames ensure lexicographic = chronological ordering
   - 6 new tests covering roundtrip, listing, pruning, and edge cases
+
+## Agent 1 Cycle 10 Log
+
+- **2026-04-02** — fix(node): use overflow-safe mul_div for epoch emission reward calculation. Branch: `fix/agent1-consensus-slashing-enforcement`, PR #182 (merged).
+  - Bug: `process_epoch_transition` used `checked_mul(emission, stake).unwrap_or(0)` which silently drops epoch rewards to 0 when emission*stake overflows u128 (likely for validators with large stakes).
+  - Fix: replaced with `mul_div()` using 256-bit intermediate arithmetic, matching the pattern already hardened in slash calculations (PRs #143, #168).
+  - Also audited: slashing enforcement (complete — both vote-time and block-evidence paths reduce stake via consensus + staking_state), fork choice (handles forks, orphans, committed slots), block validation (VRF, BLS, state root, tx root, receipts root, parent chain, slot monotonicity, timestamps), signature verification, nonce replay, WASM gas limits. All Tier 1+2 items verified complete.
+  - 1 new test. All workspace tests pass; clippy clean.
