@@ -795,3 +795,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Replaced `println\!` with structured `tracing::info\!` in epoch advancement.
   - 4 panic sites removed from consensus-critical production paths.
   - All tests pass; clippy clean.
+
+## Agent 3 Cycle 27 Log
+
+- **2026-04-02** — test(mev): proptest for commit-reveal pool invariants. Branch: `test/agent3-mev-proptest`, PR #265 (merged).
+  - Added 11 proptest property-based tests to aether-mev commit-reveal pool.
+  - Tests cover: commitment hash determinism, collision resistance (different salts, different txs), valid roundtrip success, early reveal rejection, expired reveal rejection, cleanup precision, ordering invariant (slot then hash), remove semantics, duplicate commitment rejection.
+  - Added 1 unit test for duplicate commitment rejection.
+  - All 19 tests pass (200 cases each for proptests); clippy clean.
