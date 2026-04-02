@@ -901,6 +901,10 @@ impl Node {
 
         self.fork_choice.add_block(slot, block_hash);
         self.fork_choice.mark_committed(slot);
+        // Record that this slot's state is now durably committed — mirrors the
+        // guard in on_block_received that prevents a fork block from overwriting
+        // already-committed state and corrupting the UTXO set.
+        self.committed_at_slot.insert(slot, block_hash);
         self.latest_block_hash = block_hash;
         self.latest_block_slot = Some(slot);
         self.blocks_by_slot.insert(slot, block_hash);
@@ -3161,6 +3165,39 @@ mod tests {
             node.committed_at_slot.get(&test_slot),
             Some(&first_hash),
             "committed_at_slot must still record the first block, not the fork"
+        );
+    }
+
+    /// Regression: produce_block must insert into committed_at_slot so that a
+    /// fork block received at the same slot cannot overwrite the produced block's
+    /// already-committed state (UTXO corruption vector).
+    #[test]
+    fn produced_block_sets_committed_at_slot() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Before producing, committed_at_slot should be empty
+        assert!(node.committed_at_slot.is_empty());
+
+        node.process_slot().unwrap();
+        let slot = node.latest_block_slot().expect("block should be produced");
+        let hash = node.latest_block_hash;
+
+        // After producing, the slot must be recorded in committed_at_slot
+        assert_eq!(
+            node.committed_at_slot.get(&slot),
+            Some(&hash),
+            "produce_block must insert into committed_at_slot to guard against fork overwrites"
         );
     }
 
