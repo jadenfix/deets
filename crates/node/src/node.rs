@@ -86,6 +86,10 @@ const MAX_ORPHAN_BLOCKS: usize = 256;
 /// timestamps that could manipulate time-sensitive on-chain logic.
 const MAX_CLOCK_DRIFT_SECS: u64 = 15;
 
+/// Minimum interval between serving sync block-range responses.
+/// Prevents a peer from flooding sync requests and consuming all outbound bandwidth.
+const SYNC_RESPONSE_COOLDOWN: Duration = Duration::from_secs(2);
+
 type LoadedBlocks = (
     BTreeMap<Slot, H256>,
     HashMap<H256, Block>,
@@ -141,6 +145,9 @@ pub struct Node {
     /// Directory to write epoch snapshots, if set. Snapshots are written at each
     /// epoch boundary as `snapshot_<epoch>_<slot>.bin` for fast-sync bootstrapping.
     snapshot_dir: Option<PathBuf>,
+    /// Rate-limits inbound sync requests to prevent a peer from flooding
+    /// us with `RequestBlockRange` messages and consuming all our bandwidth.
+    last_sync_response: Option<Instant>,
     /// Highest slot we have already voted on.  Prevents honest validators from
     /// accidentally double-voting when multiple fork blocks arrive at the same
     /// slot (each triggers `vote_on_block` via `on_block_received`).
@@ -239,6 +246,7 @@ impl Node {
             orphan_blocks: HashMap::new(),
             orphan_count: 0,
             outbound_drops: 0,
+            last_sync_response: None,
             snapshot_dir: None,
             last_voted_slot: None,
             committed_at_slot: HashMap::new(),
@@ -1628,7 +1636,23 @@ impl Node {
     /// Respond to a peer's sync request by re-broadcasting blocks we have
     /// in the requested slot range. Capped to prevent a single request from
     /// flooding the network.
+    ///
+    /// Rate-limited via `SYNC_RESPONSE_COOLDOWN` to prevent a malicious peer
+    /// from draining outbound bandwidth by spamming sync requests.
     fn handle_block_range_request(&mut self, from_slot: Slot, to_slot: Slot) {
+        // Rate-limit: reject if we served a sync response too recently.
+        if let Some(last) = self.last_sync_response {
+            if last.elapsed() < SYNC_RESPONSE_COOLDOWN {
+                tracing::debug!(
+                    from_slot,
+                    to_slot,
+                    cooldown_remaining_ms = (SYNC_RESPONSE_COOLDOWN - last.elapsed()).as_millis(),
+                    "Dropping sync request — rate limited"
+                );
+                return;
+            }
+        }
+
         const MAX_BLOCKS_PER_RESPONSE: u64 = 64;
         let end = to_slot.min(from_slot.saturating_add(MAX_BLOCKS_PER_RESPONSE));
 
@@ -1640,6 +1664,7 @@ impl Node {
             }
         }
         if sent > 0 {
+            self.last_sync_response = Some(Instant::now());
             tracing::info!(from_slot, to_slot = end, sent, "Served sync block request");
         }
     }
@@ -3314,6 +3339,96 @@ mod tests {
             .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
             .count();
         assert_eq!(broadcast_count, 2);
+    }
+
+    #[test]
+    fn sync_request_rate_limited() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Produce blocks at slots 1 and 2
+        node.consensus.advance_slot();
+        node.tick().unwrap();
+        node.tick().unwrap();
+        assert_eq!(node.latest_block_slot(), Some(2));
+        node.outbound_buffer.clear();
+
+        // First request succeeds
+        node.handle_block_range_request(1, 2);
+        let first_count = node
+            .outbound_buffer
+            .iter()
+            .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
+            .count();
+        assert_eq!(first_count, 2, "first sync request should be served");
+
+        node.outbound_buffer.clear();
+
+        // Second request immediately after should be rate-limited (dropped)
+        node.handle_block_range_request(1, 2);
+        let second_count = node
+            .outbound_buffer
+            .iter()
+            .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
+            .count();
+        assert_eq!(second_count, 0, "second sync request should be rate-limited");
+    }
+
+    #[test]
+    fn sync_request_allowed_after_cooldown() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Produce a block
+        node.consensus.advance_slot();
+        node.tick().unwrap();
+        node.outbound_buffer.clear();
+
+        // First request
+        node.handle_block_range_request(1, 1);
+        assert_eq!(
+            node.outbound_buffer
+                .iter()
+                .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
+                .count(),
+            1
+        );
+        node.outbound_buffer.clear();
+
+        // Simulate cooldown elapsed by backdating the timestamp
+        node.last_sync_response =
+            Some(Instant::now() - SYNC_RESPONSE_COOLDOWN - Duration::from_millis(1));
+
+        // Now the request should be served
+        node.handle_block_range_request(1, 1);
+        assert_eq!(
+            node.outbound_buffer
+                .iter()
+                .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
+                .count(),
+            1,
+            "request after cooldown should be served"
+        );
     }
 
     /// voted_slots must be pruned at finalization boundaries to prevent
