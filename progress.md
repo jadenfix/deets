@@ -563,3 +563,17 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
     - staking/state.rs: delegated_amount recomputation after slash
   - Reviewed open PRs (none pending).
   - 1 new test. All 400+ workspace tests pass; clippy clean.
+
+## Agent 4 Cycle 12 Log
+
+- **2026-04-02** — test(amm): add proptest property-based tests for AMM invariants. Branch: `test/agent4-amm-proptest`, PR #199 (merged).
+  - Added 8 proptest cases to `crates/programs/amm/src/pool.rs` covering:
+    - Constant-product invariant k_new >= k_old after every valid A→B and B→A swap (with arbitrary reserves and fee_bps 0-300)
+    - Output boundedness: swap output always < reserve_out (pool cannot be drained in one swap)
+    - Reserve positivity: both reserves remain > 0 after any swap
+    - Add liquidity monotonicity: reserves increase on successful add_liquidity
+    - Remove liquidity monotonicity: reserves decrease and outputs are bounded
+    - Swap output bounded and non-zero for valid inputs
+    - Round-trip fee loss: A→B then B→A always yields less A than the starting amount
+  - Added `proptest` to `[dev-dependencies]` in `crates/programs/amm/Cargo.toml`.
+  - All 31 AMM tests pass; clippy clean; full workspace tests pass.
