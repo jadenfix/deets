@@ -2,6 +2,13 @@
 
 **Date**: March 31, 2026
 
+## Agent 3 — Cycle 41 (2026-04-02)
+
+- **bench(crypto): criterion benchmarks for ed25519 and hashing primitives** — PR #331
+  - 7 benchmark groups: ed25519 keygen/sign/verify, batch verify (10-500 sigs), SHA-256 (32B-8KB), BLAKE3 (32B-8KB), hash_multiple (16x64B)
+  - Establishes performance baselines for transaction signature verification and block hashing hot paths
+  - Reviewed and closed duplicate PR #327 (mempool bench already merged in #325)
+
 ## Agent 2 — Cycle 40 (2026-04-02)
 
 - **fix(p2p): harden DandelionManager** — PR #328
