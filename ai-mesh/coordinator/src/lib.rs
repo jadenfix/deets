@@ -459,3 +459,156 @@ mod tests {
         assert!(!worker.available); // Banned
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use aether_verifiers_tee::{AttestationReport, TeeType};
+    use proptest::prelude::*;
+
+    fn make_report() -> AttestationReport {
+        AttestationReport {
+            tee_type: TeeType::Simulation,
+            measurement: vec![1u8; 48],
+            nonce: vec![2u8; 32],
+            timestamp: current_timestamp(),
+            signature: vec![3u8; 64],
+            cert_chain: vec![vec![4u8; 16]],
+        }
+    }
+
+    fn make_worker(id: Vec<u8>, reputation: i32, available: bool) -> WorkerInfo {
+        let report = make_report();
+        WorkerInfo {
+            worker_id: id,
+            tee_type: "sev-snp".to_string(),
+            attestation: serde_json::to_vec(&report).unwrap(),
+            capabilities: vec!["onnx".to_string()],
+            reputation_score: reputation,
+            available,
+        }
+    }
+
+    fn base_reqs() -> JobRequirements {
+        JobRequirements {
+            tee_types: vec!["sev-snp".to_string()],
+            capabilities: vec!["onnx".to_string()],
+            min_reputation: 0,
+        }
+    }
+
+    proptest! {
+        /// Reputation score is always clamped to [-100, 1000] after any event.
+        #[test]
+        fn prop_reputation_clamped(initial in -100i32..=1000i32, events in proptest::collection::vec(0u8..5, 0..20)) {
+            let mut coord = MeshCoordinator::new();
+            coord.register_worker(make_worker(vec![1], initial, true)).unwrap();
+
+            let event_types = [
+                ReputationEventType::JobCompleted,
+                ReputationEventType::JobFailed,
+                ReputationEventType::ChallengeWon,
+                ReputationEventType::ChallengeLost,
+                ReputationEventType::Timeout,
+            ];
+
+            for e in events {
+                let event = event_types[(e as usize) % event_types.len()].clone();
+                let _ = coord.update_reputation(&[1], event);
+            }
+
+            if let Some(worker) = coord.get_worker(&[1]) {
+                prop_assert!(worker.reputation_score >= -100);
+                prop_assert!(worker.reputation_score <= 1000);
+            }
+        }
+
+        /// Best worker (highest reputation) is always selected when multiple eligible workers exist.
+        #[test]
+        fn prop_best_worker_selected(
+            rep_a in 50i32..=1000,
+            rep_b in 50i32..=1000,
+        ) {
+            let mut coord = MeshCoordinator::new();
+            coord.register_worker(make_worker(vec![1], rep_a, true)).unwrap();
+            coord.register_worker(make_worker(vec![2], rep_b, true)).unwrap();
+
+            let assigned = coord.assign_job(vec![42], &base_reqs()).unwrap();
+
+            // Should assign to the worker with highest reputation
+            if rep_a >= rep_b {
+                prop_assert_eq!(assigned, vec![1]);
+            } else {
+                prop_assert_eq!(assigned, vec![2]);
+            }
+        }
+
+        /// After assign+complete, available_worker_count returns to initial.
+        #[test]
+        fn prop_assign_complete_restores_availability(n_workers in 1usize..=8) {
+            let mut coord = MeshCoordinator::new();
+            for i in 0..n_workers {
+                coord.register_worker(make_worker(vec![i as u8], 100, true)).unwrap();
+            }
+
+            let initial_available = coord.available_worker_count();
+
+            // Assign one job
+            let job_id = vec![99u8];
+            let _ = coord.assign_job(job_id.clone(), &base_reqs());
+            // Complete it
+            let _ = coord.complete_job(&job_id);
+
+            prop_assert_eq!(coord.available_worker_count(), initial_available);
+        }
+
+        /// After assign+cancel, available_worker_count returns to initial.
+        #[test]
+        fn prop_assign_cancel_restores_availability(n_workers in 1usize..=8) {
+            let mut coord = MeshCoordinator::new();
+            for i in 0..n_workers {
+                coord.register_worker(make_worker(vec![i as u8], 100, true)).unwrap();
+            }
+
+            let initial_available = coord.available_worker_count();
+
+            let job_id = vec![88u8];
+            let _ = coord.assign_job(job_id.clone(), &base_reqs());
+            let _ = coord.cancel_job(&job_id);
+
+            prop_assert_eq!(coord.available_worker_count(), initial_available);
+        }
+
+        /// Duplicate job ID is always rejected.
+        #[test]
+        fn prop_duplicate_job_rejected(job_id in proptest::collection::vec(any::<u8>(), 1..=16)) {
+            let mut coord = MeshCoordinator::new();
+            coord.register_worker(make_worker(vec![1], 100, true)).unwrap();
+            coord.register_worker(make_worker(vec![2], 50, true)).unwrap();
+
+            let _ = coord.assign_job(job_id.clone(), &base_reqs());
+            // Second assignment of same job must fail
+            let result = coord.assign_job(job_id, &base_reqs());
+            prop_assert!(result.is_err());
+        }
+
+        /// Worker with reputation <= -100 gets banned (unavailable).
+        #[test]
+        fn prop_ban_threshold(initial in -99i32..=0i32) {
+            // Apply enough ChallengeLost events to push below -100
+            let mut coord = MeshCoordinator::new();
+            coord.register_worker(make_worker(vec![1], initial, true)).unwrap();
+
+            // ChallengeLost = -50; two events pushes any score in [-99, 0] below -100
+            for _ in 0..3 {
+                let _ = coord.update_reputation(&[1], ReputationEventType::ChallengeLost);
+            }
+
+            if let Some(w) = coord.get_worker(&[1]) {
+                if w.reputation_score <= -100 {
+                    prop_assert!(!w.available, "banned worker must be unavailable");
+                }
+            }
+        }
+    }
+}
