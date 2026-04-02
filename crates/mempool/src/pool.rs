@@ -15,6 +15,9 @@ const MAX_QUEUED_PER_SENDER: usize = 64;
 const MAX_NONCE_GAP: u64 = 256;
 /// Txs waiting longer than this many slots with sufficient fee must be included.
 const FORCED_INCLUSION_SLOTS: u64 = 10;
+/// Maximum age (in slots) before a transaction is evicted from the mempool.
+/// At ~2s slots this is ~1 hour.
+const MAX_TX_AGE_SLOTS: u64 = 1800;
 
 #[derive(Clone)]
 struct PrioritizedTx {
@@ -64,8 +67,8 @@ pub struct Mempool {
     /// Next expected nonce per sender (from chain state).
     next_nonce: HashMap<Address, u64>,
     /// Queued transactions: future nonces waiting for gaps to fill.
-    /// sender → nonce → Transaction
-    queued: HashMap<Address, BTreeMap<u64, Transaction>>,
+    /// sender → nonce → (Transaction, submitted_slot)
+    queued: HashMap<Address, BTreeMap<u64, (Transaction, u64)>>,
     /// Per-sender rate limiting.
     rate_limits: HashMap<Address, RateLimitEntry>,
     /// Monotonic counter for FIFO tiebreaking.
@@ -101,8 +104,55 @@ impl Mempool {
     }
 
     /// Update the current slot (for forced inclusion age tracking).
+    /// Also expires transactions older than `MAX_TX_AGE_SLOTS`.
     pub fn set_current_slot(&mut self, slot: u64) {
         self.current_slot = slot;
+        self.expire_old_transactions();
+    }
+
+    /// Remove transactions that have been in the mempool longer than `MAX_TX_AGE_SLOTS`.
+    /// This prevents indefinite accumulation from senders whose nonces never advance.
+    fn expire_old_transactions(&mut self) {
+        let mut expired_hashes = Vec::new();
+
+        // Expire from pending heap
+        for ptx in self.pending.iter() {
+            let age = self.current_slot.saturating_sub(ptx.submitted_slot);
+            if age > MAX_TX_AGE_SLOTS {
+                expired_hashes.push(ptx.tx.hash());
+            }
+        }
+
+        // Expire from queued (future-nonce) transactions
+        let senders: Vec<Address> = self.queued.keys().cloned().collect();
+        for sender in senders {
+            if let Some(nonces) = self.queued.get(&sender) {
+                let stale: Vec<u64> = nonces
+                    .iter()
+                    .filter(|(_, (_, slot))| {
+                        self.current_slot.saturating_sub(*slot) > MAX_TX_AGE_SLOTS
+                    })
+                    .map(|(nonce, _)| *nonce)
+                    .collect();
+                for nonce in &stale {
+                    if let Some(nonces_mut) = self.queued.get_mut(&sender) {
+                        if let Some((tx, _)) = nonces_mut.remove(nonce) {
+                            expired_hashes.push(tx.hash());
+                        }
+                    }
+                }
+            }
+            if self.queued.get(&sender).map_or(true, |q| q.is_empty()) {
+                self.queued.remove(&sender);
+            }
+        }
+
+        if !expired_hashes.is_empty() {
+            let count = expired_hashes.len() as u64;
+            // Remove from by_hash and by_sender, rebuild pending heap
+            self.remove_transactions(&expired_hashes);
+            MEMPOOL_METRICS.evictions_total.inc_by(count);
+        }
     }
 
     /// Set the expected next nonce for a sender (from chain state).
@@ -256,7 +306,7 @@ impl Mempool {
                     MAX_QUEUED_PER_SENDER
                 );
             }
-            sender_queued.insert(tx.nonce, tx);
+            sender_queued.insert(tx.nonce, (tx, self.current_slot));
         }
 
         MEMPOOL_METRICS.admitted_total.inc();
@@ -282,7 +332,7 @@ impl Mempool {
                     break;
                 }
 
-                let tx = match self
+                let (tx, _submitted_slot) = match self
                     .queued
                     .get_mut(&sender)
                     .and_then(|q| q.remove(&expected))
@@ -463,7 +513,7 @@ impl Mempool {
         // Prefer evicting queued (future-nonce) txs over ready-to-execute pending txs.
         let mut worst_queued: Option<(Address, u64, u128)> = None;
         for (sender, nonces) in &self.queued {
-            for (nonce, tx) in nonces {
+            for (nonce, (tx, _slot)) in nonces {
                 let dominated = worst_queued
                     .as_ref()
                     .map_or(true, |(_, _, f)| tx.fee < *f);
@@ -475,7 +525,7 @@ impl Mempool {
 
         if let Some((sender, nonce, _)) = worst_queued {
             if let Some(nonces) = self.queued.get_mut(&sender) {
-                if let Some(tx) = nonces.remove(&nonce) {
+                if let Some((tx, _slot)) = nonces.remove(&nonce) {
                     let tx_hash = tx.hash();
                     self.by_hash.remove(&tx_hash);
                     if let Some(sender_txs) = self.by_sender.get_mut(&sender) {
@@ -901,6 +951,55 @@ mod tests {
             mempool.add_transaction(create_test_tx_with_keypair(&kp, far_nonce, 60_000));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonce gap too large"));
+    }
+
+    #[test]
+    fn test_ttl_expires_pending_transactions() {
+        let mut mempool = Mempool::with_defaults();
+        mempool.set_current_slot(100);
+
+        let tx1 = create_test_tx(0, 60_000);
+        mempool.add_transaction(tx1).unwrap();
+        assert_eq!(mempool.len(), 1);
+
+        // Advance slot past TTL
+        mempool.set_current_slot(100 + MAX_TX_AGE_SLOTS + 1);
+        assert_eq!(mempool.len(), 0, "expired pending tx should be evicted");
+    }
+
+    #[test]
+    fn test_ttl_expires_queued_transactions() {
+        let mut mempool = Mempool::with_defaults();
+        let kp = Keypair::generate();
+        mempool.set_current_slot(50);
+
+        // Add nonce 0 (pending) and nonce 2 (queued, gap at nonce 1)
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp, 0, 60_000))
+            .unwrap();
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp, 2, 60_000))
+            .unwrap();
+        assert_eq!(mempool.queued_len(), 1);
+        assert_eq!(mempool.len(), 2);
+
+        // Advance slot past TTL — both should expire
+        mempool.set_current_slot(50 + MAX_TX_AGE_SLOTS + 1);
+        assert_eq!(mempool.len(), 0, "all expired txs should be evicted");
+        assert_eq!(mempool.queued_len(), 0, "queued expired txs should be evicted");
+    }
+
+    #[test]
+    fn test_ttl_keeps_fresh_transactions() {
+        let mut mempool = Mempool::with_defaults();
+        mempool.set_current_slot(100);
+
+        let tx1 = create_test_tx(0, 60_000);
+        mempool.add_transaction(tx1).unwrap();
+
+        // Advance within TTL
+        mempool.set_current_slot(100 + MAX_TX_AGE_SLOTS - 1);
+        assert_eq!(mempool.len(), 1, "fresh tx should not be evicted");
     }
 }
 
