@@ -259,7 +259,7 @@ impl WasmVm {
                 // Charge fuel for storage_read (200 fuel units)
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= 200 => {
-                        if caller.set_fuel(fuel - 200).is_err() {
+                        if caller.set_fuel(fuel.saturating_sub(200)).is_err() {
                             return -1; // Fuel deduction failed
                         }
                     }
@@ -339,7 +339,7 @@ impl WasmVm {
                 let fuel_cost = 5000u64.saturating_add(val_cost);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
-                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                        if caller.set_fuel(fuel.saturating_sub(fuel_cost)).is_err() {
                             return -1;
                         }
                     }
@@ -401,7 +401,7 @@ impl WasmVm {
                 let fuel_cost = 375u64.saturating_add(log_byte_cost);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
-                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                        if caller.set_fuel(fuel.saturating_sub(fuel_cost)).is_err() {
                             return -1;
                         }
                     }
@@ -456,7 +456,7 @@ impl WasmVm {
                 let fuel_cost = 100u64.saturating_add(len as u64);
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= fuel_cost => {
-                        if caller.set_fuel(fuel - fuel_cost).is_err() {
+                        if caller.set_fuel(fuel.saturating_sub(fuel_cost)).is_err() {
                             return -1;
                         }
                     }
