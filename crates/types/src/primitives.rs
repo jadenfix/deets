@@ -115,5 +115,5 @@ pub fn slot_to_epoch(slot: Slot, epoch_slots: u64) -> Epoch {
 }
 
 pub fn epoch_start_slot(epoch: Epoch, epoch_slots: u64) -> Slot {
-    epoch * epoch_slots
+    epoch.saturating_mul(epoch_slots)
 }

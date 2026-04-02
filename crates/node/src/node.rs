@@ -640,7 +640,7 @@ impl Node {
         let retention = self.chain_config.chain.retention_epochs;
         if retention > 0 && new_epoch > retention {
             let prune_before_epoch = new_epoch - retention;
-            let prune_before_slot = prune_before_epoch * self.chain_config.chain.epoch_slots;
+            let prune_before_slot = prune_before_epoch.saturating_mul(self.chain_config.chain.epoch_slots);
             match pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
                 Ok(pruned) => tracing::info!(
                     new_epoch,
@@ -1860,9 +1860,9 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(bincode::serialize(&receipt.status).unwrap_or_default());
+        receipt_hasher.update(bincode::serialize(&receipt.status).expect("receipt status serialization cannot fail"));
         receipt_hasher.update(receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(bincode::serialize(&receipt.logs).unwrap_or_default());
+        receipt_hasher.update(bincode::serialize(&receipt.logs).expect("receipt logs serialization cannot fail"));
         receipt_hasher.update(receipt.state_root.as_bytes());
         hasher.update(receipt_hasher.finalize());
     }
