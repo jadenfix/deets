@@ -779,3 +779,6 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Replaced H256::from_slice().unwrap() with direct [u8;32] array conversion in compute_transactions_root and compute_receipts_root.
   - Replaced bincode::serialize().expect() with unwrap_or_default() to avoid validator crash on serialization failure.
   - 4 panic sites removed from production block production/validation paths.
+- **2026-04-02** — test(types): proptest property-based tests for core type invariants. Branch: `test/agent3-types-proptest`, PR #256 (merged).
+  - Added 22 proptest cases to aether-types: bincode roundtrips (H256, Address, Signature, PublicKey, Transaction, Account, UtxoId), hash determinism, signature exclusion, conflict symmetry, blob validation, fee overflow safety, slot/epoch monotonicity.
+  - All 46 tests pass (200 cases each); clippy clean.
