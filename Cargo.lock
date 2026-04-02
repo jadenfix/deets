@@ -67,6 +67,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
@@ -238,6 +239,7 @@ name = "aether-da-erasure"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "reed-solomon-erasure",
 ]
 
