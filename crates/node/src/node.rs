@@ -3278,4 +3278,145 @@ mod tests {
             "50% stake share should be ~{expected}, got {half_share}"
         );
     }
+
+    /// A block whose transactions_root field doesn't match the actual transactions is rejected.
+    #[test]
+    fn block_with_wrong_transactions_root_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Build a block that passes consensus validation (correct proposer, slot=0)
+        // but has a tampered transactions_root.
+        let mut block = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![], // no transactions → correct root is H256::zero()
+        );
+        // Tamper the transactions_root to a non-zero value.
+        block.header.transactions_root = H256::from_slice(&[0xAB; 32]).unwrap();
+
+        let result = node.on_block_received(block);
+        assert!(result.is_err(), "block with wrong transactions_root must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("transactions_root mismatch"),
+            "error must mention transactions_root mismatch, got: {msg}"
+        );
+    }
+
+    /// A block at slot > 1 with a non-zero parent hash and no QC must be rejected.
+    #[test]
+    fn non_genesis_block_without_qc_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let mut consensus = SimpleConsensus::new(validators);
+        // Advance consensus to slot 2 so the block passes the future-slot check.
+        consensus.advance_slot();
+        consensus.advance_slot();
+        let consensus_box: Box<dyn aether_consensus::ConsensusEngine> = Box::new(consensus);
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus_box,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Insert a parent block so the child is not buffered as an orphan.
+        let parent = Block::new(
+            1,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        let parent_hash = parent.hash();
+        node.blocks_by_hash.insert(parent_hash, parent);
+
+        // Build a child block at slot 2 with no aggregated_vote.
+        let mut child = Block::new(
+            2,
+            parent_hash,
+            proposer,
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        // Ensure transactions_root is correct for empty block.
+        child.header.transactions_root = H256::zero();
+        // No aggregated_vote — must be rejected.
+        assert!(child.aggregated_vote.is_none());
+
+        let result = node.on_block_received(child);
+        assert!(result.is_err(), "non-genesis block without QC must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("missing required quorum certificate"),
+            "error must mention missing QC, got: {msg}"
+        );
+    }
+
+    /// A block whose slot is not strictly greater than its parent's slot must be rejected.
+    #[test]
+    fn block_with_non_monotonic_slot_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let mut simple_consensus = SimpleConsensus::new(validators);
+        // Advance to slot 1 so the child block at slot 1 passes the future-slot check.
+        simple_consensus.advance_slot();
+        let consensus: Box<dyn aether_consensus::ConsensusEngine> = Box::new(simple_consensus);
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Insert a parent block at slot 1.
+        let parent = Block::new(
+            1,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+        let parent_hash = parent.hash();
+        node.blocks_by_hash.insert(parent_hash, parent);
+
+        // Build a child block at slot 1 (same as parent) — violates monotonicity.
+        let child = Block::new(
+            1,
+            parent_hash,
+            proposer,
+            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            vec![],
+        );
+
+        let result = node.on_block_received(child);
+        assert!(result.is_err(), "block with slot <= parent slot must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("slot monotonicity violation"),
+            "error must mention slot monotonicity, got: {msg}"
+        );
+    }
 }
