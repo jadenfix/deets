@@ -1199,6 +1199,35 @@ impl Node {
         self.running = false;
     }
 
+    /// Perform a graceful shutdown: stop the node, log final state, and
+    /// flush all pending writes to stable storage.
+    ///
+    /// Must be called before the process exits to avoid losing any data
+    /// that is still in the RocksDB write-ahead log buffer.
+    pub fn shutdown(&mut self) -> Result<()> {
+        self.running = false;
+
+        let slot = self.consensus.current_slot();
+        let finalized = self.consensus.finalized_slot();
+        let blocks = self.blocks_by_hash.len();
+        let mempool = self.mempool.len();
+        let orphans = self.orphan_count;
+
+        tracing::info!(
+            slot,
+            finalized,
+            blocks,
+            mempool,
+            orphans,
+            "Shutting down node — flushing state to disk"
+        );
+
+        self.ledger.storage().flush_wal()?;
+
+        tracing::info!("WAL flushed — shutdown complete");
+        Ok(())
+    }
+
     pub fn get_state_root(&self) -> H256 {
         self.ledger.state_root()
     }
@@ -1671,5 +1700,97 @@ mod tests {
         // Delegator's account should have been credited.
         let account = node.ledger.get_account(&delegator).unwrap().unwrap();
         assert_eq!(account.balance, unbond_amount);
+    }
+
+    #[test]
+    fn shutdown_flushes_wal_and_stops_node() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Tick a few times to produce state
+        for _ in 0..5 {
+            node.tick().unwrap();
+        }
+        assert!(node.current_slot() > 0);
+
+        // Shutdown should succeed and mark node as stopped
+        node.shutdown().unwrap();
+        assert!(!node.running);
+    }
+
+    #[test]
+    fn shutdown_preserves_state_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path();
+        let keypair = Keypair::generate();
+        // Save secret key bytes so we can reconstruct after move
+        let key_bytes = keypair.secret_key();
+        let validators = vec![validator_info_from_key(&keypair)];
+
+        // Phase 1: produce blocks, then shut down
+        let latest_slot;
+        {
+            let consensus = Box::new(SimpleConsensus::new(validators.clone()));
+            let mut node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            // Tick until a block is produced
+            for _ in 0..10 {
+                node.tick().unwrap();
+                if node.latest_block_slot().is_some() {
+                    break;
+                }
+            }
+            assert!(
+                node.latest_block_slot().is_some(),
+                "expected at least one block produced"
+            );
+
+            latest_slot = node.latest_block_slot().unwrap();
+            node.shutdown().unwrap();
+        }
+
+        // Phase 2: reopen from same DB — state should be intact
+        {
+            let keypair2 = Keypair::from_bytes(&key_bytes).unwrap();
+            let validators2 = vec![validator_info_from_key(&keypair2)];
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair2),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            // Block produced before shutdown should be recovered
+            assert!(
+                node.latest_block_slot().is_some(),
+                "blocks should survive shutdown+restart"
+            );
+            assert!(
+                node.latest_block_slot().unwrap() >= latest_slot,
+                "recovered tip should be at or past slot {}",
+                latest_slot
+            );
+        }
     }
 }

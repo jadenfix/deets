@@ -190,6 +190,16 @@ impl Storage {
             .compact_range_cf(cf_handle, None::<&[u8]>, None::<&[u8]>);
         Ok(())
     }
+
+    /// Flush all in-memory WAL data to stable storage.
+    ///
+    /// Called during graceful shutdown to ensure all pending writes are
+    /// durable before the process exits. Without this, a clean shutdown
+    /// could still lose data sitting in the WAL buffer.
+    pub fn flush_wal(&self) -> Result<()> {
+        self.db.flush_wal(true).context("failed to flush WAL")?;
+        Ok(())
+    }
 }
 
 pub struct StorageBatch {
@@ -368,5 +378,23 @@ mod tests {
             .get(CF_BLOCKS, &99u64.to_be_bytes())
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn test_flush_wal_durability() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+
+        // Write data and flush WAL
+        storage
+            .put(CF_METADATA, b"flush_key", b"flush_value")
+            .unwrap();
+        storage.flush_wal().unwrap();
+
+        // Re-open the database — flushed data should be durable
+        drop(storage);
+        let storage2 = Storage::open(temp_dir.path()).unwrap();
+        let value = storage2.get(CF_METADATA, b"flush_key").unwrap();
+        assert_eq!(value, Some(b"flush_value".to_vec()));
     }
 }
