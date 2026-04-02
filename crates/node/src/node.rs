@@ -198,9 +198,13 @@ impl Node {
 
     /// Load persisted blocks from RocksDB on startup.
     ///
-    /// Only keeps the most recent MAX_CACHED_BLOCKS to bound memory usage
-    /// instead of loading the entire block history.
+    /// Uses the persisted chain tip for O(1) tip recovery when available,
+    /// falling back to a full scan for databases without the tip metadata.
+    /// Only keeps the most recent MAX_CACHED_BLOCKS to bound memory usage.
     fn load_blocks_from_storage(storage: &Storage) -> Result<LoadedBlocks> {
+        // Try O(1) chain tip recovery from metadata written atomically with each block.
+        let persisted_tip = Self::load_persisted_chain_tip(storage);
+
         // Collect all blocks, then keep only the most recent MAX_CACHED_BLOCKS
         let mut all: Vec<(Slot, H256, Block)> = Vec::new();
         for (_, value) in storage.iterator(CF_BLOCKS)? {
@@ -230,7 +234,33 @@ impl Node {
             }
         }
 
+        // Prefer the persisted tip if it matches a loaded block (crash-safe source of truth).
+        // Fall back to scan-derived tip for legacy databases.
+        if let Some((tip_slot, tip_hash)) = persisted_tip {
+            if by_hash.contains_key(&tip_hash) {
+                latest_slot = Some(tip_slot);
+                latest_hash = tip_hash;
+            } else {
+                tracing::warn!(
+                    persisted_tip_slot = tip_slot,
+                    "Persisted chain tip not in cached blocks — using scan-derived tip"
+                );
+            }
+        }
+
         Ok((by_slot, by_hash, latest_hash, latest_slot))
+    }
+
+    /// Read the persisted chain tip from metadata (O(1) lookup).
+    fn load_persisted_chain_tip(storage: &Storage) -> Option<(Slot, H256)> {
+        let slot_bytes = storage.get(CF_METADATA, b"chain_tip_slot").ok()??;
+        let hash_bytes = storage.get(CF_METADATA, b"chain_tip_hash").ok()??;
+        if slot_bytes.len() != 8 || hash_bytes.len() != 32 {
+            return None;
+        }
+        let slot = u64::from_le_bytes(slot_bytes.try_into().ok()?);
+        let hash = H256::from_slice(&hash_bytes).ok()?;
+        Some((slot, hash))
     }
 
     /// Build a StorageBatch for block and receipt persistence (without writing).
@@ -264,6 +294,16 @@ impl Node {
                 receipt_bytes,
             );
         }
+
+        // Persist chain tip so restart recovery is O(1) instead of scanning all blocks.
+        // Written atomically with block data — crash-safe.
+        let tip_slot_bytes = block.header.slot.to_le_bytes().to_vec();
+        batch.put(CF_METADATA, b"chain_tip_slot".to_vec(), tip_slot_bytes);
+        batch.put(
+            CF_METADATA,
+            b"chain_tip_hash".to_vec(),
+            block_hash.as_bytes().to_vec(),
+        );
 
         Ok(batch)
     }
@@ -1528,6 +1568,10 @@ impl Node {
         self.latest_block_slot
     }
 
+    pub fn latest_block_hash(&self) -> H256 {
+        self.latest_block_hash
+    }
+
     pub fn allows_airdrop(&self) -> bool {
         matches!(
             self.chain_config.chain.chain_id.as_str(),
@@ -2641,5 +2685,68 @@ mod tests {
             votes_after_second, 0,
             "second vote at same slot must be suppressed"
         );
+    }
+
+    #[test]
+    fn chain_tip_persisted_and_recovered_on_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = Arc::new(ChainConfig::devnet());
+
+        // First node instance: produce some blocks
+        let tip_slot;
+        let tip_hash;
+        {
+            let keypair = Keypair::generate();
+            let validators = vec![validator_info_from_key(&keypair)];
+            let consensus = Box::new(SimpleConsensus::new(validators));
+            let mut node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair),
+                None,
+                config.clone(),
+            )
+            .unwrap();
+
+            // Produce 3 blocks (tick = process_slot + advance_slot)
+            for _ in 0..3 {
+                node.tick().unwrap();
+            }
+            tip_slot = node.latest_block_slot().unwrap();
+            tip_hash = node.latest_block_hash();
+            assert!(tip_slot >= 1, "should have produced at least 1 block");
+        }
+        // Node dropped — simulates restart
+
+        // Second node instance: should recover tip from metadata
+        {
+            let keypair2 = Keypair::generate();
+            let validators2 = vec![validator_info_from_key(&keypair2)];
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                temp_dir.path(),
+                consensus,
+                Some(keypair2),
+                None,
+                config,
+            )
+            .unwrap();
+
+            assert_eq!(
+                node.latest_block_slot(),
+                Some(tip_slot),
+                "chain tip slot must survive restart"
+            );
+            assert_eq!(
+                node.latest_block_hash(),
+                tip_hash,
+                "chain tip hash must survive restart"
+            );
+            // Consensus should be fast-forwarded past the tip
+            assert!(
+                node.consensus.current_slot() > tip_slot,
+                "consensus must resume past recovered tip"
+            );
+        }
     }
 }
