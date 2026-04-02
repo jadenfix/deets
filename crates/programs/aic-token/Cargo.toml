@@ -10,3 +10,6 @@ keywords = ["aether", "aic", "token", "credits"]
 aether-types = { path = "../../types" }
 serde.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

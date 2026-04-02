@@ -301,3 +301,199 @@ mod tests {
         assert_eq!(state.balance_of(&addr(4)), 0);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_addr() -> impl Strategy<Value = Address> {
+        // Use addresses 1..10 to get interesting collisions/distinct actors
+        (1u8..10u8).prop_map(|n| Address::from_slice(&[n; 20]).unwrap())
+    }
+
+    proptest! {
+        /// mint increases balance of recipient and total_supply by exactly `amount`.
+        #[test]
+        fn mint_increases_balance_and_supply(amount in 0u128..1_000_000u128) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let recipient = Address::from_slice(&[2u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+
+            let before_supply = state.total_supply;
+            state.mint(authority, recipient, amount).unwrap();
+
+            prop_assert_eq!(state.balance_of(&recipient), amount);
+            prop_assert_eq!(state.total_supply, before_supply + amount);
+        }
+
+        /// burn decreases balance and total_supply, increases total_burned.
+        #[test]
+        fn burn_decreases_supply_increases_burned(
+            mint_amt in 1u128..1_000_000u128,
+            burn_frac in 0.0f64..=1.0f64,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let holder = Address::from_slice(&[2u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, holder, mint_amt).unwrap();
+
+            let burn_amt = (mint_amt as f64 * burn_frac) as u128;
+            state.burn(holder, holder, burn_amt).unwrap();
+
+            prop_assert_eq!(state.balance_of(&holder), mint_amt - burn_amt);
+            prop_assert_eq!(state.total_supply, mint_amt - burn_amt);
+            prop_assert_eq!(state.total_burned, burn_amt);
+        }
+
+        /// transfer conserves total supply: sum of balances stays constant.
+        #[test]
+        fn transfer_conserves_supply(
+            mint_amt in 1u128..1_000_000u128,
+            transfer_frac in 0.0f64..=1.0f64,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let sender = Address::from_slice(&[2u8; 20]).unwrap();
+            let receiver = Address::from_slice(&[3u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, sender, mint_amt).unwrap();
+
+            let transfer_amt = (mint_amt as f64 * transfer_frac) as u128;
+            state.transfer(sender, receiver, transfer_amt).unwrap();
+
+            let total = state.balance_of(&sender) + state.balance_of(&receiver);
+            prop_assert_eq!(total, mint_amt);
+            prop_assert_eq!(state.total_supply, mint_amt);
+        }
+
+        /// transfer_from respects allowance and reduces it correctly.
+        #[test]
+        fn transfer_from_reduces_allowance(
+            mint_amt in 100u128..1_000_000u128,
+            allowance in 10u128..100u128,
+            transfer_amt in 1u128..10u128,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let owner = Address::from_slice(&[2u8; 20]).unwrap();
+            let spender = Address::from_slice(&[3u8; 20]).unwrap();
+            let dest = Address::from_slice(&[4u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, owner, mint_amt).unwrap();
+            state.approve(owner, spender, allowance).unwrap();
+
+            state.transfer_from(spender, owner, dest, transfer_amt).unwrap();
+
+            prop_assert_eq!(state.allowance_of(&owner, &spender), allowance - transfer_amt);
+            prop_assert_eq!(state.balance_of(&dest), transfer_amt);
+            prop_assert_eq!(state.balance_of(&owner), mint_amt - transfer_amt);
+        }
+
+        /// Unauthorized mint is rejected.
+        #[test]
+        fn unauthorized_mint_rejected(impostor in arb_addr(), amount in 0u128..1_000_000u128) {
+            let authority = Address::from_slice(&[99u8; 20]).unwrap();
+            prop_assume!(impostor != authority);
+            let recipient = Address::from_slice(&[2u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+
+            let result = state.mint(impostor, recipient, amount);
+            prop_assert!(result.is_err(), "non-authority mint must be rejected");
+            prop_assert_eq!(state.total_supply, 0);
+        }
+
+        /// Burning more than balance is rejected; state remains unchanged.
+        #[test]
+        fn burn_more_than_balance_rejected(
+            mint_amt in 1u128..1_000_000u128,
+            extra in 1u128..100_000u128,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let holder = Address::from_slice(&[2u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, holder, mint_amt).unwrap();
+
+            let result = state.burn(holder, holder, mint_amt + extra);
+            prop_assert!(result.is_err());
+            prop_assert_eq!(state.balance_of(&holder), mint_amt);
+            prop_assert_eq!(state.total_supply, mint_amt);
+            prop_assert_eq!(state.total_burned, 0);
+        }
+
+        /// Transferring more than balance is rejected; neither balance changes.
+        #[test]
+        fn transfer_more_than_balance_rejected(
+            mint_amt in 1u128..1_000_000u128,
+            extra in 1u128..100_000u128,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let sender = Address::from_slice(&[2u8; 20]).unwrap();
+            let receiver = Address::from_slice(&[3u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, sender, mint_amt).unwrap();
+
+            let result = state.transfer(sender, receiver, mint_amt + extra);
+            prop_assert!(result.is_err());
+            prop_assert_eq!(state.balance_of(&sender), mint_amt);
+            prop_assert_eq!(state.balance_of(&receiver), 0);
+        }
+
+        /// Multiple mints accumulate correctly.
+        #[test]
+        fn multiple_mints_accumulate(amounts in prop::collection::vec(0u128..100_000u128, 1..10)) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let recipient = Address::from_slice(&[2u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+
+            let mut expected: u128 = 0;
+            for &amt in &amounts {
+                state.mint(authority, recipient, amt).unwrap();
+                expected = expected.saturating_add(amt);
+            }
+            prop_assert_eq!(state.balance_of(&recipient), expected);
+            prop_assert_eq!(state.total_supply, expected);
+        }
+
+        /// total_supply == sum of all balances at all times.
+        #[test]
+        fn supply_equals_sum_of_balances(
+            mint_amt in 100u128..1_000_000u128,
+            transfer_amt in 0u128..100u128,
+            burn_amt in 0u128..100u128,
+        ) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let a = Address::from_slice(&[2u8; 20]).unwrap();
+            let b = Address::from_slice(&[3u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            state.mint(authority, a, mint_amt).unwrap();
+
+            // transfer some (cap to balance)
+            let t = transfer_amt.min(mint_amt);
+            state.transfer(a, b, t).unwrap();
+
+            // burn some from a (cap to remaining balance)
+            let burn = burn_amt.min(mint_amt - t);
+            state.burn(a, a, burn).unwrap();
+
+            let sum_balances: u128 = state.balances.values().sum();
+            prop_assert_eq!(state.total_supply, sum_balances,
+                "total_supply must equal sum of all balances");
+        }
+
+        /// transfer_from does NOT consume allowance when the transfer fails.
+        #[test]
+        fn transfer_from_no_allowance_consumed_on_failure(allowance in 1u128..100_000u128) {
+            let authority = Address::from_slice(&[1u8; 20]).unwrap();
+            let owner = Address::from_slice(&[2u8; 20]).unwrap();
+            let spender = Address::from_slice(&[3u8; 20]).unwrap();
+            let dest = Address::from_slice(&[4u8; 20]).unwrap();
+            let mut state = AicTokenState::new(authority);
+            // owner has 0 balance but has granted allowance
+            state.approve(owner, spender, allowance).unwrap();
+
+            let result = state.transfer_from(spender, owner, dest, allowance);
+            prop_assert!(result.is_err(), "should fail: owner has no balance");
+            prop_assert_eq!(state.allowance_of(&owner, &spender), allowance,
+                "allowance must not be consumed on failed transfer");
+        }
+    }
+}
