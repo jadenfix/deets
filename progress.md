@@ -356,3 +356,9 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `tracing` dep to `aether-ledger` and instrumented `apply_transaction`, `apply_block_speculatively_with_chain_id`, `apply_block_transactions`, `commit_overlay` with structured spans (tx_hash, tx_count, elapsed_us)
   - Added spans to `on_vote_received` (slot, validator) and `handle_network_event` in node crate
   - All logs now queryable by structured fields in Grafana/Loki
+
+- **2026-04-02** — fix(ops): optimize Dockerfiles with cargo-chef caching and remove unused openssl. Tier 6 item (Docker/CI). Branch: `feat/agent2-ops-dockerfile-optimization`, PR #134 (merged).
+  - Added cargo-chef dependency caching layer to all 4 Dockerfiles (root, validator, rpc, indexer)
+  - Removed libssl-dev/libssl3 — project uses rustls, openssl is denied in deny.toml
+  - Bumped deploy Dockerfiles from rust:1.86 to rust:1.90
+  - Code-only rebuilds now skip full dep compilation (~10-15 min → ~1-2 min)
