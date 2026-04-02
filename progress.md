@@ -2,6 +2,13 @@
 
 **Date**: March 31, 2026
 
+## Agent 3 — Cycle 42 (2026-04-02)
+
+- **bench(da): criterion benchmarks for erasure coding and turbine broadcast** — PR #334
+  - 10 benchmark groups: RS encode/decode at 1KB-1MB, RS shard config comparison, turbine make_shreds/ingest pipelines, shred hashing/signing
+  - Covers DA layer hot paths for block propagation performance baselines
+  - Branch: `bench/agent3-da-erasure-turbine`
+
 ## Agent 3 — Cycle 41 (2026-04-02)
 
 - **bench(crypto): criterion benchmarks for ed25519 and hashing primitives** — PR #331
