@@ -485,3 +485,11 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added parent hash chain validation to `SyncManager::drain_ready()` — blocks must form a valid chain, not just slot-contiguous sequences.
   - Added sync progress tracking (`blocks_applied` counter) with structured tracing in `drive_sync()`.
   - 4 new sync.rs tests + 2 new node.rs integration tests. All 85 node tests pass; workspace clean.
+
+## Agent 3 Cycle 9 Log
+
+- **2026-04-02** — fix(node): prune voted_slots at finalization to prevent unbounded memory growth. Branch: `fix/agent3-prune-voted-slots-v2`, PR #176 (merged).
+  - Bug: `voted_slots` HashSet was never pruned, growing by one entry per slot (~every 2s) for the node's entire lifetime. Over months of validator uptime this leaks millions of entries.
+  - Fix: added `voted_slots.retain(|&slot| slot >= finalized)` in `prune_finalized_state()` alongside existing pruning of `committed_at_slot` and `slashed_offenses`.
+  - Reviewed open PRs (none pending). Verified peer ban enforcement and graceful shutdown already implemented.
+  - 1 new test. All 130 node tests pass; clippy clean.
