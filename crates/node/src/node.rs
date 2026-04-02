@@ -1888,7 +1888,8 @@ pub fn compute_transactions_root(txs: &[Transaction]) -> H256 {
     for tx in txs {
         hasher.update(tx.hash().as_bytes());
     }
-    H256::from_slice(&hasher.finalize()).unwrap()
+    let hash: [u8; 32] = hasher.finalize().into();
+    H256(hash)
 }
 
 /// Compute the Merkle root of a list of receipts.
@@ -1906,13 +1907,14 @@ pub fn compute_receipts_root(receipts: &[TransactionReceipt]) -> H256 {
         // block_hash/slot being set after root computation.
         let mut receipt_hasher = Sha256::new();
         receipt_hasher.update(receipt.tx_hash.as_bytes());
-        receipt_hasher.update(bincode::serialize(&receipt.status).expect("receipt status serialization cannot fail"));
+        receipt_hasher.update(bincode::serialize(&receipt.status).unwrap_or_default());
         receipt_hasher.update(receipt.gas_used.to_le_bytes());
-        receipt_hasher.update(bincode::serialize(&receipt.logs).expect("receipt logs serialization cannot fail"));
+        receipt_hasher.update(bincode::serialize(&receipt.logs).unwrap_or_default());
         receipt_hasher.update(receipt.state_root.as_bytes());
         hasher.update(receipt_hasher.finalize());
     }
-    H256::from_slice(&hasher.finalize()).unwrap()
+    let hash: [u8; 32] = hasher.finalize().into();
+    H256(hash)
 }
 
 #[cfg(test)]
