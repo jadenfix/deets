@@ -785,3 +785,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 - **2026-04-02** — test(light-client): proptest for verifier, header store, and state query invariants. Branch: `test/agent3-light-client-proptests`, PR #260 (merged).
   - Added 13 proptest cases: verifier (slot monotonicity, increasing acceptance, quorum threshold, state root tracking, validator rotation), header store (capacity bounds, latest-is-highest, eviction, duplicate slots), state query (inclusion roundtrip, exclusion, wrong root rejection, root update).
   - All 13 tests pass; clippy clean.
+
+## Agent 2 Cycle 22 Log
+
+- **2026-04-02** — fix(consensus,ledger): remove unwrap/expect panics from production VRF and account hashing. Branch: `fix/agent2-remove-consensus-ledger-panics`, PR #261 (merged).
+  - Removed 2 `.unwrap()` panics from `vrf_pos.rs` `advance_epoch()` and `advance_slot()` by constructing H256 directly from `[u8; 32]`.
+  - Removed 2 `.expect()` panics from `state.rs` `hash_account()` with graceful fallback to H256::zero().
+  - Added `From<[u8; 32]>` impl for H256 in types crate for ergonomic panic-free construction.
+  - Replaced `println\!` with structured `tracing::info\!` in epoch advancement.
+  - 4 panic sites removed from consensus-critical production paths.
+  - All tests pass; clippy clean.
