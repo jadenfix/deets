@@ -468,10 +468,48 @@ impl HybridConsensus {
             let qc = self.aggregate_votes(&votes_vec)?;
             self.qcs.insert(key, qc.clone());
 
-            // Handle phase transitions with correct 2-chain finality
+            // 2-CHAIN FINALITY RULE
+            //
+            // Because advance_slot() resets the phase to Propose every slot,
+            // only Propose-phase QCs ever form in multi-validator mode.
+            // The Prevote/Precommit/Commit branches below are kept for
+            // correctness if the protocol later adds intra-slot phase
+            // progression, but the Propose branch now carries the
+            // production finality logic:
+            //
+            //   Block B is finalized when:
+            //     1. B has a QC (from its own slot's Propose phase)
+            //     2. B's child C also has a QC (current slot's Propose phase)
+            //     3. C.parent_hash == B.hash
+            //
             match self.current_phase {
                 Phase::Propose => {
-                    // QC formed in Propose phase → advance to Prevote
+                    // QC formed for this block (child C).  Check if parent
+                    // block B already has a QC — if so, B is finalized.
+                    if let Some(parent_hash) = self.block_parents.get(&vote.block_hash).copied() {
+                        if let Some(&parent_slot) = self.block_slots.get(&parent_hash) {
+                            // Parent's QC was also formed in Propose phase
+                            let parent_key =
+                                (parent_slot, Phase::Propose, parent_hash);
+                            if self.qcs.contains_key(&parent_key)
+                                && parent_slot > self.finalized_slot
+                            {
+                                self.finalized_slot = parent_slot;
+                                tracing::info!(
+                                    finalized_slot = parent_slot,
+                                    child_slot = vote.slot,
+                                    "2-chain finality: block finalized via consecutive QCs"
+                                );
+                            }
+                        }
+                    }
+                    // Lock on this block (it has a QC)
+                    self.locked_block = Some(vote.block_hash);
+                    self.locked_slot = vote.slot;
+                    // Track committed slot
+                    if vote.slot > self.committed_slot {
+                        self.committed_slot = vote.slot;
+                    }
                 }
                 Phase::Prevote => {
                     // Prevote QC formed → lock on this block
@@ -479,11 +517,11 @@ impl HybridConsensus {
                     self.locked_slot = vote.slot;
                 }
                 Phase::Precommit => {
-                    // Precommit QC formed → check 2-chain finality rule:
-                    // If C's parent (block B) has a prevote QC, finalize B.
-                    if let Some(parent_hash) = self.block_parents.get(&vote.block_hash) {
-                        if let Some(&parent_slot) = self.block_slots.get(parent_hash) {
-                            let prevote_key = (parent_slot, Phase::Prevote, *parent_hash);
+                    // Precommit QC formed → check 2-chain finality rule
+                    // (same logic, but keyed on Prevote QC for parent)
+                    if let Some(parent_hash) = self.block_parents.get(&vote.block_hash).copied() {
+                        if let Some(&parent_slot) = self.block_slots.get(&parent_hash) {
+                            let prevote_key = (parent_slot, Phase::Prevote, parent_hash);
                             if self.qcs.contains_key(&prevote_key)
                                 && parent_slot > self.finalized_slot
                             {
@@ -1785,6 +1823,107 @@ mod tests {
             "epoch snapshot should be updated at epoch boundary"
         );
         assert_eq!(consensus.epoch_total_stake, 500);
+    }
+
+    #[test]
+    fn test_two_chain_finality_in_propose_phase() {
+        // With advance_slot() resetting phase to Propose every slot, only
+        // Propose-phase QCs form. Verify that 2-chain finality works:
+        // slot 1 QC + slot 2 QC (child of slot 1) → slot 1 finalized.
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, bls2) = create_test_validator_with_bls(1000);
+        let (v3, bls3) = create_test_validator_with_bls(1000);
+
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone()],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
+
+        // --- Slot 1: form a Propose QC for block_a ---
+        let block_a = H256::from_slice(&[0xAA; 32]).unwrap();
+        let parent_a = H256::zero(); // genesis parent
+        consensus.current_slot = 1;
+        consensus.current_phase = Phase::Propose;
+        consensus.block_parents.insert(block_a, parent_a);
+        consensus.block_slots.insert(block_a, 1);
+
+        let vote1 = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 1);
+        let vote2 = make_signed_vote(&mut consensus, &v2, &bls2, block_a, 1);
+        let _vote3 = make_signed_vote(&mut consensus, &v3, &bls3, block_a, 1);
+
+        assert!(consensus.process_vote(vote1).unwrap().is_none());
+        assert!(consensus.process_vote(vote2).unwrap().is_some()); // QC at 2/3
+        // Don't need vote3 for quorum; phase advances to Prevote
+
+        assert_eq!(consensus.finalized_slot, 0, "no finality yet — only one QC");
+
+        // --- advance_slot (simulates tick) ---
+        consensus.advance_slot();
+        assert_eq!(consensus.current_slot, 2);
+        assert_eq!(consensus.current_phase, Phase::Propose);
+
+        // --- Slot 2: form a Propose QC for block_b (child of block_a) ---
+        let block_b = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.block_parents.insert(block_b, block_a);
+        consensus.block_slots.insert(block_b, 2);
+
+        let vote1b = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 2);
+        let vote2b = make_signed_vote(&mut consensus, &v2, &bls2, block_b, 2);
+
+        assert!(consensus.process_vote(vote1b).unwrap().is_none());
+        let qc = consensus.process_vote(vote2b).unwrap();
+        assert!(qc.is_some(), "QC should form for block_b");
+
+        // block_a (slot 1) should now be finalized via 2-chain rule
+        assert_eq!(
+            consensus.finalized_slot, 1,
+            "slot 1 must be finalized: block_a has QC, child block_b has QC"
+        );
+    }
+
+    #[test]
+    fn test_two_chain_finality_no_parent_qc() {
+        // If the parent block does NOT have a QC, finality must NOT advance.
+        let (v1, bls1) = create_test_validator_with_bls(1000);
+        let (v2, bls2) = create_test_validator_with_bls(1000);
+        let (v3, _bls3) = create_test_validator_with_bls(1000);
+
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone()],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
+
+        // Skip slot 1 (no QC for block_a — e.g. leader failed to propose)
+        let block_a = H256::from_slice(&[0xAA; 32]).unwrap();
+        consensus.block_parents.insert(block_a, H256::zero());
+        consensus.block_slots.insert(block_a, 1);
+        // No votes for block_a — no QC
+
+        // --- Slot 2: form QC for block_b (child of block_a) ---
+        consensus.current_slot = 2;
+        consensus.current_phase = Phase::Propose;
+        let block_b = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.block_parents.insert(block_b, block_a);
+        consensus.block_slots.insert(block_b, 2);
+
+        let vote1 = make_signed_vote(&mut consensus, &v1, &bls1, block_b, 2);
+        let vote2 = make_signed_vote(&mut consensus, &v2, &bls2, block_b, 2);
+
+        consensus.process_vote(vote1).unwrap();
+        consensus.process_vote(vote2).unwrap();
+
+        assert_eq!(
+            consensus.finalized_slot, 0,
+            "no finality — parent block_a has no QC"
+        );
     }
 
     #[test]
