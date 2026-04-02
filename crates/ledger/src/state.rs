@@ -255,9 +255,11 @@ impl Ledger {
         // Create new UTxOs
         let tx_hash = tx.hash();
         for (idx, output) in tx.outputs.iter().enumerate() {
+            let output_index: u32 = u32::try_from(idx)
+                .map_err(|_| anyhow!("transaction output index exceeds u32::MAX"))?;
             let utxo_id = UtxoId {
                 tx_hash,
-                output_index: idx as u32,
+                output_index,
             };
             let utxo = Utxo {
                 amount: output.amount,
@@ -808,9 +810,11 @@ impl Ledger {
         }
         let tx_hash = tx.hash();
         for (idx, output) in tx.outputs.iter().enumerate() {
+            let output_index: u32 = u32::try_from(idx)
+                .map_err(|_| anyhow!("transaction output index exceeds u32::MAX"))?;
             let utxo_id = UtxoId {
                 tx_hash,
-                output_index: idx as u32,
+                output_index,
             };
             let utxo = Utxo {
                 amount: output.amount,
