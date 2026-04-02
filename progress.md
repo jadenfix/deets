@@ -609,3 +609,19 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - Added `proptest` to `[dev-dependencies]` in `crates/node/Cargo.toml`.
   - Reviewed open PRs (none pending).
   - All 22 fork choice tests pass (15 existing + 7 new); full workspace tests pass; clippy clean.
+
+## Agent 4 Cycle 13 Log
+
+- **2026-04-02** — test(programs): add proptest property-based tests for staking invariants. Branch: `test/agent4-staking-proptest`, PR #208 (merged).
+  - Added 9 proptest cases to `crates/programs/staking/src/state.rs` covering:
+    - slash_reduces_validator_stake: slash always decreases (or zeros) stake, never increases
+    - slash_amount_bounded_by_stake: returned slash amount ≤ pre-slash staked_amount
+    - full_slash_zeroes_stake: 100% slash reduces stake to exactly 0
+    - delegation_increases_delegated_amount: delegate() increments delegated_amount correctly
+    - undelegate_all_zeroes_delegated_amount: full unbond leaves delegated_amount = 0 and removes record
+    - slash_propagates_to_delegations: slash reduces each delegator's amount proportionally
+    - register_duplicate_validator_fails: duplicate registration returns ValidatorExists error
+    - register_below_min_stake_fails: stake < 100 SWR returns InsufficientStake error
+    - slash_with_invalid_rate_fails: rate > 10000 bps returns InvalidSlashRate error
+  - Added `proptest` to `[dev-dependencies]` in `crates/programs/staking/Cargo.toml`.
+  - All 28 staking tests pass; clippy clean; full workspace tests pass.
