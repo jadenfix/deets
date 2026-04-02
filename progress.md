@@ -334,3 +334,13 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
   - `complete_unbonding()` was defined and tested in staking crate but never called from the node — unbonded tokens were permanently locked
   - Added call to `self.staking_state.complete_unbonding(slot)` in `process_epoch_transition()`, credits each returned `(Address, u128)` pair via `ledger.credit_account()`
   - Added test `epoch_transition_completes_unbonding_and_credits_account` verifying end-to-end flow
+
+- **2026-04-01** — fix(node): graceful shutdown with WAL flush. Tier 3 item. Branch: `fix/agent2-node-graceful-shutdown`, PR #111 (awaiting review).
+  - All tasks (slot loop, P2P, RPC) now respect shutdown signals; Node.shutdown() flushes RocksDB WAL; 5s deadline prevents hangs.
+
+- **2026-04-01** — feat(node): implement active state sync protocol. Tier 3 item. Branch: `fix/agent2-state-sync-active`, PR #115 (awaiting review).
+  - Added `/aether/1/sync` gossipsub topic for block range requests
+  - SyncManager rewritten: bounded buffer (1024 blocks), stall detection (30s), batch requests (64 slots), contiguous drain
+  - Peers respond to sync requests by broadcasting stored blocks (capped at 64/request)
+  - During active sync, blocks are buffered for ordered application
+  - 11 new sync tests, all 418+ workspace tests pass, clippy clean

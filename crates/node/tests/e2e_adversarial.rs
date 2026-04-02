@@ -142,6 +142,9 @@ impl TestNetwork {
                     OutboundMessage::BroadcastTransaction(tx) => {
                         self.pending_txs.push(tx);
                     }
+                    OutboundMessage::RequestBlockRange { .. } => {
+                        // Sync requests are ignored in adversarial test harness
+                    }
                 }
             }
         }

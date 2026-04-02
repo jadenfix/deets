@@ -7,7 +7,8 @@ use aether_node::{
     create_hybrid_consensus, create_hybrid_consensus_with_all_keys, validator_info_from_keypair,
     GenesisConfig, Node, OutboundMessage, ValidatorKeypair,
 };
-use aether_p2p::network::{P2PNetwork, TOPIC_VOTE};
+use aether_node::SyncRequest;
+use aether_p2p::network::{P2PNetwork, TOPIC_SYNC, TOPIC_VOTE};
 use aether_rpc_json::{JsonRpcServer, RpcBackend};
 use aether_types::{Address, Block, ChainConfig, Transaction, TransactionReceipt, H256};
 use anyhow::{Context, Result};
@@ -193,6 +194,18 @@ async fn run_p2p_outbound(
                     Some(OutboundMessage::BroadcastTransaction(tx)) => {
                         if let Err(e) = p2p.broadcast_transaction(&tx) {
                             tracing::warn!("failed to broadcast tx: {e}");
+                        }
+                    }
+                    Some(OutboundMessage::RequestBlockRange { from_slot, to_slot }) => {
+                        let req = SyncRequest { from_slot, to_slot };
+                        let data = bincode::serialize(&req).unwrap_or_else(|e| {
+                            tracing::error!("failed to serialize sync request: {e}");
+                            Vec::new()
+                        });
+                        if !data.is_empty() {
+                            if let Err(e) = p2p.publish(TOPIC_SYNC, data) {
+                                tracing::warn!("failed to publish sync request: {e}");
+                            }
                         }
                     }
                     None => break, // Channel closed

@@ -357,10 +357,49 @@ impl Node {
         // Check if any slot can be finalized
         self.check_finality();
 
+        // Drive state sync if we're behind the network.
+        self.drive_sync(slot);
+
         // Evict old cached blocks/receipts to bound memory (Fix 10)
         self.evict_old_cache();
 
         Ok(())
+    }
+
+    /// Drive the state sync protocol: detect if behind, request blocks,
+    /// apply buffered blocks in order, and handle stalls.
+    fn drive_sync(&mut self, current_slot: Slot) {
+        let my_latest = self.latest_block_slot.unwrap_or(0);
+
+        // Check if we've stalled during an active sync.
+        if self.sync_manager.is_syncing() && self.sync_manager.check_stalled() {
+            tracing::warn!(
+                next_expected = self.sync_manager.next_expected(),
+                "Sync stalled — retrying"
+            );
+            self.sync_manager.retry_after_stall(current_slot);
+        }
+
+        // Check if sync is needed based on how far behind we are.
+        if self.sync_manager.check_sync_needed(my_latest, current_slot) {
+            // Request the next batch of blocks from peers.
+            if let Some((from, to)) = self.sync_manager.next_request() {
+                tracing::info!(from, to, "Requesting sync blocks from peers");
+                self.broadcast(OutboundMessage::RequestBlockRange {
+                    from_slot: from,
+                    to_slot: to,
+                });
+            }
+        }
+
+        // Apply any contiguous buffered blocks.
+        let ready = self.sync_manager.drain_ready();
+        for block in ready {
+            let slot = block.header.slot;
+            if let Err(e) = self.on_block_received(block) {
+                tracing::warn!(slot, err = %e, "Failed to apply sync block");
+            }
+        }
     }
 
     /// Process epoch transition: distribute staking rewards.
@@ -1115,7 +1154,14 @@ impl Node {
     pub fn handle_network_event(&mut self, event: NetworkEvent) -> Result<()> {
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(block)) => {
-                if let Err(e) = self.on_block_received(block) {
+                // During active sync, buffer blocks for ordered application
+                // instead of processing them immediately out of order.
+                if self.sync_manager.is_syncing() {
+                    let slot = block.header.slot;
+                    if !self.sync_manager.buffer_block(block) {
+                        tracing::warn!(slot, "Sync buffer full, dropping block");
+                    }
+                } else if let Err(e) = self.on_block_received(block) {
                     tracing::debug!(err = %e, "Block rejected");
                 }
             }
@@ -1129,6 +1175,9 @@ impl Node {
                     tracing::debug!(err = %e, "Tx rejected");
                 }
             }
+            Some(NodeMessage::BlockRangeRequested { from_slot, to_slot }) => {
+                self.handle_block_range_request(from_slot, to_slot);
+            }
             Some(NodeMessage::PeerConnected) => {
                 self.peer_count = self.peer_count.saturating_add(1);
                 tracing::info!(peer_count = self.peer_count, "Peer connected");
@@ -1140,6 +1189,25 @@ impl Node {
             None => {}
         }
         Ok(())
+    }
+
+    /// Respond to a peer's sync request by re-broadcasting blocks we have
+    /// in the requested slot range. Capped to prevent a single request from
+    /// flooding the network.
+    fn handle_block_range_request(&mut self, from_slot: Slot, to_slot: Slot) {
+        const MAX_BLOCKS_PER_RESPONSE: u64 = 64;
+        let end = to_slot.min(from_slot.saturating_add(MAX_BLOCKS_PER_RESPONSE));
+
+        let mut sent = 0u64;
+        for slot in from_slot..=end {
+            if let Some(block) = self.get_block_by_slot(slot) {
+                self.broadcast(OutboundMessage::BroadcastBlock(block));
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            tracing::info!(from_slot, to_slot = end, sent, "Served sync block request");
+        }
     }
 
     fn check_finality(&mut self) {
