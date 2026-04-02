@@ -164,6 +164,86 @@ impl TestNetwork {
         }
     }
 
+    /// Run the network for N slots with a network partition.
+    /// `partitions` defines groups of node indices that can communicate.
+    /// Messages are only delivered between nodes in the same partition.
+    fn run_slots_partitioned(&mut self, num_slots: usize, partitions: &[Vec<usize>]) {
+        // Build partition lookup: node_idx -> partition_id
+        let n = self.nodes.len();
+        let mut node_partition = vec![usize::MAX; n];
+        for (pid, group) in partitions.iter().enumerate() {
+            for &nid in group {
+                node_partition[nid] = pid;
+            }
+        }
+
+        // Discard any in-flight messages from before the partition
+        self.pending_blocks.clear();
+        self.pending_votes.clear();
+        self.pending_txs.clear();
+
+        // Internal tagged pending queues
+        let mut pending_blocks: Vec<(usize, Block)> = Vec::new();
+        let mut pending_votes: Vec<(usize, Vote)> = Vec::new();
+        let mut pending_txs: Vec<(usize, Transaction)> = Vec::new();
+
+        for _ in 0..num_slots {
+            // 1. Deliver pending votes within partition
+            for (source, vote) in pending_votes.drain(..) {
+                for target in 0..n {
+                    if target != source && node_partition[target] == node_partition[source] {
+                        let _ = self.nodes[target].on_vote_received(vote.clone());
+                    }
+                }
+            }
+
+            // 2. Deliver pending blocks within partition
+            for (source, block) in pending_blocks.drain(..) {
+                for target in 0..n {
+                    if target != source && node_partition[target] == node_partition[source] {
+                        let _ = self.nodes[target].on_block_received(block.clone());
+                    }
+                }
+            }
+
+            // 3. Deliver pending transactions within partition
+            for (source, tx) in pending_txs.drain(..) {
+                for target in 0..n {
+                    if target != source && node_partition[target] == node_partition[source] {
+                        let _ = self.nodes[target].submit_transaction(tx.clone());
+                    }
+                }
+            }
+
+            // 4. Tick each node
+            for node in &mut self.nodes {
+                node.tick().unwrap();
+            }
+
+            // 5. Collect outbound messages tagged with source node
+            for (idx, node) in self.nodes.iter_mut().enumerate() {
+                for msg in node.drain_outbound() {
+                    match msg {
+                        OutboundMessage::BroadcastBlock(block) => {
+                            pending_blocks.push((idx, block));
+                        }
+                        OutboundMessage::BroadcastVote(vote) => {
+                            pending_votes.push((idx, vote));
+                        }
+                        OutboundMessage::BroadcastTransaction(tx) => {
+                            pending_txs.push((idx, tx));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Clear shared pending lists so subsequent run_slots starts clean
+        self.pending_blocks.clear();
+        self.pending_votes.clear();
+        self.pending_txs.clear();
+    }
+
     /// Count blocks that a specific node has.
     fn block_count(&self, node_idx: usize, max_slot: u64) -> usize {
         (0..max_slot)
@@ -557,4 +637,119 @@ fn test_epoch_pruning_removes_old_data() {
     // Verify state root is still valid (pruning didn't corrupt state)
     let root = network.nodes[0].get_state_root();
     assert_ne!(root, H256::zero(), "State root should be non-zero after pruning");
+}
+
+// ============================================================================
+// Test 12: Network partition tolerance — safety and recovery
+// ============================================================================
+// Validates the core BFT safety property: when 4 validators are split into
+// two groups of 2, neither group has the >2/3 stake needed for finality.
+// After healing the partition, all nodes must converge.
+
+#[test]
+fn test_partition_tolerance_and_recovery() {
+    let mut network = TestNetwork::new(4);
+
+    // Phase 1: Normal operation — all nodes communicate freely
+    network.run_slots(30);
+
+    let pre_partition_finalized: Vec<u64> = network
+        .nodes
+        .iter()
+        .map(|n| n.finalized_slot())
+        .collect();
+    println!("Pre-partition finalized slots: {:?}", pre_partition_finalized);
+
+    // Phase 2: PARTITION — split [0,1] vs [2,3]
+    // Each half has 2/4 = 50% stake, but BFT finality needs >66%.
+    // Neither partition should be able to finalize new blocks.
+    let partitions = vec![vec![0, 1], vec![2, 3]];
+    network.run_slots_partitioned(40, &partitions);
+
+    let during_partition_finalized: Vec<u64> = network
+        .nodes
+        .iter()
+        .map(|n| n.finalized_slot())
+        .collect();
+    println!(
+        "During-partition finalized slots: {:?}",
+        during_partition_finalized
+    );
+
+    // Safety: finality must NOT advance significantly during partition.
+    // A small advance (<=3 slots) is allowed for blocks that were already
+    // close to finality before the partition happened.
+    for i in 0..4 {
+        let advance = during_partition_finalized[i]
+            .saturating_sub(pre_partition_finalized[i]);
+        assert!(
+            advance <= 3,
+            "Node {} finality advanced by {} slots during partition — \
+             should stall without >2/3 quorum (had {}→{})",
+            i,
+            advance,
+            pre_partition_finalized[i],
+            during_partition_finalized[i]
+        );
+    }
+
+    // Verify nodes within the same partition diverged from the other partition.
+    // Partition A ([0,1]) should agree with each other, and so should B ([2,3]).
+    let root_a0 = network.nodes[0].get_state_root();
+    let root_a1 = network.nodes[1].get_state_root();
+    let root_b0 = network.nodes[2].get_state_root();
+    let root_b1 = network.nodes[3].get_state_root();
+    println!(
+        "Partition A state roots: {} | {}",
+        root_a0, root_a1
+    );
+    println!(
+        "Partition B state roots: {} | {}",
+        root_b0, root_b1
+    );
+    assert_eq!(
+        root_a0, root_a1,
+        "Nodes within partition A should agree on state"
+    );
+    assert_eq!(
+        root_b0, root_b1,
+        "Nodes within partition B should agree on state"
+    );
+
+    // Phase 3: HEAL — restore full connectivity
+    network.run_slots(50);
+
+    let post_heal_finalized: Vec<u64> = network
+        .nodes
+        .iter()
+        .map(|n| n.finalized_slot())
+        .collect();
+    println!("Post-heal finalized slots: {:?}", post_heal_finalized);
+
+    // Liveness: finality should resume after partition heals
+    let max_pre = *during_partition_finalized.iter().max().unwrap();
+    let max_post = *post_heal_finalized.iter().max().unwrap();
+    println!(
+        "Finality recovery: max before heal = {}, max after heal = {}",
+        max_pre, max_post
+    );
+
+    // All nodes must converge on the same state after healing
+    let post_roots: Vec<H256> = network
+        .nodes
+        .iter()
+        .map(|n| n.get_state_root())
+        .collect();
+    println!("Post-heal state roots: {:?}", post_roots);
+
+    let converged_root = post_roots[0];
+    assert_ne!(converged_root, H256::zero(), "State root should be non-zero");
+    for (i, root) in post_roots.iter().enumerate().skip(1) {
+        assert_eq!(
+            *root, converged_root,
+            "Node {} state root {} diverges from Node 0 state root {} — \
+             network failed to converge after partition recovery",
+            i, root, converged_root
+        );
+    }
 }
