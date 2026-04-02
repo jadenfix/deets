@@ -2,6 +2,66 @@ use aether_types::Address;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Overflow-safe `(a * b) / c` for u128 using u256 intermediate arithmetic.
+/// Returns 0 when `c == 0` (prevents division-by-zero panics in reward distribution).
+///
+/// `saturating_mul(b) / c` silently caps at `u128::MAX` when `a * b` exceeds 2^128,
+/// producing drastically wrong results for large stakes (e.g. trillions of tokens).
+/// This helper widens to 256 bits so the full product is preserved.
+fn mul_div(a: u128, b: u128, c: u128) -> u128 {
+    if c == 0 {
+        return 0;
+    }
+    // Widen to (u128, u128) representing a 256-bit product via long multiplication.
+    // Split each operand into two 64-bit halves to avoid overflow.
+    let a_hi = a >> 64;
+    let a_lo = a & 0xFFFF_FFFF_FFFF_FFFF;
+    let b_hi = b >> 64;
+    let b_lo = b & 0xFFFF_FFFF_FFFF_FFFF;
+
+    let lo_lo = a_lo * b_lo;
+    let hi_lo = a_hi * b_lo;
+    let lo_hi = a_lo * b_hi;
+    let hi_hi = a_hi * b_hi;
+
+    // Accumulate into (high_128, low_128)
+    let mid = hi_lo + (lo_lo >> 64);
+    let mid = mid + lo_hi; // Note: can overflow, carry goes to hi_hi
+    let carry = if mid < lo_hi { 1u128 } else { 0u128 };
+
+    let product_lo = (mid << 64) | (lo_lo & 0xFFFF_FFFF_FFFF_FFFF);
+    let product_hi = hi_hi + (mid >> 64) + carry;
+
+    // Divide 256-bit (product_hi, product_lo) by c using long division.
+    // Since c is u128 and result fits in u128 for our use cases, this is safe.
+    div_256_by_128(product_hi, product_lo, c)
+}
+
+/// Divide a 256-bit number (hi, lo) by a u128 divisor, returning the u128 quotient.
+/// Saturates to u128::MAX if the quotient exceeds 128 bits (shouldn't happen in
+/// our reward/slash calculations since the result is a fraction of the inputs).
+fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> u128 {
+    if hi == 0 {
+        return lo / divisor;
+    }
+    // If hi >= divisor, result > u128::MAX, saturate
+    if hi >= divisor {
+        return u128::MAX;
+    }
+    // Binary long division: we know hi < divisor, so quotient fits in 128 bits.
+    // Process 128 bits of `lo` one bit at a time with `hi` as initial remainder.
+    let mut remainder = hi;
+    let mut quotient: u128 = 0;
+    for i in (0..128).rev() {
+        remainder = (remainder << 1) | ((lo >> i) & 1);
+        if remainder >= divisor {
+            remainder -= divisor;
+            quotient |= 1u128 << i;
+        }
+    }
+    quotient
+}
+
 #[derive(Debug, Error)]
 pub enum StakingError {
     #[error("insufficient stake: minimum is 100 SWR (100_000_000 base units), have {got} base units (min={min})")]
@@ -331,7 +391,7 @@ impl StakingState {
             .iter_mut()
             .filter(|delegation| delegation.validator == validator)
         {
-            let slash = delegation.amount.saturating_mul(slash_rate) / 10000;
+            let slash = mul_div(delegation.amount, slash_rate, 10000);
             let remaining = delegation.amount.saturating_sub(slash);
             delegated_slash =
                 delegated_slash.saturating_add(delegation.amount.saturating_sub(remaining));
@@ -354,7 +414,7 @@ impl StakingState {
             .iter_mut()
             .filter(|u| u.validator == validator)
         {
-            let slash = entry.amount.saturating_mul(slash_rate) / 10000;
+            let slash = mul_div(entry.amount, slash_rate, 10000);
             entry.amount = entry.amount.saturating_sub(slash);
             unbonding_slash = unbonding_slash.saturating_add(slash);
         }
@@ -412,8 +472,8 @@ impl StakingState {
                 continue;
             }
 
-            let validator_reward = epoch_rewards.saturating_mul(total_stake) / self.total_staked;
-            let commission = validator_reward.saturating_mul(*commission_rate as u128) / 10000;
+            let validator_reward = mul_div(epoch_rewards, total_stake, self.total_staked);
+            let commission = mul_div(validator_reward, *commission_rate as u128, 10000);
             let delegator_pool = validator_reward.saturating_sub(commission);
 
             // Credit commission to validator
@@ -430,7 +490,7 @@ impl StakingState {
                 for (idx, delegation) in self.delegations.iter_mut().enumerate() {
                     if delegation.validator == *val_addr && delegation.amount > 0 {
                         let delegator_share =
-                            delegator_pool.saturating_mul(delegation.amount) / delegated_amount;
+                            mul_div(delegator_pool, delegation.amount, *delegated_amount);
                         delegation.amount = delegation.amount.saturating_add(delegator_share);
                         distributed = distributed.saturating_add(delegator_share);
                         total_distributed = total_distributed.saturating_add(delegator_share);
@@ -952,6 +1012,77 @@ mod tests {
         assert!(
             state.unbonding.is_empty(),
             "zero-amount unbonding entries should be pruned"
+        );
+    }
+
+    #[test]
+    fn test_mul_div_basic() {
+        assert_eq!(mul_div(100, 50, 200), 25);
+        assert_eq!(mul_div(0, 100, 200), 0);
+        assert_eq!(mul_div(100, 0, 200), 0);
+        assert_eq!(mul_div(100, 50, 0), 0); // div-by-zero returns 0
+    }
+
+    #[test]
+    fn test_mul_div_large_values_no_overflow() {
+        // Values where saturating_mul would silently cap at u128::MAX
+        let a = u128::MAX / 2;
+        let b = 5000u128; // 50% in basis points
+        let c = 10000u128;
+
+        let result = mul_div(a, b, c);
+        // Expected: (MAX/2) * 5000 / 10000 = (MAX/2) / 2 = MAX/4
+        let expected = a / 2;
+        // Allow rounding error of 1
+        assert!(
+            result == expected || result == expected + 1 || result == expected - 1,
+            "mul_div({a}, {b}, {c}) = {result}, expected ~{expected}"
+        );
+    }
+
+    #[test]
+    fn test_mul_div_extreme_overflow() {
+        // This is the case that broke: two large u128 values whose product exceeds 2^128
+        let a = 1u128 << 100; // ~1.26e30
+        let b = 1u128 << 100;
+        let c = 1u128 << 100;
+        // Expected: (2^100 * 2^100) / 2^100 = 2^100
+        assert_eq!(mul_div(a, b, c), 1u128 << 100);
+    }
+
+    #[test]
+    fn test_reward_distribution_with_huge_stakes() {
+        // Simulate a scenario where epoch_rewards * total_stake overflows u128
+        let mut state = StakingState::new();
+        let val = test_address(1);
+
+        // Register with enormous stake (simulating trillions of tokens)
+        state
+            .register_validator(val, val, 1u128 << 100, 1000, val)
+            .unwrap();
+
+        let original_stake = state.validators[0].staked_amount;
+
+        // Distribute huge rewards
+        let epoch_rewards = 1u128 << 80;
+        state.distribute_rewards(epoch_rewards);
+
+        // The validator has 100% of stake, so should get all rewards as commission
+        // (no delegators, so delegator_pool goes unclaimed but commission = 10%)
+        // With the old saturating_mul, epoch_rewards * total_stake would overflow
+        let validator = &state.validators[0];
+        let total_credited = validator.staked_amount - original_stake;
+        assert!(
+            total_credited > 0,
+            "should distribute rewards even with huge stakes"
+        );
+        // Commission is 10% (1000 bps) of validator_reward.
+        // validator_reward = epoch_rewards * total_stake / total_staked = epoch_rewards (sole validator)
+        // commission = epoch_rewards * 1000 / 10000 = epoch_rewards / 10
+        let expected_commission = epoch_rewards / 10;
+        assert!(
+            total_credited >= expected_commission - 1 && total_credited <= expected_commission + 1,
+            "commission should be ~10% of rewards, got {total_credited}, expected ~{expected_commission}"
         );
     }
 }
