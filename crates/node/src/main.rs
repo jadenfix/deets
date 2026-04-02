@@ -112,12 +112,20 @@ impl RpcBackend for NodeRpcBackend {
     }
 }
 
+/// Maximum network events to drain per tick. Prevents holding the node lock
+/// for an unbounded time when the inbound channel is flooded (e.g., during
+/// initial sync or a message flood from peers). Remaining events are
+/// processed on the next tick.
+const MAX_EVENTS_PER_TICK: usize = 256;
+
 async fn run_slot_loop(
     node: Arc<RwLock<Node>>,
     mut net_rx: mpsc::Receiver<aether_p2p::network::NetworkEvent>,
     slot_ms: u64,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
+    let mut inbound_drops: u64 = 0;
+
     loop {
         // Check for shutdown signal before each tick
         if *shutdown_rx.borrow() {
@@ -125,13 +133,37 @@ async fn run_slot_loop(
             return Ok(());
         }
 
-        // Drain all pending network messages
-        while let Ok(event) = net_rx.try_recv() {
+        // Drain pending network messages, bounded per tick to prevent lock
+        // starvation. If the channel is flooded, remaining events are
+        // deferred to the next tick so slot production stays on schedule.
+        {
             let mut guard = node
                 .write()
                 .map_err(|_| anyhow::anyhow!("node lock poisoned"))?;
-            guard.handle_network_event(event)?;
+            let mut processed = 0usize;
+            while processed < MAX_EVENTS_PER_TICK {
+                match net_rx.try_recv() {
+                    Ok(event) => {
+                        guard.handle_network_event(event)?;
+                        processed += 1;
+                    }
+                    Err(_) => break,
+                }
+            }
+            if processed == MAX_EVENTS_PER_TICK {
+                // We hit the per-tick cap. Remaining events stay in the
+                // bounded channel and will be processed on the next tick.
+                // If the channel is persistently full, the P2P layer's
+                // try_send will start dropping new events at the source.
+                inbound_drops += 1;
+                tracing::warn!(
+                    processed,
+                    backpressure_ticks = inbound_drops,
+                    "Inbound event drain capped — deferring remaining events to next tick"
+                );
+            }
         }
+
         // Tick the node
         {
             let mut guard = node
@@ -158,6 +190,8 @@ async fn run_p2p_outbound(
     net_tx: mpsc::Sender<aether_p2p::network::NetworkEvent>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
+    let mut inbound_event_drops: u64 = 0;
+
     loop {
         tokio::select! {
             // Check for shutdown signal
@@ -169,7 +203,11 @@ async fn run_p2p_outbound(
             event = p2p.poll() => {
                 if let Some(event) = event {
                     if net_tx.try_send(event).is_err() {
-                        tracing::warn!("Inbound P2P channel full, dropping network event");
+                        inbound_event_drops += 1;
+                        tracing::warn!(
+                            total_drops = inbound_event_drops,
+                            "Inbound P2P channel full, dropping network event"
+                        );
                     }
                 }
             }
