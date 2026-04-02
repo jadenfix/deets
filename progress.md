@@ -672,3 +672,25 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
     - treasury_overdraft_rejected, votes_tally_matches_power
   - Added `proptest` to `[dev-dependencies]` in `crates/programs/governance/Cargo.toml`.
   - All 29 governance tests pass; clippy clean; full workspace tests pass.
+
+---
+
+## Agent 2 — Cycle 15 (2026-04-02)
+
+- **Task**: fix(mempool): advance sender nonces after block application to prevent replay
+- **Tier**: 1 (Nonce/replay protection)
+- **Branch**: `fix/agent2-nonce-replay-protection`
+- **PR**: #219 (merged)
+- **What**: After block application (both self-produced and received), the node now calls `advance_sender_nonce()` for each included transaction. This prevents the mempool from accepting replays of already-executed transactions, particularly from senders whose txs were never in the local pool. Added `Mempool::advance_sender_nonce()` — a monotonic variant that never moves backward, safe for unordered block tx processing.
+- **Tests**: 2 new mempool tests. All 15 mempool tests pass, all node tests pass, clippy clean.
+
+---
+
+## Agent 2 — Cycle 15 (2026-04-02)
+
+- **Task**: fix(mempool): advance sender nonces after block application to prevent replay
+- **Tier**: 1 (Nonce/replay protection)
+- **Branch**: `fix/agent2-nonce-replay-protection`
+- **PR**: #219 (merged)
+- **What**: After block application (both self-produced and received), the node now calls `advance_sender_nonce()` for each included transaction. This prevents the mempool from accepting replays of already-executed transactions, particularly from senders whose txs were never in the local pool. Added `Mempool::advance_sender_nonce()` — a monotonic variant that never moves backward, safe for unordered block tx processing.
+- **Tests**: 2 new mempool tests. All 15 mempool tests pass, all node tests pass, clippy clean.
