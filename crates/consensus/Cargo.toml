@@ -21,3 +21,8 @@ sha2 = "0.10"
 
 [dev-dependencies]
 proptest.workspace = true
+criterion = { workspace = true }
+
+[[bench]]
+name = "consensus_bench"
+harness = false
