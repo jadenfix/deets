@@ -67,6 +67,12 @@ struct AetherBehaviour {
 /// Ban duration for misbehaving peers (1 hour).
 const BAN_DURATION_SECS: u64 = 3600;
 
+/// Maximum number of entries in the banned_peers map. Prevents unbounded memory
+/// growth if an attacker rotates PeerIDs to trigger many distinct bans. When the
+/// cap is reached, expired entries are purged first; if still over limit, the
+/// oldest (soonest-to-expire) bans are evicted.
+const MAX_BANNED_PEERS: usize = 4096;
+
 pub struct P2PNetwork {
     swarm: Swarm<AetherBehaviour>,
     local_peer_id: PeerId,
@@ -383,6 +389,10 @@ impl P2PNetwork {
                 self.banned_peers.insert(*peer_id, ban_expiry);
                 let _ = self.swarm.disconnect_peer_id(*peer_id);
                 self.peers.remove(peer_id);
+                // Prevent unbounded growth of the ban list.
+                if self.banned_peers.len() > MAX_BANNED_PEERS {
+                    self.prune_banned_peers();
+                }
             }
         }
     }
@@ -401,6 +411,24 @@ impl P2PNetwork {
             .values()
             .filter(|&&expiry| now < expiry)
             .count()
+    }
+
+    /// Remove expired bans and, if still over capacity, evict oldest bans.
+    fn prune_banned_peers(&mut self) {
+        let now = current_timestamp();
+        // Phase 1: remove all expired bans.
+        self.banned_peers.retain(|_, &mut expiry| expiry > now);
+        // Phase 2: if still over cap, evict soonest-to-expire entries.
+        if self.banned_peers.len() > MAX_BANNED_PEERS {
+            let mut entries: Vec<(PeerId, u64)> =
+                self.banned_peers.iter().map(|(&k, &v)| (k, v)).collect();
+            // Sort by expiry ascending — evict soonest-to-expire first.
+            entries.sort_by_key(|&(_, expiry)| expiry);
+            let to_remove = self.banned_peers.len() - MAX_BANNED_PEERS;
+            for (peer_id, _) in entries.into_iter().take(to_remove) {
+                self.banned_peers.remove(&peer_id);
+            }
+        }
     }
 }
 
@@ -611,6 +639,80 @@ mod tests {
             let result = network.connect_peer(&addr);
             // The dial itself should be accepted (connection will fail async)
             assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_prune_banned_peers_removes_expired() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let now = current_timestamp();
+
+            // Insert some expired and some active bans
+            for _ in 0..10 {
+                network.banned_peers.insert(PeerId::random(), now - 1); // expired
+            }
+            let active_peer = PeerId::random();
+            network.banned_peers.insert(active_peer, now + 3600); // active
+
+            assert_eq!(network.banned_peers.len(), 11);
+            network.prune_banned_peers();
+            // Only the active ban should remain
+            assert_eq!(network.banned_peers.len(), 1);
+            assert!(network.banned_peers.contains_key(&active_peer));
+        });
+    }
+
+    #[test]
+    fn test_prune_banned_peers_evicts_oldest_when_over_cap() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let now = current_timestamp();
+
+            // Fill beyond MAX_BANNED_PEERS with active bans
+            for i in 0..(MAX_BANNED_PEERS + 100) {
+                network
+                    .banned_peers
+                    .insert(PeerId::random(), now + 3600 + i as u64);
+            }
+            assert_eq!(network.banned_peers.len(), MAX_BANNED_PEERS + 100);
+            network.prune_banned_peers();
+            assert_eq!(network.banned_peers.len(), MAX_BANNED_PEERS);
+        });
+    }
+
+    #[test]
+    fn test_ban_list_bounded_via_update_peer_score() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+
+            // Pre-fill banned_peers to just at the cap with expired entries
+            let now = current_timestamp();
+            for _ in 0..MAX_BANNED_PEERS {
+                network.banned_peers.insert(PeerId::random(), now - 1);
+            }
+            assert_eq!(network.banned_peers.len(), MAX_BANNED_PEERS);
+
+            // Add a connected peer and trigger a ban via low score
+            let peer_id = PeerId::random();
+            network.peers.insert(
+                peer_id,
+                PeerInfo {
+                    id: peer_id.to_string(),
+                    address: String::new(),
+                    score: 0,
+                    connected_at: now,
+                },
+            );
+            network.update_peer_score(&peer_id, -101);
+
+            // The new ban is added (len = MAX+1), triggering prune which
+            // removes all expired entries, leaving only the new active ban.
+            assert!(network.is_banned(&peer_id));
+            assert_eq!(network.banned_peers.len(), 1);
         });
     }
 }
