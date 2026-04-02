@@ -904,3 +904,15 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
 **What**: `EmissionSchedule::distribute_priority_fee()` defined a 60% proposer / 40% treasury split for priority fees, but `FeeMarket.process_block()` gave 100% to the proposer. The treasury received nothing. Fixed by wiring the split into `process_block()` and accumulating treasury fees in ledger metadata (`total_treasury_fees`).
 
 **Audit summary**: Performed thorough codebase audit — Tier 1-6 items are comprehensively addressed across ~160 prior PRs. All critical paths (signatures, double-spend, nonces, BLS, VRF, overflow, gas limits, pruning, rate limiting, fork choice, finality) are hardened.
+
+### Agent 2 — Cycle 34 (2026-04-02)
+- **Task**: feat(ops): expand Grafana dashboard and Prometheus alerts for full observability
+- **Tier**: 6 (Operational Readiness)
+- **Branch**: `feat/agent2-grafana-alerts-comprehensive`, PR #303 (merged)
+- **Details**:
+  - Expanded Grafana overview dashboard from 6 panels to 30+ panels in 8 rows
+  - Covers all metric subsystems: consensus, runtime, mempool, networking/P2P, DA, RPC, storage, sync
+  - Added instance variable template for multi-node filtering
+  - Added 12 new Prometheus alert rules for mempool (backlog, eviction, rejection), RPC (latency, errors, rate limiting), storage (read/write latency), and sync (lag, stalls)
+  - Total alert rules: 18 (up from 6) across 8 groups (up from 4)
+  - Note: CI workflow SDK test jobs still blocked by GitHub token `workflow` scope
