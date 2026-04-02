@@ -9,6 +9,10 @@ pub const CF_MERKLE: &str = "merkle_nodes";
 pub const CF_BLOCKS: &str = "blocks";
 pub const CF_RECEIPTS: &str = "receipts";
 pub const CF_METADATA: &str = "metadata";
+/// Tracks spent UTXOs by slot for light-client fraud proofs and audit.
+/// Key: 8-byte big-endian slot + serialized UtxoId. Value: serialized SpentUtxoRecord.
+/// Pruned at epoch boundaries based on retention_epochs.
+pub const CF_SPENT_UTXOS: &str = "spent_utxos";
 
 type DbIterator<'a> = Box<dyn Iterator<Item = (Box<[u8]>, Box<[u8]>)> + 'a>;
 
@@ -42,6 +46,7 @@ impl Storage {
             ColumnFamilyDescriptor::new(CF_BLOCKS, Self::blocks_opts(&block_cache)),
             ColumnFamilyDescriptor::new(CF_RECEIPTS, Self::receipts_opts(&block_cache)),
             ColumnFamilyDescriptor::new(CF_METADATA, Self::metadata_opts(&block_cache)),
+            ColumnFamilyDescriptor::new(CF_SPENT_UTXOS, Self::spent_utxos_opts(&block_cache)),
         ];
 
         let db = DB::open_cf_descriptors(&opts, path, cfs).context("failed to open database")?;
@@ -113,6 +118,17 @@ impl Storage {
         bb.set_block_cache(cache);
         opts.set_block_based_table_factory(&bb);
         opts.set_compression_type(rocksdb::DBCompressionType::Zstd);
+        opts
+    }
+
+    /// Spent UTXOs CF: append-heavy, prefix-scanned by slot during pruning.
+    /// Keys are slot (8-byte BE) + utxo_id, enabling efficient range deletes.
+    fn spent_utxos_opts(cache: &Cache) -> Options {
+        let mut opts = Options::default();
+        let mut bb = BlockBasedOptions::default();
+        bb.set_block_cache(cache);
+        opts.set_block_based_table_factory(&bb);
+        opts.set_compression_type(rocksdb::DBCompressionType::Lz4);
         opts
     }
 
@@ -347,6 +363,46 @@ pub mod pruning {
         let _ = storage;
         Ok(0)
     }
+
+    /// Prune spent-UTXO records for all slots below `min_slot`.
+    ///
+    /// CF_SPENT_UTXOS keys are prefixed with an 8-byte big-endian slot number.
+    /// Iterates all entries, collects those with slot < min_slot, and deletes
+    /// them in a single WriteBatch.  After deletion, compacts CF_SPENT_UTXOS
+    /// and CF_UTXOS to reclaim disk space from tombstones.
+    ///
+    /// Returns the number of spent-UTXO records pruned.
+    pub fn prune_spent_utxos(storage: &Storage, min_slot: u64) -> Result<u64> {
+        let mut batch = StorageBatch::new();
+        let mut count = 0u64;
+
+        // Keys are 8-byte BE slot + utxo_id.  Because they're big-endian,
+        // the iterator returns them in ascending slot order — we can break
+        // early once we pass the threshold.
+        for (key, _) in storage.iterator(CF_SPENT_UTXOS)? {
+            if key.len() < 8 {
+                continue;
+            }
+            let slot_bytes: [u8; 8] = key[..8].try_into().unwrap_or([0; 8]);
+            let slot = u64::from_be_bytes(slot_bytes);
+            if slot >= min_slot {
+                break;
+            }
+            batch.delete(CF_SPENT_UTXOS, key.to_vec());
+            count += 1;
+        }
+
+        if count > 0 {
+            storage.write_batch(batch)?;
+            storage.compact(CF_SPENT_UTXOS)?;
+        }
+
+        // Also compact the UTXO column family to reclaim space from
+        // tombstones left by regular UTXO consumption (spend = delete).
+        storage.compact(CF_UTXOS)?;
+
+        Ok(count)
+    }
 }
 
 #[cfg(test)]
@@ -489,6 +545,49 @@ mod tests {
                 slot
             );
         }
+    }
+
+    #[test]
+    fn test_prune_spent_utxos() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+
+        // Write spent-UTXO records at various slots.
+        // Key format: 8-byte BE slot + arbitrary utxo_id bytes.
+        for slot in 0u64..10 {
+            let mut key = slot.to_be_bytes().to_vec();
+            key.extend_from_slice(&[slot as u8; 16]); // fake utxo_id
+            storage.put(CF_SPENT_UTXOS, &key, b"").unwrap();
+        }
+
+        // Verify all 10 exist
+        let mut count = 0;
+        for _ in storage.iterator(CF_SPENT_UTXOS).unwrap() {
+            count += 1;
+        }
+        assert_eq!(count, 10);
+
+        // Prune slots < 5
+        let pruned = pruning::prune_spent_utxos(&storage, 5).unwrap();
+        assert_eq!(pruned, 5);
+
+        // Verify only slots 5-9 remain
+        let mut remaining_slots = Vec::new();
+        for (key, _) in storage.iterator(CF_SPENT_UTXOS).unwrap() {
+            let slot = u64::from_be_bytes(key[..8].try_into().unwrap());
+            remaining_slots.push(slot);
+        }
+        assert_eq!(remaining_slots, vec![5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_prune_spent_utxos_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+
+        // Pruning an empty CF should return 0 and not error.
+        let pruned = pruning::prune_spent_utxos(&storage, 100).unwrap();
+        assert_eq!(pruned, 0);
     }
 
     #[test]
