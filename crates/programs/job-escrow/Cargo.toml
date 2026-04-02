@@ -18,3 +18,4 @@ aether-crypto-kzg = { path = "../../crypto/kzg", features = ["test-utils"] }
 aether-crypto-primitives = { path = "../../crypto/primitives" }
 aether-verifiers-tee = { path = "../../verifiers/tee" }
 sha2.workspace = true
+proptest = "1"
