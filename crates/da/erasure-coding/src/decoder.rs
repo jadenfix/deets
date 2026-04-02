@@ -206,3 +206,152 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::encoder::ReedSolomonEncoder;
+    use proptest::prelude::*;
+
+    /// Arbitrary (k, r) with small values to keep tests fast.
+    fn arb_k_r() -> impl Strategy<Value = (usize, usize)> {
+        (1usize..=6, 1usize..=4).prop_map(|(k, r)| (k, r))
+    }
+
+    proptest! {
+        /// Encoding then decoding with all shards present returns the original data.
+        #[test]
+        fn roundtrip_full_shards(
+            (k, r) in arb_k_r(),
+            data in prop::collection::vec(any::<u8>(), 1..256),
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let decoder = ReedSolomonDecoder::new(k, r).unwrap();
+            let shards = encoder.encode(&data).unwrap();
+            let with_opts: Vec<_> = shards.into_iter().map(Some).collect();
+            let recovered = decoder.decode(&with_opts).unwrap();
+            prop_assert_eq!(recovered, data, "full-shard roundtrip must be lossless");
+        }
+
+        /// Losing exactly one shard (any shard) still reconstructs the data when r >= 1.
+        #[test]
+        fn recover_with_one_missing_shard(
+            (k, r) in (1usize..=5, 1usize..=3).prop_map(|(k, r)| (k, r)),
+            data in prop::collection::vec(any::<u8>(), 1..200),
+            missing_idx in 0usize..8,
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let decoder = ReedSolomonDecoder::new(k, r).unwrap();
+            let shards = encoder.encode(&data).unwrap();
+            let total = shards.len();
+            let missing = missing_idx % total; // clamp to valid range
+            let mut received: Vec<_> = shards.into_iter().map(Some).collect();
+            received[missing] = None;
+            let recovered = decoder.decode(&received).unwrap();
+            prop_assert_eq!(recovered, data, "one missing shard must be recoverable");
+        }
+
+        /// Losing more than r shards returns an error.
+        #[test]
+        fn too_many_missing_shards_fails(
+            k in 2usize..=6,
+            r in 1usize..=3,
+            data in prop::collection::vec(any::<u8>(), 1..200),
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let decoder = ReedSolomonDecoder::new(k, r).unwrap();
+            let shards = encoder.encode(&data).unwrap();
+            // Drop r+1 consecutive shards — exceeds recovery capacity
+            let missing_count = r + 1;
+            let mut received: Vec<_> = shards.into_iter().map(Some).collect();
+            for slot in received.iter_mut().take(missing_count) {
+                *slot = None;
+            }
+            prop_assert!(
+                decoder.decode(&received).is_err(),
+                "losing {} shards with r={} must fail",
+                missing_count,
+                r
+            );
+        }
+
+        /// Encoded shard count equals k + r.
+        #[test]
+        fn shard_count_is_k_plus_r(
+            (k, r) in arb_k_r(),
+            data in prop::collection::vec(any::<u8>(), 1..200),
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let shards = encoder.encode(&data).unwrap();
+            prop_assert_eq!(shards.len(), k + r, "shard count must equal k+r");
+        }
+
+        /// All shards have the same length.
+        #[test]
+        fn all_shards_same_length(
+            (k, r) in arb_k_r(),
+            data in prop::collection::vec(any::<u8>(), 1..200),
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let shards = encoder.encode(&data).unwrap();
+            let shard_len = shards[0].len();
+            for (i, shard) in shards.iter().enumerate() {
+                prop_assert_eq!(shard.len(), shard_len, "shard {} has different length", i);
+            }
+        }
+
+        /// Data with trailing zero bytes roundtrips exactly (length-prefix invariant).
+        #[test]
+        fn trailing_zeros_preserved(
+            (k, r) in arb_k_r(),
+            prefix in prop::collection::vec(1u8..=255, 1..50),
+            trailing_zeros in 1usize..=16,
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let decoder = ReedSolomonDecoder::new(k, r).unwrap();
+            let mut data = prefix;
+            data.extend(std::iter::repeat(0u8).take(trailing_zeros));
+            let shards = encoder.encode(&data).unwrap();
+            let with_opts: Vec<_> = shards.into_iter().map(Some).collect();
+            let recovered = decoder.decode(&with_opts).unwrap();
+            prop_assert_eq!(recovered, data, "trailing zeros must be preserved exactly");
+        }
+
+        /// Encoding is deterministic: same input always produces same shards.
+        #[test]
+        fn encoding_is_deterministic(
+            (k, r) in arb_k_r(),
+            data in prop::collection::vec(any::<u8>(), 1..200),
+        ) {
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let shards1 = encoder.encode(&data).unwrap();
+            let shards2 = encoder.encode(&data).unwrap();
+            prop_assert_eq!(shards1, shards2, "encoding must be deterministic");
+        }
+
+        /// Different data produces different first data shard (collision resistance spot-check).
+        #[test]
+        fn different_data_different_shards(
+            (k, r) in arb_k_r(),
+            data1 in prop::collection::vec(any::<u8>(), 1..100),
+            data2 in prop::collection::vec(any::<u8>(), 1..100),
+        ) {
+            prop_assume!(data1 != data2);
+            let encoder = ReedSolomonEncoder::new(k, r).unwrap();
+            let shards1 = encoder.encode(&data1).unwrap();
+            let shards2 = encoder.encode(&data2).unwrap();
+            // At least one shard must differ
+            let all_equal = shards1.iter().zip(shards2.iter()).all(|(a, b)| a == b);
+            prop_assert!(!all_equal, "different inputs must produce different shards");
+        }
+
+        /// Decoder config() returns correct (k, r).
+        #[test]
+        fn decoder_config_correct(k in 1usize..=6, r in 1usize..=4) {
+            let decoder = ReedSolomonDecoder::new(k, r).unwrap();
+            let (dk, dr) = decoder.shard_config();
+            prop_assert_eq!(dk, k);
+            prop_assert_eq!(dr, r);
+        }
+    }
+}

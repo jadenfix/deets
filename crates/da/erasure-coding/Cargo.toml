@@ -10,3 +10,6 @@ keywords = ["aether", "erasure-coding", "reed-solomon", "da"]
 anyhow.workspace = true
 reed-solomon-erasure = "6"
 
+[dev-dependencies]
+proptest.workspace = true
+
