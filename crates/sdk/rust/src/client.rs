@@ -1,9 +1,10 @@
 use aether_types::Transaction;
-use anyhow::{anyhow, Context, Result};
+use anyhow::Context;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use crate::error::AetherSdkError;
 use crate::job_builder::JobBuilder;
 use crate::transaction_builder::TransferBuilder;
 use crate::types::{ClientConfig, JobRequest, JobSubmission, SubmitResponse};
@@ -52,15 +53,23 @@ impl AetherClient {
     }
 
     /// Submit a signed transaction to the network.
-    pub async fn submit(&self, tx: Transaction) -> Result<SubmitResponse> {
-        tx.verify_signature()?;
+    ///
+    /// Returns a typed [`AetherSdkError`] so callers can match on specific
+    /// failure modes (invalid signature, network I/O, RPC error, hash
+    /// mismatch, …) without string inspection.
+    pub async fn submit(&self, tx: Transaction) -> Result<SubmitResponse, AetherSdkError> {
+        tx.verify_signature()
+            .map_err(|e| AetherSdkError::InvalidSignature(e.to_string()))?;
         let fee_params = aether_types::ChainConfig::devnet().fees;
-        tx.calculate_fee(&fee_params)?;
+        tx.calculate_fee(&fee_params)
+            .map_err(|e| AetherSdkError::InvalidFee(e.to_string()))?;
 
         let tx_hash = tx.hash();
-        let payload = SubmitRpcRequest::new(tx)?;
+        let payload =
+            SubmitRpcRequest::new(tx).map_err(AetherSdkError::serialization)?;
         let endpoint = HttpEndpoint::parse(&self.endpoint)?;
-        let body = serde_json::to_vec(&payload).context("failed to encode rpc request body")?;
+        let body =
+            serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             endpoint.path,
@@ -76,41 +85,58 @@ impl AetherClient {
 
         let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
             .await
-            .with_context(|| format!("failed to submit transaction to {}", self.endpoint))?;
+            .map_err(|e| {
+                AetherSdkError::network(format!(
+                    "failed to submit transaction to {}: {e}",
+                    self.endpoint
+                ))
+            })?;
         stream
             .write_all(&payload_buf)
             .await
-            .context("failed to write rpc request")?;
+            .map_err(|e| AetherSdkError::network(format!("failed to write rpc request: {e}")))?;
 
         let mut raw = Vec::new();
         stream
             .read_to_end(&mut raw)
             .await
-            .context("failed to read rpc response")?;
-        let response_text = String::from_utf8(raw).context("rpc response was not valid utf-8")?;
+            .map_err(|e| {
+                AetherSdkError::network(format!("failed to read rpc response: {e}"))
+            })?;
+        let response_text = String::from_utf8(raw).map_err(|_| {
+            AetherSdkError::invalid_response("rpc response was not valid utf-8")
+        })?;
         let (status_line, rpc_body) = parse_http_response(&response_text)?;
         if !status_line.contains(" 200 ") {
-            return Err(anyhow!("rpc returned non-success status: {status_line}"));
+            return Err(AetherSdkError::invalid_response(format!(
+                "rpc returned non-success status: {status_line}"
+            )));
         }
 
         let response: JsonRpcResponse<String> =
-            serde_json::from_str(rpc_body).context("failed to decode rpc response body")?;
+            serde_json::from_str(rpc_body).map_err(|e| {
+                AetherSdkError::invalid_response(format!(
+                    "failed to decode rpc response body: {e}"
+                ))
+            })?;
 
         if let Some(error) = response.error {
-            return Err(anyhow!("rpc error {}: {}", error.code, error.message));
+            return Err(AetherSdkError::Rpc {
+                code: error.code,
+                message: error.message,
+            });
         }
 
         let result_hash = response
             .result
-            .ok_or_else(|| anyhow!("rpc response missing result"))?;
+            .ok_or_else(|| AetherSdkError::invalid_response("rpc response missing result"))?;
         let returned_hash = parse_h256_hex(&result_hash)?;
 
         if returned_hash != tx_hash {
-            return Err(anyhow!(
-                "rpc returned mismatched tx hash: expected {:?}, got {:?}",
-                tx_hash,
-                returned_hash
-            ));
+            return Err(AetherSdkError::TxHashMismatch {
+                expected: format!("{tx_hash:?}"),
+                got: format!("{returned_hash:?}"),
+            });
         }
 
         Ok(SubmitResponse {
@@ -139,7 +165,7 @@ struct SubmitRpcRequest {
 }
 
 impl SubmitRpcRequest {
-    fn new(tx: Transaction) -> Result<Self> {
+    fn new(tx: Transaction) -> anyhow::Result<Self> {
         let bytes = bincode::serialize(&tx).context("failed to serialize transaction")?;
         Ok(Self {
             jsonrpc: "2.0",
@@ -162,6 +188,7 @@ struct JsonRpcError {
     message: String,
 }
 
+#[derive(Debug)]
 struct HttpEndpoint {
     host: String,
     port: u16,
@@ -169,11 +196,13 @@ struct HttpEndpoint {
 }
 
 impl HttpEndpoint {
-    fn parse(endpoint: &str) -> Result<Self> {
+    fn parse(endpoint: &str) -> Result<Self, AetherSdkError> {
         let trimmed = endpoint.trim();
-        let without_scheme = trimmed
-            .strip_prefix("http://")
-            .ok_or_else(|| anyhow!("only http:// endpoints are supported, got: {trimmed}"))?;
+        let without_scheme = trimmed.strip_prefix("http://").ok_or_else(|| {
+            AetherSdkError::invalid_endpoint(format!(
+                "only http:// endpoints are supported, got: {trimmed}"
+            ))
+        })?;
 
         let (host_port, path) = if let Some((h, p)) = without_scheme.split_once('/') {
             (h, format!("/{}", p))
@@ -182,20 +211,26 @@ impl HttpEndpoint {
         };
 
         if host_port.is_empty() {
-            return Err(anyhow!("invalid endpoint host: {endpoint}"));
+            return Err(AetherSdkError::invalid_endpoint(format!(
+                "invalid endpoint host: {endpoint}"
+            )));
         }
 
         let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
-            let parsed_port = p
-                .parse::<u16>()
-                .with_context(|| format!("invalid endpoint port in {endpoint}"))?;
+            let parsed_port = p.parse::<u16>().map_err(|_| {
+                AetherSdkError::invalid_endpoint(format!(
+                    "invalid endpoint port in {endpoint}"
+                ))
+            })?;
             (h.to_string(), parsed_port)
         } else {
             (host_port.to_string(), 80)
         };
 
         if host.is_empty() {
-            return Err(anyhow!("invalid endpoint host: {endpoint}"));
+            return Err(AetherSdkError::invalid_endpoint(format!(
+                "invalid endpoint host: {endpoint}"
+            )));
         }
 
         Ok(Self { host, port, path })
@@ -210,21 +245,23 @@ impl HttpEndpoint {
     }
 }
 
-fn parse_http_response(response: &str) -> Result<(&str, &str)> {
-    let (headers, body) = response
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| anyhow!("invalid http response from rpc endpoint"))?;
+fn parse_http_response(response: &str) -> Result<(&str, &str), AetherSdkError> {
+    let (headers, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
+        AetherSdkError::invalid_response("invalid http response from rpc endpoint")
+    })?;
     let status_line = headers
         .lines()
         .next()
-        .ok_or_else(|| anyhow!("missing http status line"))?;
+        .ok_or_else(|| AetherSdkError::invalid_response("missing http status line"))?;
     Ok((status_line, body))
 }
 
-fn parse_h256_hex(value: &str) -> Result<aether_types::H256> {
-    let bytes = hex::decode(value.trim_start_matches("0x"))
-        .with_context(|| format!("invalid tx hash hex: {value}"))?;
-    aether_types::H256::from_slice(&bytes).map_err(|e| anyhow!("invalid tx hash: {e}"))
+fn parse_h256_hex(value: &str) -> Result<aether_types::H256, AetherSdkError> {
+    let bytes = hex::decode(value.trim_start_matches("0x")).map_err(|_| {
+        AetherSdkError::invalid_response(format!("invalid tx hash hex: {value}"))
+    })?;
+    aether_types::H256::from_slice(&bytes)
+        .map_err(|e| AetherSdkError::invalid_response(format!("invalid tx hash: {e}")))
 }
 
 #[cfg(test)]
@@ -282,6 +319,10 @@ mod tests {
         tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
 
         let err = client.submit(tx).await.unwrap_err();
+        assert!(
+            matches!(err, AetherSdkError::Network(_)),
+            "expected Network error, got: {err}"
+        );
         assert!(err.to_string().contains("failed to submit transaction"));
     }
 
@@ -316,5 +357,46 @@ mod tests {
 
         let prepared = client.prepare_job_submission(submission.body.clone());
         assert_eq!(prepared, submission);
+    }
+
+    #[test]
+    fn submit_rejects_invalid_signature() {
+        // Verify that a bad signature produces AetherSdkError::InvalidSignature,
+        // not a generic anyhow error — callers can now match on the variant.
+        let client = AetherClient::new("http://localhost:8545");
+        let keypair = Keypair::generate();
+        let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
+        let sender = sender_pubkey.to_address();
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender,
+            sender_pubkey,
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 500_000,
+            fee: 2_000_000,
+            // Deliberately wrong: all-zero bytes, not a valid signature.
+            signature: Signature::from_bytes(vec![0; 64]),
+        };
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let err = rt.block_on(client.submit(tx)).unwrap_err();
+        assert!(
+            matches!(err, AetherSdkError::InvalidSignature(_)),
+            "expected InvalidSignature, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_invalid_endpoint_scheme() {
+        let err = HttpEndpoint::parse("https://localhost:8545").unwrap_err();
+        assert!(matches!(err, AetherSdkError::InvalidEndpoint(_)));
     }
 }

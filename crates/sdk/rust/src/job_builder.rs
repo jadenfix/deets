@@ -1,7 +1,7 @@
 use aether_types::H256;
-use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+use crate::error::AetherSdkError;
 use crate::types::{JobRequest, JobSubmission};
 
 /// Builder for constructing AI job submissions.
@@ -29,10 +29,10 @@ impl JobBuilder {
     }
 
     /// Set the unique job identifier. Returns an error if the ID is empty.
-    pub fn job_id(mut self, job_id: impl Into<String>) -> Result<Self> {
+    pub fn job_id(mut self, job_id: impl Into<String>) -> Result<Self, AetherSdkError> {
         let job_id = job_id.into();
         if job_id.trim().is_empty() {
-            return Err(anyhow!("job_id must not be empty"));
+            return Err(AetherSdkError::build("job_id must not be empty"));
         }
         self.job_id = Some(job_id);
         Ok(self)
@@ -73,20 +73,20 @@ impl JobBuilder {
     }
 
     /// Validate and build the job request.
-    pub fn build(&self) -> Result<JobRequest> {
+    pub fn build(&self) -> Result<JobRequest, AetherSdkError> {
         let job_id = self
             .job_id
             .clone()
-            .ok_or_else(|| anyhow!("job_id not set"))?;
+            .ok_or_else(|| AetherSdkError::build("job_id not set"))?;
         let model_hash = self
             .model_hash
-            .ok_or_else(|| anyhow!("model_hash not set"))?;
+            .ok_or_else(|| AetherSdkError::build("model_hash not set"))?;
         let input_hash = self
             .input_hash
-            .ok_or_else(|| anyhow!("input_hash not set"))?;
+            .ok_or_else(|| AetherSdkError::build("input_hash not set"))?;
         let expires_at = self
             .expires_at
-            .ok_or_else(|| anyhow!("expires_at not set"))?;
+            .ok_or_else(|| AetherSdkError::build("expires_at not set"))?;
 
         Ok(JobRequest {
             job_id,
@@ -99,7 +99,7 @@ impl JobBuilder {
     }
 
     /// Build the job and wrap it in a ready-to-send submission payload.
-    pub fn to_submission(&self) -> Result<JobSubmission> {
+    pub fn to_submission(&self) -> Result<JobSubmission, AetherSdkError> {
         let job = self.build()?;
         Ok(JobSubmission {
             url: format!("{}/v1/jobs", self.endpoint),
