@@ -13,3 +13,6 @@ blake3.workspace = true
 thiserror.workspace = true
 rand = "0.8"
 rayon = "1"
+
+[dev-dependencies]
+proptest = "1"
