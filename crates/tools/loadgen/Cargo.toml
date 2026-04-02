@@ -16,3 +16,6 @@ hex = "0.4"
 
 aether-types = { path = "../../types" }
 aether-crypto-primitives = { path = "../../crypto/primitives" }
+
+[dev-dependencies]
+proptest = "1"

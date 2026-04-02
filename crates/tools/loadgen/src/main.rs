@@ -271,3 +271,144 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // --- HttpEndpoint::parse property tests ---
+
+    proptest! {
+        #[test]
+        fn endpoint_parse_preserves_host(host in "[a-z][a-z0-9]{0,20}", port in 1u16..=65535) {
+            let url = format!("http://{}:{}/rpc", host, port);
+            let ep = HttpEndpoint::parse(&url).unwrap();
+            prop_assert_eq!(ep.host, host);
+            prop_assert_eq!(ep.port, port);
+            prop_assert_eq!(ep.path, "/rpc");
+        }
+
+        #[test]
+        fn endpoint_parse_default_port_80(host in "[a-z][a-z0-9]{0,20}") {
+            let url = format!("http://{}/api", host);
+            let ep = HttpEndpoint::parse(&url).unwrap();
+            prop_assert_eq!(ep.port, 80);
+        }
+
+        #[test]
+        fn endpoint_parse_rejects_non_http(scheme in "(https|ftp|ws)") {
+            let url = format!("{}://localhost:8080/rpc", scheme);
+            prop_assert!(HttpEndpoint::parse(&url).is_err());
+        }
+
+        #[test]
+        fn endpoint_host_header_includes_port_when_not_80(
+            host in "[a-z]{1,10}",
+            port in 1u16..=65534
+        ) {
+            let port = if port == 80 { 81 } else { port };
+            let url = format!("http://{}:{}/", host, port);
+            let ep = HttpEndpoint::parse(&url).unwrap();
+            prop_assert!(ep.host_header().contains(':'));
+        }
+
+        #[test]
+        fn endpoint_host_header_omits_port_80(host in "[a-z]{1,10}") {
+            let url = format!("http://{}/", host);
+            let ep = HttpEndpoint::parse(&url).unwrap();
+            prop_assert!(!ep.host_header().contains(':'));
+        }
+
+        // --- WorkloadProfile ---
+
+        #[test]
+        fn workload_profile_mixed_roundtrip(s in "mixed") {
+            match WorkloadProfile::from_str(&s) {
+                WorkloadProfile::Mixed => {}
+                _ => prop_assert!(false, "expected Mixed"),
+            }
+        }
+
+        #[test]
+        fn workload_profile_defaults_to_transfer(s in "[a-z]{0,20}") {
+            prop_assume!(s != "mixed");
+            match WorkloadProfile::from_str(&s) {
+                WorkloadProfile::Transfer => {}
+                _ => prop_assert!(false, "expected Transfer"),
+            }
+        }
+
+        // --- parse_http_response ---
+
+        #[test]
+        fn parse_http_response_splits_correctly(
+            status in "HTTP/1\\.[01] [0-9]{3} [A-Z]+",
+            body in "[a-zA-Z0-9 ]{0,50}"
+        ) {
+            let response = format!("{}\r\nContent-Type: text/plain\r\n\r\n{}", status, body);
+            let (status_line, parsed_body) = parse_http_response(&response).unwrap();
+            prop_assert!(status_line.starts_with("HTTP/"));
+            prop_assert_eq!(parsed_body, body.as_str());
+        }
+
+        #[test]
+        fn parse_http_response_rejects_no_separator(data in "[a-zA-Z0-9]{1,100}") {
+            prop_assume!(!data.contains("\r\n\r\n"));
+            prop_assert!(parse_http_response(&data).is_err());
+        }
+
+        // --- generate_transfer ---
+
+        #[test]
+        fn generate_transfer_nonce_preserved(nonce in 0u64..1_000_000) {
+            let key = Keypair::generate();
+            let recipient = PublicKey::from_bytes(Keypair::generate().public_key()).to_address();
+            let tx = generate_transfer(&key, recipient, nonce).unwrap();
+            prop_assert_eq!(tx.nonce, nonce);
+        }
+
+        #[test]
+        fn generate_transfer_sender_matches_key(nonce in 0u64..100) {
+            let key = Keypair::generate();
+            let expected = PublicKey::from_bytes(key.public_key()).to_address();
+            let recipient = PublicKey::from_bytes(Keypair::generate().public_key()).to_address();
+            let tx = generate_transfer(&key, recipient, nonce).unwrap();
+            prop_assert_eq!(tx.sender, expected);
+        }
+
+        #[test]
+        fn generate_transfer_rw_sets_include_sender_and_recipient(nonce in 0u64..100) {
+            let key = Keypair::generate();
+            let sender = PublicKey::from_bytes(key.public_key()).to_address();
+            let recipient = PublicKey::from_bytes(Keypair::generate().public_key()).to_address();
+            let tx = generate_transfer(&key, recipient, nonce).unwrap();
+            prop_assert!(tx.reads.contains(&sender));
+            prop_assert!(tx.writes.contains(&sender));
+            prop_assert!(tx.writes.contains(&recipient));
+        }
+
+        #[test]
+        fn generate_transfer_signature_nonempty(nonce in 0u64..100) {
+            let key = Keypair::generate();
+            let recipient = PublicKey::from_bytes(Keypair::generate().public_key()).to_address();
+            let tx = generate_transfer(&key, recipient, nonce).unwrap();
+            prop_assert!(!tx.signature.as_bytes().is_empty());
+        }
+
+        // --- RunStats ---
+
+        #[test]
+        fn run_stats_tps_nonnegative(sent in 0u64..1_000_000, ok in 0u64..1_000_000, err_count in 0u64..1_000_000, secs in 1u64..3600) {
+            let stats = RunStats {
+                total_sent: sent,
+                total_ok: ok,
+                total_err: err_count,
+                elapsed: Duration::from_secs(secs),
+            };
+            let tps = stats.total_sent as f64 / stats.elapsed.as_secs_f64();
+            prop_assert!(tps >= 0.0);
+            prop_assert!(tps.is_finite());
+        }
+    }
+}
