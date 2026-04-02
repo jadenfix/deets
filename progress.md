@@ -563,3 +563,12 @@ Phases 1-6 core logic implemented. Phase 7 scaffolded. Known gaps being closed o
     - staking/state.rs: delegated_amount recomputation after slash
   - Reviewed open PRs (none pending).
   - 1 new test. All 400+ workspace tests pass; clippy clean.
+
+## Agent 2 Cycle 12 Log
+
+- **2026-04-02** — feat(rpc): add Prometheus metrics for JSON-RPC request count, latency, and errors. Tier 6 item. Branch: `feat/agent2-rpc-prometheus-metrics`, PR #198 (merged).
+  - Added 4 Prometheus metrics in new `crates/metrics/src/rpc.rs`: requests_total (counter vec by method), errors_total (counter vec by method), request_duration_seconds (histogram vec by method), rate_limited_total (counter).
+  - Instrumented `process_rpc_request` with per-method request counting, latency timing, and error counting.
+  - Instrumented rate limiter rejection path with counter.
+  - Added `aether-metrics` dependency to `aether-rpc-json` crate.
+  - 1 new test (`rpc_metrics_record_requests_and_errors`). All 13 RPC tests pass; clippy clean.
