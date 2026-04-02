@@ -14,6 +14,50 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// Overflow-safe (a * b) / c using 256-bit intermediate product.
+fn mul_div(a: u128, b: u128, c: u128) -> u128 {
+    if c == 0 {
+        return 0;
+    }
+    let a_hi = a >> 64;
+    let a_lo = a & 0xFFFF_FFFF_FFFF_FFFF;
+    let b_hi = b >> 64;
+    let b_lo = b & 0xFFFF_FFFF_FFFF_FFFF;
+
+    let lo_lo = a_lo * b_lo;
+    let hi_lo = a_hi * b_lo;
+    let lo_hi = a_lo * b_hi;
+    let hi_hi = a_hi * b_hi;
+
+    let mid = hi_lo + (lo_lo >> 64);
+    let mid = mid + lo_hi;
+    let carry = if mid < lo_hi { 1u128 } else { 0u128 };
+
+    let product_lo = (mid << 64) | (lo_lo & 0xFFFF_FFFF_FFFF_FFFF);
+    let product_hi = hi_hi + (mid >> 64) + carry;
+
+    div_256_by_128(product_hi, product_lo, c)
+}
+
+fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> u128 {
+    if hi == 0 {
+        return lo / divisor;
+    }
+    if hi >= divisor {
+        return u128::MAX;
+    }
+    let mut remainder = hi;
+    let mut quotient: u128 = 0;
+    for i in (0..128).rev() {
+        remainder = (remainder << 1) | ((lo >> i) & 1);
+        if remainder >= divisor {
+            remainder -= divisor;
+            quotient |= 1u128 << i;
+        }
+    }
+    quotient
+}
+
 /// HotStuff consensus phases
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Phase {
@@ -787,7 +831,7 @@ impl ConsensusEngine for HybridConsensus {
 
     fn slash_validator(&mut self, address: &Address, slash_bps: u128) -> u128 {
         if let Some(validator) = self.validators.get_mut(address) {
-            let slash_amount = validator.stake.saturating_mul(slash_bps) / 10000;
+            let slash_amount = mul_div(validator.stake, slash_bps, 10000);
             validator.stake = validator.stake.saturating_sub(slash_amount);
             self.total_stake = self.total_stake.saturating_sub(slash_amount);
             slash_amount
@@ -1940,6 +1984,45 @@ mod tests {
         assert!(
             consensus.validate_block(&block).is_err(),
             "should reject: unknown parent defaults to slot 0 < locked slot 3"
+        );
+    }
+
+    #[test]
+    fn test_slash_validator_no_overflow_large_stake() {
+        // Regression: saturating_mul(slash_bps) overflowed for large stakes,
+        // producing u128::MAX instead of the correct slash amount.
+        let large_stake = u128::MAX / 2;
+        let v = create_test_validator(large_stake);
+        let addr = v.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v], 0.8, 100, None, None, None);
+
+        let slashed = consensus.slash_validator(&addr, 500); // 5%
+        let expected = large_stake / 20; // exact 5%
+        // Allow ±1 for rounding
+        assert!(
+            slashed >= expected - 1 && slashed <= expected + 1,
+            "expected ~{expected}, got {slashed}"
+        );
+
+        let remaining = consensus.validators.get(&addr).unwrap().stake;
+        assert_eq!(remaining, large_stake - slashed);
+    }
+
+    #[test]
+    fn test_slash_validator_full_range() {
+        // Verify slash produces correct result at u128::MAX stake
+        let stake = u128::MAX;
+        let v = create_test_validator(stake);
+        let addr = v.pubkey.to_address();
+        let mut consensus = HybridConsensus::new(vec![v], 0.8, 100, None, None, None);
+
+        let slashed = consensus.slash_validator(&addr, 500);
+        // Old code: saturating_mul(500) = u128::MAX, then / 10000 = u128::MAX / 10000 ≈ 0.01%
+        // Correct: mul_div(u128::MAX, 500, 10000) = 5% of u128::MAX
+        let wrong_old_value = u128::MAX / 10000;
+        assert!(
+            slashed > wrong_old_value,
+            "slash {slashed} should be much larger than old wrong value {wrong_old_value}"
         );
     }
 }
