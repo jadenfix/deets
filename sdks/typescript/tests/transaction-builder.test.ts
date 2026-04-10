@@ -118,3 +118,127 @@ test("slot query reads from RPC", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("getBlockByHash calls aeth_getBlockByHash", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  const fakeHash = "0x" + "ab".repeat(32);
+  const fakeBlock = { header: { slot: 7, timestamp: 1000, proposer: null }, transactions: [] };
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.method, "aeth_getBlockByHash");
+      assert.equal(payload.params[0], fakeHash);
+      assert.equal(payload.params[1], true);
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: fakeBlock }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const block = await client.getBlockByHash(fakeHash);
+    assert.deepEqual(block, fakeBlock);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getBlockByHash returns null for unknown hash", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: null }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const block = await client.getBlockByHash("0x" + "00".repeat(32));
+    assert.equal(block, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getStateRoot calls aeth_getStateRoot without blockRef", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  const fakeRoot = "0x" + "cc".repeat(32);
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.method, "aeth_getStateRoot");
+      assert.deepEqual(payload.params, []);
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: fakeRoot }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const root = await client.getStateRoot();
+    assert.equal(root, fakeRoot);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getStateRoot passes blockRef when provided", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.method, "aeth_getStateRoot");
+      assert.deepEqual(payload.params, ["42"]);
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: "0x" + "dd".repeat(32) }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const root = await client.getStateRoot("42");
+    assert.equal(root, "0x" + "dd".repeat(32));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getHealth fetches /health endpoint", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  const fakeHealth = {
+    status: "ok",
+    version: "0.1.0",
+    latestSlot: 100,
+    finalizedSlot: 95,
+    peerCount: 3,
+    sync: { syncing: false },
+  };
+  try {
+    globalThis.fetch = async (input, _init) => {
+      assert.ok(
+        String(input).endsWith("/health"),
+        `expected /health URL, got: ${input}`,
+      );
+      return new Response(JSON.stringify(fakeHealth), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const health = await client.getHealth();
+    assert.equal(health.status, "ok");
+    assert.equal(health.latestSlot, 100);
+    assert.equal(health.finalizedSlot, 95);
+    assert.equal(health.peerCount, 3);
+    assert.equal(health.sync.syncing, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getHealth throws on non-200 status", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  try {
+    globalThis.fetch = async () =>
+      new Response("Service Unavailable", { status: 503 });
+    await assert.rejects(
+      () => client.getHealth(),
+      /health check failed with status 503/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
