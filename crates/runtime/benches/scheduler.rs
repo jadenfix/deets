@@ -32,9 +32,7 @@ fn make_tx(reads: &[u8], writes: &[u8]) -> Transaction {
 
 /// Non-conflicting transactions: each writes to a unique address.
 fn independent_txs(n: usize) -> Vec<Transaction> {
-    (0..n)
-        .map(|i| make_tx(&[], &[(i % 256) as u8]))
-        .collect()
+    (0..n).map(|i| make_tx(&[], &[(i % 256) as u8])).collect()
 }
 
 /// Fully conflicting: all transactions write to address 0.
@@ -60,22 +58,14 @@ fn bench_schedule(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("schedule");
     for size in [10, 50, 100, 500] {
-        group.bench_with_input(
-            BenchmarkId::new("independent", size),
-            &size,
-            |b, &size| {
-                let txs = independent_txs(size);
-                b.iter(|| black_box(scheduler.schedule(black_box(&txs))));
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("conflicting", size),
-            &size,
-            |b, &size| {
-                let txs = conflicting_txs(size);
-                b.iter(|| black_box(scheduler.schedule(black_box(&txs))));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("independent", size), &size, |b, &size| {
+            let txs = independent_txs(size);
+            b.iter(|| black_box(scheduler.schedule(black_box(&txs))));
+        });
+        group.bench_with_input(BenchmarkId::new("conflicting", size), &size, |b, &size| {
+            let txs = conflicting_txs(size);
+            b.iter(|| black_box(scheduler.schedule(black_box(&txs))));
+        });
         group.bench_with_input(BenchmarkId::new("chain", size), &size, |b, &size| {
             let txs = chain_txs(size);
             b.iter(|| black_box(scheduler.schedule(black_box(&txs))));
@@ -141,22 +131,14 @@ fn bench_speedup_estimate(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("speedup_estimate");
     for size in [10, 50, 100] {
-        group.bench_with_input(
-            BenchmarkId::new("independent", size),
-            &size,
-            |b, &size| {
-                let txs = independent_txs(size);
-                b.iter(|| black_box(scheduler.speedup_estimate(black_box(&txs))));
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("conflicting", size),
-            &size,
-            |b, &size| {
-                let txs = conflicting_txs(size);
-                b.iter(|| black_box(scheduler.speedup_estimate(black_box(&txs))));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("independent", size), &size, |b, &size| {
+            let txs = independent_txs(size);
+            b.iter(|| black_box(scheduler.speedup_estimate(black_box(&txs))));
+        });
+        group.bench_with_input(BenchmarkId::new("conflicting", size), &size, |b, &size| {
+            let txs = conflicting_txs(size);
+            b.iter(|| black_box(scheduler.speedup_estimate(black_box(&txs))));
+        });
     }
     group.finish();
 }

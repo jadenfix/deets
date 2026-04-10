@@ -17,9 +17,7 @@ fn setup_governance(num_voters: usize) -> GovernanceState {
         let a = addr(i as u8 + 1);
         gov.voting_power.insert(a, 10_000_000_000_000);
         gov.effective_power.insert(a, 10_000_000_000_000);
-        gov.total_voting_power = gov
-            .total_voting_power
-            .saturating_add(10_000_000_000_000);
+        gov.total_voting_power = gov.total_voting_power.saturating_add(10_000_000_000_000);
     }
     gov
 }
@@ -77,8 +75,7 @@ fn bench_vote(c: &mut Criterion) {
                         .unwrap();
                         // Cast existing votes
                         for i in 0..existing_votes {
-                            gov.vote(prop_id(1), addr(i as u8 + 1), true, 1500)
-                                .unwrap();
+                            gov.vote(prop_id(1), addr(i as u8 + 1), true, 1500).unwrap();
                         }
                         (gov, existing_votes)
                     },
@@ -116,14 +113,11 @@ fn bench_finalize(c: &mut Criterion) {
                         )
                         .unwrap();
                         for i in 0..num_voters {
-                            gov.vote(prop_id(1), addr(i as u8 + 1), true, 1500)
-                                .unwrap();
+                            gov.vote(prop_id(1), addr(i as u8 + 1), true, 1500).unwrap();
                         }
                         gov
                     },
-                    |mut gov| {
-                        black_box(gov.finalize(prop_id(1), 200_000))
-                    },
+                    |mut gov| black_box(gov.finalize(prop_id(1), 200_000)),
                     criterion::BatchSize::SmallInput,
                 );
             },
@@ -136,9 +130,7 @@ fn bench_delegate(c: &mut Criterion) {
     c.bench_function("governance/delegate_50_voters", |b| {
         b.iter_batched(
             || setup_governance(50),
-            |mut gov| {
-                black_box(gov.delegate(addr(50), addr(1)))
-            },
+            |mut gov| black_box(gov.delegate(addr(50), addr(1))),
             criterion::BatchSize::SmallInput,
         );
     });

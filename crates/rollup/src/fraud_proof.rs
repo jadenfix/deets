@@ -143,8 +143,7 @@ impl FraudProofVerifier {
         // that the result matches the challenger's claimed correct_post_state_root.
         // This is the critical check that prevents a challenger from fabricating
         // a fraud proof by supplying an arbitrary correct_post_state_root.
-        let computed_post_state = match executor.re_execute(&proof.pre_state_root, &proof.tx_data)
-        {
+        let computed_post_state = match executor.re_execute(&proof.pre_state_root, &proof.tx_data) {
             Ok(root) => root,
             Err(reason) => {
                 return FraudProofResult::Invalid {
@@ -160,9 +159,7 @@ impl FraudProofVerifier {
         }
 
         // Re-execution confirms the sequencer's post_state_root was wrong.
-        let reward = sequencer_bond
-            .saturating_mul(self.challenger_reward_pct as u128)
-            / 100;
+        let reward = sequencer_bond.saturating_mul(self.challenger_reward_pct as u128) / 100;
 
         FraudProofResult::Valid {
             slashed_sequencer: *sequencer,
@@ -323,10 +320,8 @@ mod tests {
             &executor,
         );
 
-        assert!(
-            matches!(result, FraudProofResult::Invalid { reason } if
-                reason.contains("re-executed post-state root does not match challenger's claim"))
-        );
+        assert!(matches!(result, FraudProofResult::Invalid { reason } if
+                reason.contains("re-executed post-state root does not match challenger's claim")));
     }
 
     #[test]

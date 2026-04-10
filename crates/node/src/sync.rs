@@ -1,4 +1,4 @@
-use aether_types::{Block, H256, Slot};
+use aether_types::{Block, Slot, H256};
 use std::time::{Duration, Instant};
 
 /// Maximum blocks to buffer during sync to prevent OOM.
@@ -142,8 +142,7 @@ impl SyncManager {
             let block = &remaining[0];
             // Validate parent hash chain for continuation blocks too.
             if let Some(expected) = self.expected_parent_hash {
-                if block.header.parent_hash != expected
-                    && block.header.parent_hash != H256::zero()
+                if block.header.parent_hash != expected && block.header.parent_hash != H256::zero()
                 {
                     break;
                 }
@@ -167,9 +166,7 @@ impl SyncManager {
         };
 
         // Don't request if we're still waiting for the current batch
-        if self.current_batch_end >= self.next_expected_slot
-            && !self.sync_buffer.is_empty()
-        {
+        if self.current_batch_end >= self.next_expected_slot && !self.sync_buffer.is_empty() {
             return None;
         }
 

@@ -23,12 +23,7 @@ use serde::{Deserialize, Serialize};
 pub trait AccountValidator {
     /// Validate that `signature` is a valid authorization for the
     /// operation identified by `op_hash`, sent by `sender`.
-    fn validate_signature(
-        &self,
-        sender: &Address,
-        op_hash: &H256,
-        signature: &[u8],
-    ) -> Result<()>;
+    fn validate_signature(&self, sender: &Address, op_hash: &H256, signature: &[u8]) -> Result<()>;
 }
 
 /// A user operation (ERC-4337 style pseudo-transaction).
@@ -156,8 +151,7 @@ impl EntryPoint {
                 .get(paymaster)
                 .ok_or_else(|| anyhow::anyhow!("paymaster not registered"))?;
 
-            let required_gas_cost =
-                (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
+            let required_gas_cost = (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
             if *deposit < required_gas_cost {
                 bail!(
                     "paymaster deposit {} insufficient for gas cost {}",
@@ -342,7 +336,10 @@ mod tests {
         let op = make_user_op(1);
         let result = ep.validate_user_op(&op, &RejectAll);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("invalid signature"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid signature"));
     }
 
     #[test]

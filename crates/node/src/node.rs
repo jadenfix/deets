@@ -172,7 +172,10 @@ impl Node {
     ) -> Result<Self> {
         let storage = Storage::open(db_path).context("failed to open storage")?;
         let ledger = Ledger::new(storage).context("failed to initialize ledger")?;
-        let mempool = Mempool::new(chain_config.fees.clone(), chain_config.chain.chain_id_numeric);
+        let mempool = Mempool::new(
+            chain_config.fees.clone(),
+            chain_config.chain.chain_id_numeric,
+        );
 
         // Warn on asymmetric key configuration
         if validator_key.is_some() != bls_key.is_some() {
@@ -640,7 +643,8 @@ impl Node {
             if my_stake > 0 {
                 let my_share = mul_div(emission, my_stake, total_stake);
                 if my_share > 0 {
-                    self.ledger.credit_account_to_batch(&mut epoch_batch, &my_addr, my_share)?;
+                    self.ledger
+                        .credit_account_to_batch(&mut epoch_batch, &my_addr, my_share)?;
                 }
             }
         }
@@ -649,7 +653,8 @@ impl Node {
         // has elapsed. complete_unbonding() returns (address, amount) pairs.
         let completed = self.staking_state.complete_unbonding(slot);
         for (addr, amount) in &completed {
-            self.ledger.credit_account_to_batch(&mut epoch_batch, addr, *amount)?;
+            self.ledger
+                .credit_account_to_batch(&mut epoch_batch, addr, *amount)?;
         }
 
         // Single atomic write for all epoch credits
@@ -663,7 +668,8 @@ impl Node {
         let retention = self.chain_config.chain.retention_epochs;
         if retention > 0 && new_epoch > retention {
             let prune_before_epoch = new_epoch - retention;
-            let prune_before_slot = prune_before_epoch.saturating_mul(self.chain_config.chain.epoch_slots);
+            let prune_before_slot =
+                prune_before_epoch.saturating_mul(self.chain_config.chain.epoch_slots);
             match pruning::prune_old_blocks(self.ledger.storage(), prune_before_slot) {
                 Ok(pruned) => tracing::info!(
                     new_epoch,
@@ -866,8 +872,12 @@ impl Node {
         // vice versa), corrupting the node on restart.
         // Fee distribution is also folded in so proposer rewards are never lost if
         // the process crashes after the overlay commit but before the credit write.
-        let total_fees: u128 = transactions.iter().fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
-        let gas_used: u64 = transactions.iter().fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
+        let total_fees: u128 = transactions
+            .iter()
+            .fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
+        let gas_used: u64 = transactions
+            .iter()
+            .fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
         let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
         let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
@@ -967,7 +977,10 @@ impl Node {
         // Prevent double-voting: if we already voted at this slot (e.g. from
         // a different block produced by a concurrent VRF leader), skip.
         if !self.voted_slots.insert(slot) {
-            tracing::debug!(slot, "Already voted at this slot — skipping to avoid double-vote");
+            tracing::debug!(
+                slot,
+                "Already voted at this slot — skipping to avoid double-vote"
+            );
             return Ok(());
         }
 
@@ -1011,12 +1024,9 @@ impl Node {
     /// Handle a block received from the P2P network.
     pub fn on_block_received(&mut self, block: Block) -> Result<()> {
         let block_hash = block.hash();
-        let _span = tracing::info_span!(
-            "on_block_received",
-            slot = block.header.slot,
-            ?block_hash,
-        )
-        .entered();
+        let _span =
+            tracing::info_span!("on_block_received", slot = block.header.slot, ?block_hash,)
+                .entered();
 
         // Reject if already known (also prevents fee market double-update)
         if self.blocks_by_hash.contains_key(&block_hash) {
@@ -1128,8 +1138,8 @@ impl Node {
         // Non-genesis blocks MUST carry a quorum certificate (aggregated vote).
         // Without this check, a malicious proposer could omit the QC entirely
         // and bypass BLS quorum verification.
-        let is_genesis_or_bootstrap = block.header.slot <= 1
-            || block.header.parent_hash == H256::zero();
+        let is_genesis_or_bootstrap =
+            block.header.slot <= 1 || block.header.parent_hash == H256::zero();
         if !is_genesis_or_bootstrap && block.aggregated_vote.is_none() {
             bail!(
                 "block at slot {} missing required quorum certificate (aggregated_vote)",
@@ -1277,8 +1287,14 @@ impl Node {
             // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
             // Fee distribution is folded in so proposer rewards are never lost if the process
             // crashes after the overlay commit but before the credit write.
-            let total_fees: u128 = block.transactions.iter().fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
-            let gas_used: u64 = block.transactions.iter().fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
+            let total_fees: u128 = block
+                .transactions
+                .iter()
+                .fold(0u128, |acc, tx| acc.saturating_add(tx.fee));
+            let gas_used: u64 = block
+                .transactions
+                .iter()
+                .fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
             let fee_result = self.fee_market.process_block(gas_used, total_fees);
 
             let mut batch = self.ledger.prepare_overlay_batch(&overlay)?;
@@ -1374,7 +1390,11 @@ impl Node {
                 self.consensus
                     .slash_validator(&evidence.validator, u128::from(rate_bps));
 
-                match self.staking_state.slash(evidence.validator, u128::from(rate_bps), block.header.slot) {
+                match self.staking_state.slash(
+                    evidence.validator,
+                    u128::from(rate_bps),
+                    block.header.slot,
+                ) {
                     Ok(slashed) => tracing::warn!(
                         validator = ?evidence.validator,
                         rate_bps,
@@ -1462,7 +1482,8 @@ impl Node {
 
         // Update sync state based on network tip vs local tip
         if let Some(local_slot) = self.latest_block_slot {
-            self.sync_manager.check_sync_needed(local_slot, block.header.slot);
+            self.sync_manager
+                .check_sync_needed(local_slot, block.header.slot);
         }
 
         Ok(())
@@ -1524,7 +1545,12 @@ impl Node {
         });
         if pruned > 0 {
             self.orphan_count = self.orphan_count.saturating_sub(pruned);
-            tracing::debug!(pruned, remaining = self.orphan_count, min_slot, "Pruned stale orphan blocks");
+            tracing::debug!(
+                pruned,
+                remaining = self.orphan_count,
+                min_slot,
+                "Pruned stale orphan blocks"
+            );
         }
     }
 
@@ -1563,7 +1589,10 @@ impl Node {
                 // Update staking bond accounting so the slash is reflected in
                 // validator stake queries and reward calculations.
                 let rate_bps = slash_verify::slash_rate_bps(&proof.proof_type);
-                match self.staking_state.slash(proof.validator, u128::from(rate_bps), vote.slot) {
+                match self
+                    .staking_state
+                    .slash(proof.validator, u128::from(rate_bps), vote.slot)
+                {
                     Ok(staking_slashed) => tracing::warn!(
                         validator = ?proof.validator,
                         slot = vote.slot,
@@ -1703,8 +1732,9 @@ impl Node {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
-                    let latency_ms =
-                        now_secs.saturating_sub(block.header.timestamp).saturating_mul(1000);
+                    let latency_ms = now_secs
+                        .saturating_sub(block.header.timestamp)
+                        .saturating_mul(1000);
                     CONSENSUS_METRICS
                         .finality_latency_ms
                         .observe(latency_ms as f64);
@@ -2497,8 +2527,14 @@ mod tests {
         // Both delegators must have been credited (atomic batch).
         let a = node.ledger.get_account(&delegator_a).unwrap().unwrap();
         let b = node.ledger.get_account(&delegator_b).unwrap().unwrap();
-        assert_eq!(a.balance, 1_000, "delegator A should receive unbonded tokens");
-        assert_eq!(b.balance, 2_000, "delegator B should receive unbonded tokens");
+        assert_eq!(
+            a.balance, 1_000,
+            "delegator A should receive unbonded tokens"
+        );
+        assert_eq!(
+            b.balance, 2_000,
+            "delegator B should receive unbonded tokens"
+        );
 
         // Unbonding queue should be fully drained.
         assert!(node.staking_state().unbonding.is_empty());
@@ -2666,8 +2702,7 @@ mod tests {
         );
         // 5% of 100_000_000 = 5_000_000 slashed
         assert_eq!(
-            stake_after_slash,
-            95_000_000,
+            stake_after_slash, 95_000_000,
             "double-sign must slash exactly 5% of bond"
         );
     }
@@ -2694,7 +2729,10 @@ mod tests {
             .get_validator(&addr)
             .unwrap()
             .staked_amount;
-        assert!(stake_after_vote_slash < stake, "vote-path slash should fire");
+        assert!(
+            stake_after_vote_slash < stake,
+            "vote-path slash should fire"
+        );
 
         // Verify that the dedup set already has this offense keyed (validator, slot=0).
         assert!(
@@ -3036,14 +3074,7 @@ mod tests {
             let keypair2 = Keypair::generate();
             let validators2 = vec![validator_info_from_key(&keypair2)];
             let consensus = Box::new(SimpleConsensus::new(validators2));
-            let node = Node::new(
-                temp_dir.path(),
-                consensus,
-                Some(keypair2),
-                None,
-                config,
-            )
-            .unwrap();
+            let node = Node::new(temp_dir.path(), consensus, Some(keypair2), None, config).unwrap();
 
             assert_eq!(
                 node.latest_block_slot(),
@@ -3088,7 +3119,9 @@ mod tests {
             )
             .unwrap();
             producer.process_slot().unwrap();
-            let slot = producer.latest_block_slot().expect("node should produce a block");
+            let slot = producer
+                .latest_block_slot()
+                .expect("node should produce a block");
             producer.get_block_by_slot(slot).expect("block must exist")
         };
 
@@ -3284,7 +3317,10 @@ mod tests {
             1,
             H256::zero(),
             Address::from_slice(&[1u8; 20]).unwrap(),
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         // Set timestamp 1 hour in the future — well beyond MAX_CLOCK_DRIFT_SECS.
@@ -3327,7 +3363,10 @@ mod tests {
             0,
             H256::zero(),
             Address::from_slice(&[1u8; 20]).unwrap(),
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         let parent_hash = parent.hash();
@@ -3339,7 +3378,10 @@ mod tests {
             1,
             parent_hash,
             Address::from_slice(&[1u8; 20]).unwrap(),
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         // Set timestamp to parent_ts - 1 (one second before parent).
@@ -3432,7 +3474,10 @@ mod tests {
             .iter()
             .filter(|msg| matches!(msg, OutboundMessage::BroadcastBlock(_)))
             .count();
-        assert_eq!(second_count, 0, "second sync request should be rate-limited");
+        assert_eq!(
+            second_count, 0,
+            "second sync request should be rate-limited"
+        );
     }
 
     #[test]
@@ -3528,7 +3573,10 @@ mod tests {
         // With checked_mul this would overflow and return 0.
         // With mul_div it should return ~emission (100% share).
         let share = mul_div(emission, stake, total_stake);
-        assert_eq!(share, emission, "100% stake share should equal full emission");
+        assert_eq!(
+            share, emission,
+            "100% stake share should equal full emission"
+        );
 
         // Partial stake: 50% of total
         let half_stake = total_stake / 2;
@@ -3563,14 +3611,20 @@ mod tests {
             0,
             H256::zero(),
             proposer,
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![], // no transactions → correct root is H256::zero()
         );
         // Tamper the transactions_root to a non-zero value.
         block.header.transactions_root = H256::from_slice(&[0xAB; 32]).unwrap();
 
         let result = node.on_block_received(block);
-        assert!(result.is_err(), "block with wrong transactions_root must be rejected");
+        assert!(
+            result.is_err(),
+            "block with wrong transactions_root must be rejected"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("transactions_root mismatch"),
@@ -3604,7 +3658,10 @@ mod tests {
             1,
             H256::zero(),
             proposer,
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         let parent_hash = parent.hash();
@@ -3615,7 +3672,10 @@ mod tests {
             2,
             parent_hash,
             proposer,
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         // Ensure transactions_root is correct for empty block.
@@ -3624,7 +3684,10 @@ mod tests {
         assert!(child.aggregated_vote.is_none());
 
         let result = node.on_block_received(child);
-        assert!(result.is_err(), "non-genesis block without QC must be rejected");
+        assert!(
+            result.is_err(),
+            "non-genesis block without QC must be rejected"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("missing required quorum certificate"),
@@ -3657,7 +3720,10 @@ mod tests {
             1,
             H256::zero(),
             proposer,
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
         let parent_hash = parent.hash();
@@ -3668,12 +3734,18 @@ mod tests {
             1,
             parent_hash,
             proposer,
-            aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
             vec![],
         );
 
         let result = node.on_block_received(child);
-        assert!(result.is_err(), "block with slot <= parent slot must be rejected");
+        assert!(
+            result.is_err(),
+            "block with slot <= parent slot must be rejected"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("slot monotonicity violation"),
@@ -3690,7 +3762,9 @@ mod tests {
         assert_eq!(total_fees, u128::MAX);
 
         let gas_limits: Vec<u64> = vec![u64::MAX / 2 + 1, u64::MAX / 2 + 1];
-        let total_gas: u64 = gas_limits.iter().fold(0u64, |acc, &g| acc.saturating_add(g));
+        let total_gas: u64 = gas_limits
+            .iter()
+            .fold(0u64, |acc, &g| acc.saturating_add(g));
         assert_eq!(total_gas, u64::MAX);
     }
 }

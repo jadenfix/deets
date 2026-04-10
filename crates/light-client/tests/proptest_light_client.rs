@@ -1,7 +1,7 @@
-use aether_light_client::verifier::{FinalizedHeader, LightClientVerifier, ValidatorEntry};
+use aether_crypto_bls::BlsKeypair;
 use aether_light_client::header_store::HeaderStore;
 use aether_light_client::state_query::{StateProof, StateQuery};
-use aether_crypto_bls::BlsKeypair;
+use aether_light_client::verifier::{FinalizedHeader, LightClientVerifier, ValidatorEntry};
 use aether_state_merkle::SparseMerkleTree;
 use aether_types::*;
 use proptest::prelude::*;

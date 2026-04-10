@@ -11,7 +11,12 @@ use aether_crypto_bls::BlsKeypair;
 use aether_types::{Address, Block, PublicKey, ValidatorInfo, VrfProof, H256};
 
 /// Setup 4 validators with BLS keys registered in HotStuff.
-fn setup_validators() -> (HotStuffConsensus, Vec<BlsKeypair>, Vec<ValidatorInfo>, Vec<Address>) {
+fn setup_validators() -> (
+    HotStuffConsensus,
+    Vec<BlsKeypair>,
+    Vec<ValidatorInfo>,
+    Vec<Address>,
+) {
     let bls_keys: Vec<BlsKeypair> = (0..4).map(|_| BlsKeypair::generate()).collect();
     let validators: Vec<ValidatorInfo> = bls_keys
         .iter()
@@ -107,8 +112,13 @@ fn run_full_round(
     // Prevote quorum (Prevote → Precommit)
     for i in 0..3 {
         let vote = signed_vote(
-            &bls_keys[i], &validators[i], addresses[i],
-            slot, block_hash, parent_hash, Phase::Prevote,
+            &bls_keys[i],
+            &validators[i],
+            addresses[i],
+            slot,
+            block_hash,
+            parent_hash,
+            Phase::Prevote,
         );
         let (qc, actions) = consensus.on_vote(vote).unwrap();
         all_actions.extend(actions);
@@ -120,8 +130,13 @@ fn run_full_round(
     // Precommit quorum (Precommit → Commit)
     for i in 0..3 {
         let vote = signed_vote(
-            &bls_keys[i], &validators[i], addresses[i],
-            slot, block_hash, parent_hash, Phase::Precommit,
+            &bls_keys[i],
+            &validators[i],
+            addresses[i],
+            slot,
+            block_hash,
+            parent_hash,
+            Phase::Precommit,
         );
         let (qc, actions) = consensus.on_vote(vote).unwrap();
         all_actions.extend(actions);
@@ -148,7 +163,9 @@ fn test_2chain_finality_finalizes_parent_on_child_precommit() {
     let hash_a = block_a.hash();
     let actions_a = run_full_round(&mut consensus, &bls_keys, &validators, &addresses, &block_a);
     assert!(
-        !actions_a.iter().any(|a| matches!(a, ConsensusAction::Finalized { .. })),
+        !actions_a
+            .iter()
+            .any(|a| matches!(a, ConsensusAction::Finalized { .. })),
         "block A cannot be finalized yet — genesis parent has no prevote QC"
     );
 
@@ -182,11 +199,15 @@ fn test_2chain_finality_advances_through_chain() {
     let block_b = make_block(2, hash_a, addresses[1]);
     let hash_b = block_b.hash();
     let actions_b = run_full_round(&mut consensus, &bls_keys, &validators, &addresses, &block_b);
-    assert!(actions_b.iter().any(|a| matches!(a, ConsensusAction::Finalized { slot: 1, .. })));
+    assert!(actions_b
+        .iter()
+        .any(|a| matches!(a, ConsensusAction::Finalized { slot: 1, .. })));
 
     let block_c = make_block(3, hash_b, addresses[2]);
     let actions_c = run_full_round(&mut consensus, &bls_keys, &validators, &addresses, &block_c);
-    assert!(actions_c.iter().any(|a| matches!(a, ConsensusAction::Finalized { slot: 2, .. })));
+    assert!(actions_c
+        .iter()
+        .any(|a| matches!(a, ConsensusAction::Finalized { slot: 2, .. })));
     assert_eq!(consensus.finalized_slot(), 2);
 }
 
@@ -213,7 +234,11 @@ fn test_2chain_finality_monotonicity() {
 
     let block_d = make_block(4, hash_c, addresses[3]);
     run_full_round(&mut consensus, &bls_keys, &validators, &addresses, &block_d);
-    assert_eq!(consensus.finalized_slot(), 3, "finality must advance monotonically");
+    assert_eq!(
+        consensus.finalized_slot(),
+        3,
+        "finality must advance monotonically"
+    );
 }
 
 /// Test: skipped slots don't break finality.
@@ -238,5 +263,8 @@ fn test_2chain_finality_with_skipped_slot() {
             _ => None,
         })
         .collect();
-    assert!(finalized_slots.contains(&1), "block A must be finalized despite skipped slot 2");
+    assert!(
+        finalized_slots.contains(&1),
+        "block A must be finalized despite skipped slot 2"
+    );
 }

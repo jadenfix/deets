@@ -11,7 +11,10 @@ pub enum NodeMessage {
     VoteReceived(Vote),
     TransactionReceived(Transaction),
     /// A peer requested blocks in the given slot range for state sync.
-    BlockRangeRequested { from_slot: Slot, to_slot: Slot },
+    BlockRangeRequested {
+        from_slot: Slot,
+        to_slot: Slot,
+    },
     PeerConnected,
     PeerDisconnected,
 }
@@ -24,7 +27,10 @@ pub enum OutboundMessage {
     BroadcastVote(Vote),
     BroadcastTransaction(Transaction),
     /// Request a range of blocks from peers for state sync.
-    RequestBlockRange { from_slot: Slot, to_slot: Slot },
+    RequestBlockRange {
+        from_slot: Slot,
+        to_slot: Slot,
+    },
 }
 
 /// Wire format for sync request messages on the `/aether/1/sync` topic.
@@ -80,7 +86,10 @@ pub fn decode_network_event(event: NetworkEvent) -> Option<NodeMessage> {
         }
         // Shreds are size-checked but forwarded raw to the DA layer (no deserialization here).
         NetworkEvent::ShredReceived(data) if data.len() <= MAX_SHRED_SIZE => {
-            tracing::trace!("shred received ({} bytes), forwarding to DA layer", data.len());
+            tracing::trace!(
+                "shred received ({} bytes), forwarding to DA layer",
+                data.len()
+            );
             None // DA layer handles shred reassembly separately
         }
         NetworkEvent::PeerConnected(_) => Some(NodeMessage::PeerConnected),
@@ -215,10 +224,18 @@ mod tests {
     fn test_limits_match_p2p_layer() {
         // These limits must stay in sync with aether_p2p::network constants.
         // If the P2P layer changes, update these too.
-        assert_eq!(MAX_BLOCK_SIZE, 2 * 1024 * 1024, "block limit out of sync with p2p");
+        assert_eq!(
+            MAX_BLOCK_SIZE,
+            2 * 1024 * 1024,
+            "block limit out of sync with p2p"
+        );
         assert_eq!(MAX_VOTE_SIZE, 8 * 1024, "vote limit out of sync with p2p");
         assert_eq!(MAX_TX_SIZE, 64 * 1024, "tx limit out of sync with p2p");
-        assert_eq!(MAX_SHRED_SIZE, 64 * 1024, "shred limit out of sync with p2p");
+        assert_eq!(
+            MAX_SHRED_SIZE,
+            64 * 1024,
+            "shred limit out of sync with p2p"
+        );
         assert_eq!(MAX_SYNC_SIZE, 1024, "sync limit out of sync with p2p");
     }
 }

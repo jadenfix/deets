@@ -217,8 +217,10 @@ impl GovernanceState {
             ));
         }
         let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
-        let quorum_threshold =
-            self.total_voting_power.saturating_mul(self.quorum_percentage as u128) / 100;
+        let quorum_threshold = self
+            .total_voting_power
+            .saturating_mul(self.quorum_percentage as u128)
+            / 100;
         if quorum_threshold == 0 {
             return Err("quorum is zero: no voting power registered".to_string());
         }
@@ -325,14 +327,9 @@ impl GovernanceState {
         // Prevent delegation chains in reverse: if the delegator already receives
         // delegations from others, they cannot delegate onwards (that would create
         // A→B→C where B's received power doesn't cascade to C).
-        let delegator_receives = self
-            .delegations
-            .values()
-            .any(|d| *d == delegator);
+        let delegator_receives = self.delegations.values().any(|d| *d == delegator);
         if delegator_receives {
-            return Err(
-                "delegator already receives delegations from others (no chains)".into(),
-            );
+            return Err("delegator already receives delegations from others (no chains)".into());
         }
         self.delegations.insert(delegator, delegate);
         self.recompute_effective_power();
@@ -633,11 +630,17 @@ mod tests {
         // This is allowed: B receives from both A and C (fan-in, not a chain).
         // Chains are A→B→C, which this prevents. Multiple delegators to same
         // delegate is fine.
-        assert!(result2.is_ok(), "fan-in delegation (multiple to same delegate) is ok");
+        assert!(
+            result2.is_ok(),
+            "fan-in delegation (multiple to same delegate) is ok"
+        );
 
         // Now verify the actual chain: B tries to delegate to D after receiving from C
         let result3 = state2.delegate(addr(2), addr(1));
-        assert!(result3.is_err(), "B cannot delegate after receiving delegations");
+        assert!(
+            result3.is_err(),
+            "B cannot delegate after receiving delegations"
+        );
     }
 
     #[test]
@@ -782,9 +785,7 @@ mod tests {
         assert_eq!(state.treasury_balance, 0);
 
         // Now treasury is empty — any allocation must fail
-        let err = state
-            .execute_treasury_allocation(&addr(9), 1)
-            .unwrap_err();
+        let err = state.execute_treasury_allocation(&addr(9), 1).unwrap_err();
         assert!(err.contains("insufficient treasury balance"));
     }
 
@@ -842,7 +843,10 @@ mod tests {
             .unwrap();
 
         let err = state.cancel(pid, addr(2)).unwrap_err();
-        assert!(err.contains("not proposer"), "cancel by non-proposer must fail: {err}");
+        assert!(
+            err.contains("not proposer"),
+            "cancel by non-proposer must fail: {err}"
+        );
     }
 
     #[test]
@@ -868,10 +872,16 @@ mod tests {
         state.cancel(pid, addr(1)).unwrap();
 
         let err = state.vote(pid, addr(2), true, 1500).unwrap_err();
-        assert!(err.contains("not active"), "vote on cancelled proposal must fail: {err}");
+        assert!(
+            err.contains("not active"),
+            "vote on cancelled proposal must fail: {err}"
+        );
 
         let err2 = state.finalize(pid, 102_000).unwrap_err();
-        assert!(err2.contains("not active"), "finalize on cancelled proposal must fail: {err2}");
+        assert!(
+            err2.contains("not active"),
+            "finalize on cancelled proposal must fail: {err2}"
+        );
     }
 
     // ── Adversarial tests ────────────────────────────────────

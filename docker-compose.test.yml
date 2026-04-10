@@ -1,11 +1,11 @@
-version: '3.8'
-
 services:
   # Genesis ceremony: generates shared genesis.json + 4 validator keys
   genesis-init:
     build:
       context: .
       dockerfile: Dockerfile
+    # Named volumes are root-owned on Linux CI; run as root so genesis can write /data/genesis
+    user: "0:0"
     entrypoint: ["genesis-ceremony"]
     command: ["--validators", "4", "--output-dir", "/data/genesis", "--stake", "1000000", "--network", "devnet"]
     volumes:
@@ -16,6 +16,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["/app/scripts/docker-entrypoint.sh"]
     depends_on:
       genesis-init:
@@ -47,6 +48,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["/app/scripts/docker-entrypoint.sh"]
     depends_on:
       genesis-init:
@@ -80,6 +82,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["/app/scripts/docker-entrypoint.sh"]
     depends_on:
       genesis-init:
@@ -113,6 +116,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "0:0"
     entrypoint: ["/app/scripts/docker-entrypoint.sh"]
     depends_on:
       genesis-init:

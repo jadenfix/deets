@@ -33,7 +33,12 @@ pub struct LiquidityPool {
 }
 
 impl LiquidityPool {
-    pub fn new(pool_id: H256, token_a: Address, token_b: Address, fee_bps: u32) -> Result<Self, String> {
+    pub fn new(
+        pool_id: H256,
+        token_a: Address,
+        token_b: Address,
+        fee_bps: u32,
+    ) -> Result<Self, String> {
         if fee_bps > 10000 {
             return Err("fee_bps must be <= 10000".to_string());
         }
@@ -231,8 +236,7 @@ impl LiquidityPool {
         }
 
         let fee_multiplier = 10000u128 - self.fee_bps as u128;
-        let amount_in_with_fee =
-            BigUint::from(amount_in) * BigUint::from(fee_multiplier);
+        let amount_in_with_fee = BigUint::from(amount_in) * BigUint::from(fee_multiplier);
 
         let numerator = &amount_in_with_fee * BigUint::from(reserve_out);
         let denominator =
@@ -480,7 +484,10 @@ mod tests {
         let amount_out = pool.swap_b_to_a(200, 0).unwrap();
 
         assert!(amount_out > 0);
-        assert!(amount_out < 100, "should be less than proportional due to slippage");
+        assert!(
+            amount_out < 100,
+            "should be less than proportional due to slippage"
+        );
         assert_eq!(pool.reserve_b, 2200);
         assert_eq!(pool.reserve_a, 1000 - amount_out);
     }
@@ -541,7 +548,10 @@ mod tests {
         pool.lp_token_supply = 1;
 
         let result = pool.get_price();
-        assert!(result.is_err(), "get_price must error on overflow, not saturate");
+        assert!(
+            result.is_err(),
+            "get_price must error on overflow, not saturate"
+        );
     }
 
     #[test]
@@ -579,7 +589,10 @@ mod tests {
         let amount_in = 1u128 << 80;
         let out = pool.swap_a_to_b(amount_in, 0).unwrap();
         assert!(out > 0);
-        assert!(out < amount_in, "output must be less than input due to fees and slippage");
+        assert!(
+            out < amount_in,
+            "output must be less than input due to fees and slippage"
+        );
         // Invariant: reserves still positive
         assert!(pool.reserve_a > big);
         assert!(pool.reserve_b < big);

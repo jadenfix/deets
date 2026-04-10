@@ -39,15 +39,15 @@ mod proptests {
             any::<u64>(),
             any::<u128>(),
         )
-            .prop_map(|(caller, contract_address, block_number, timestamp, value)| {
-                ContractContext {
+            .prop_map(
+                |(caller, contract_address, block_number, timestamp, value)| ContractContext {
                     caller,
                     contract_address,
                     block_number,
                     timestamp,
                     value,
-                }
-            })
+                },
+            )
     }
 
     proptest! {

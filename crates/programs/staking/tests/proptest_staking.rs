@@ -67,7 +67,10 @@ fn check_stake_conservation(state: &StakingState) {
         assert!(
             excess <= tolerance,
             "total_staked={} exceeds on-book={} by {}, tolerance={}",
-            state.total_staked, on_book, excess, tolerance,
+            state.total_staked,
+            on_book,
+            excess,
+            tolerance,
         );
     }
     // total_staked can be less than on_book when unbonding entries were slashed

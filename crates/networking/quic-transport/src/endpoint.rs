@@ -147,9 +147,7 @@ fn create_transport_config() -> TransportConfig {
     config.max_concurrent_bidi_streams(1000u32.into());
     config.max_concurrent_uni_streams(1000u32.into());
     config.stream_receive_window(10_000_000u32.into()); // 10MB
-    config.receive_window(
-        quinn::VarInt::from_u64(10_000_000).unwrap_or(quinn::VarInt::MAX),
-    ); // 10MB
+    config.receive_window(quinn::VarInt::from_u64(10_000_000).unwrap_or(quinn::VarInt::MAX)); // 10MB
 
     // Aggressive keep-alive for validator liveness
     config.keep_alive_interval(Some(Duration::from_secs(5)));

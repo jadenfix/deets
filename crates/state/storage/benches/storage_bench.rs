@@ -27,7 +27,11 @@ fn bench_point_read(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             let key = ((n / 2) as u64).to_be_bytes(); // mid-range key
-            b.iter(|| storage.get(black_box(CF_ACCOUNTS), black_box(&key)).unwrap());
+            b.iter(|| {
+                storage
+                    .get(black_box(CF_ACCOUNTS), black_box(&key))
+                    .unwrap()
+            });
         });
     }
     group.finish();

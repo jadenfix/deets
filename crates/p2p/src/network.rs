@@ -640,7 +640,9 @@ mod tests {
             let peer_id = PeerId::random();
 
             // Ban with an already-expired timestamp
-            network.banned_peers.insert(peer_id, current_timestamp() - 1);
+            network
+                .banned_peers
+                .insert(peer_id, current_timestamp() - 1);
 
             // Should not be considered banned
             assert!(!network.is_banned(&peer_id));

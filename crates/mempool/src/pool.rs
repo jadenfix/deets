@@ -287,7 +287,9 @@ impl Mempool {
                 MEMPOOL_METRICS.rejected_total.inc();
                 anyhow::bail!(
                     "nonce gap too large: tx nonce {} is {} ahead of expected {}",
-                    tx.nonce, nonce_gap, expected_nonce
+                    tx.nonce,
+                    nonce_gap,
+                    expected_nonce
                 );
             }
 
@@ -514,9 +516,7 @@ impl Mempool {
         let mut worst_queued: Option<(Address, u64, u128)> = None;
         for (sender, nonces) in &self.queued {
             for (nonce, (tx, _slot)) in nonces {
-                let dominated = worst_queued
-                    .as_ref()
-                    .map_or(true, |(_, _, f)| tx.fee < *f);
+                let dominated = worst_queued.as_ref().map_or(true, |(_, _, f)| tx.fee < *f);
                 if dominated {
                     worst_queued = Some((*sender, *nonce, tx.fee));
                 }
@@ -821,7 +821,10 @@ mod tests {
         let result = mempool.add_transaction(tx);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("chain_id mismatch"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("chain_id mismatch"),
             "wrong chain_id should be rejected"
         );
     }
@@ -851,12 +854,20 @@ mod tests {
         let kp2 = Keypair::generate();
 
         // kp1: nonce 0 pending, nonce 5 queued with high fee
-        mempool.add_transaction(create_test_tx_with_keypair(&kp1, 0, 60_000)).unwrap();
-        mempool.add_transaction(create_test_tx_with_keypair(&kp1, 5, 200_000)).unwrap();
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp1, 0, 60_000))
+            .unwrap();
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp1, 5, 200_000))
+            .unwrap();
 
         // kp2: nonce 0 pending, nonce 3 queued with low fee
-        mempool.add_transaction(create_test_tx_with_keypair(&kp2, 0, 60_000)).unwrap();
-        mempool.add_transaction(create_test_tx_with_keypair(&kp2, 3, 60_000)).unwrap();
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp2, 0, 60_000))
+            .unwrap();
+        mempool
+            .add_transaction(create_test_tx_with_keypair(&kp2, 3, 60_000))
+            .unwrap();
 
         assert_eq!(mempool.queued_len(), 2);
         assert_eq!(mempool.len(), 4);
@@ -886,7 +897,10 @@ mod tests {
         mempool.advance_sender_nonce(sender, 2);
         let tx = create_test_tx_with_keypair(&kp, 4, 60_000);
         let result = mempool.add_transaction(tx);
-        assert!(result.is_err(), "nonce 4 < 5 should still be rejected after backward advance");
+        assert!(
+            result.is_err(),
+            "nonce 4 < 5 should still be rejected after backward advance"
+        );
     }
 
     #[test]
@@ -928,11 +942,8 @@ mod tests {
         assert_eq!(mempool.queued_len(), MAX_QUEUED_PER_SENDER);
 
         let overflow_nonce = (MAX_QUEUED_PER_SENDER as u64) + 2;
-        let result = mempool.add_transaction(create_test_tx_with_keypair(
-            &kp,
-            overflow_nonce,
-            60_000,
-        ));
+        let result =
+            mempool.add_transaction(create_test_tx_with_keypair(&kp, overflow_nonce, 60_000));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too many queued"));
     }
@@ -947,10 +958,12 @@ mod tests {
             .unwrap();
 
         let far_nonce = MAX_NONCE_GAP + 2;
-        let result =
-            mempool.add_transaction(create_test_tx_with_keypair(&kp, far_nonce, 60_000));
+        let result = mempool.add_transaction(create_test_tx_with_keypair(&kp, far_nonce, 60_000));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("nonce gap too large"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("nonce gap too large"));
     }
 
     #[test]
@@ -986,7 +999,11 @@ mod tests {
         // Advance slot past TTL — both should expire
         mempool.set_current_slot(50 + MAX_TX_AGE_SLOTS + 1);
         assert_eq!(mempool.len(), 0, "all expired txs should be evicted");
-        assert_eq!(mempool.queued_len(), 0, "queued expired txs should be evicted");
+        assert_eq!(
+            mempool.queued_len(),
+            0,
+            "queued expired txs should be evicted"
+        );
     }
 
     #[test]

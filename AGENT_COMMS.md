@@ -76,8 +76,10 @@ pushes fixes and sets the state back to `peer_review_requested`.
 
 ### Hard rules
 
-- **Only Agent 3 (Jun)** may call `gh pr merge`, and only when the last
-  ledger entry is `final_approved`.
+- **Only Agent 3 (Jun)** may call `gh pr merge`, and only when (a) the
+  last ledger entry is `final_approved` **and** (b) `gh pr checks <N>`
+  shows every check as `SUCCESS`. **Never merge a PR with red, pending,
+  or cancelled CI.**
 - **No self-merge, ever.** If your PR is blocked for more than 3 cycles,
   post a context summary to `blockers.log` — do not merge it yourself.
 - **Crypto-touching PRs must be crypto-audited by Agent 5 (Nikolai).**

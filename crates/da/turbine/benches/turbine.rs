@@ -38,18 +38,14 @@ fn bench_ingest_shreds(c: &mut Criterion) {
         let shreds = broadcaster.make_shreds(1, H256::zero(), &payload).unwrap();
 
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &shreds,
-            |b, shreds| {
-                b.iter(|| {
-                    let mut receiver = TurbineReceiver::new(10, 2).unwrap();
-                    for shred in shreds.iter() {
-                        let _ = receiver.ingest_shred(black_box(shred.clone()));
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &shreds, |b, shreds| {
+            b.iter(|| {
+                let mut receiver = TurbineReceiver::new(10, 2).unwrap();
+                for shred in shreds.iter() {
+                    let _ = receiver.ingest_shred(black_box(shred.clone()));
+                }
+            });
+        });
     }
 
     group.finish();
@@ -62,13 +58,9 @@ fn bench_shred_hash_payload(c: &mut Criterion) {
         let payload = vec![0x55u8; size];
 
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &payload,
-            |b, payload| {
-                b.iter(|| Shred::hash_payload(black_box(payload)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &payload, |b, payload| {
+            b.iter(|| Shred::hash_payload(black_box(payload)));
+        });
     }
 
     group.finish();
@@ -93,7 +85,9 @@ fn bench_shred_signing_message(c: &mut Criterion) {
     });
 
     c.bench_function("shred_build_signing_message", |b| {
-        b.iter(|| Shred::build_signing_message(black_box(42), black_box(0), black_box(&payload_hash)));
+        b.iter(|| {
+            Shred::build_signing_message(black_box(42), black_box(0), black_box(&payload_hash))
+        });
     });
 }
 

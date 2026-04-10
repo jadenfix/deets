@@ -86,7 +86,11 @@ impl SimpleConsensus {
         };
 
         // Calculate total voting stake
-        let total_stake: u128 = self.validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let total_stake: u128 = self
+            .validators
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let mut voted_stake = 0u128;
 
         for vote in votes {
@@ -109,7 +113,10 @@ impl SimpleConsensus {
     }
 
     pub fn total_stake(&self) -> u128 {
-        self.validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add)
+        self.validators
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add)
     }
 }
 

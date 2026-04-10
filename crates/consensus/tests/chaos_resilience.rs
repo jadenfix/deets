@@ -54,9 +54,18 @@ fn make_signed_tc(
     msg.extend_from_slice(&highest_qc_slot.to_le_bytes());
     msg.extend_from_slice(highest_qc_hash.as_bytes());
 
-    let signers: Vec<_> = signer_indices.iter().map(|&i| validators[i].pubkey.to_address()).collect();
-    let sigs: Vec<Vec<u8>> = signer_indices.iter().map(|&i| bls_keys[i].sign(&msg)).collect();
-    let pks: Vec<Vec<u8>> = signer_indices.iter().map(|&i| bls_keys[i].public_key()).collect();
+    let signers: Vec<_> = signer_indices
+        .iter()
+        .map(|&i| validators[i].pubkey.to_address())
+        .collect();
+    let sigs: Vec<Vec<u8>> = signer_indices
+        .iter()
+        .map(|&i| bls_keys[i].sign(&msg))
+        .collect();
+    let pks: Vec<Vec<u8>> = signer_indices
+        .iter()
+        .map(|&i| bls_keys[i].public_key())
+        .collect();
     let total_stake: u128 = signer_indices.iter().map(|&i| validators[i].stake).sum();
 
     TimeoutCertificate {
@@ -236,13 +245,19 @@ fn test_byzantine_double_vote_detected() {
 #[test]
 fn test_tc_advances_consensus() {
     let (validators, bls_keys) = create_validators_with_bls(4);
-    let mut consensus = HotStuffConsensus::new(validators.clone(), Some(bls_keys[0].clone()), Some(validators[0].pubkey.to_address()));
+    let mut consensus = HotStuffConsensus::new(
+        validators.clone(),
+        Some(bls_keys[0].clone()),
+        Some(validators[0].pubkey.to_address()),
+    );
 
     // Register BLS keys
     for (i, v) in validators.iter().enumerate() {
         let addr = v.pubkey.to_address();
         let pop = bls_keys[i].proof_of_possession();
-        consensus.register_bls_pubkey(addr, bls_keys[i].public_key(), &pop).unwrap();
+        consensus
+            .register_bls_pubkey(addr, bls_keys[i].public_key(), &pop)
+            .unwrap();
     }
 
     assert_eq!(consensus.current_slot(), 0);

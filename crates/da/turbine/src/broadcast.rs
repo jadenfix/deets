@@ -108,9 +108,7 @@ mod tests {
         let key = Keypair::generate();
         let wrong_key = Keypair::generate();
         let broadcaster = TurbineBroadcaster::new(2, 1, 1, key).unwrap();
-        let shreds = broadcaster
-            .make_shreds(1, H256::zero(), b"data")
-            .unwrap();
+        let shreds = broadcaster.make_shreds(1, H256::zero(), b"data").unwrap();
 
         let wrong_pubkey = wrong_key.public_key();
         for shred in &shreds {

@@ -30,17 +30,19 @@ pub fn export_snapshot_to_file(
 
     fs::write(&tmp, &compressed)
         .with_context(|| format!("failed to write temp snapshot: {}", tmp.display()))?;
-    fs::rename(&tmp, &dest)
-        .with_context(|| format!("failed to rename snapshot: {} -> {}", tmp.display(), dest.display()))?;
+    fs::rename(&tmp, &dest).with_context(|| {
+        format!(
+            "failed to rename snapshot: {} -> {}",
+            tmp.display(),
+            dest.display()
+        )
+    })?;
 
     Ok(dest)
 }
 
 /// Import a snapshot from a file on disk into storage.
-pub fn import_snapshot_from_file(
-    storage: &Storage,
-    snapshot_path: &Path,
-) -> Result<StateSnapshot> {
+pub fn import_snapshot_from_file(storage: &Storage, snapshot_path: &Path) -> Result<StateSnapshot> {
     if !snapshot_path.exists() {
         bail!("snapshot file not found: {}", snapshot_path.display());
     }
@@ -62,7 +64,10 @@ pub fn prune_old_snapshots(snapshot_dir: &Path, keep: usize) -> Result<usize> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("snapshot_") && name.ends_with(".bin.zst") && !name.starts_with(".tmp_") {
+            if name.starts_with("snapshot_")
+                && name.ends_with(".bin.zst")
+                && !name.starts_with(".tmp_")
+            {
                 Some(entry.path())
             } else {
                 None
@@ -130,7 +135,12 @@ mod tests {
 
         let path = export_snapshot_to_file(&storage, 100, snap_dir.path()).unwrap();
         assert!(path.exists());
-        assert!(path.file_name().unwrap().to_str().unwrap().contains("0000000100"));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("0000000100"));
 
         // Import into fresh storage
         let db2_dir = TempDir::new().unwrap();
@@ -185,7 +195,8 @@ mod tests {
     fn import_missing_file_errors() {
         let db_dir = TempDir::new().unwrap();
         let storage = Storage::open(db_dir.path()).unwrap();
-        let result = import_snapshot_from_file(&storage, Path::new("/nonexistent/snapshot.bin.zst"));
+        let result =
+            import_snapshot_from_file(&storage, Path::new("/nonexistent/snapshot.bin.zst"));
         assert!(result.is_err());
     }
 

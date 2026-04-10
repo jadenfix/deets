@@ -172,7 +172,11 @@ impl AicTokenState {
         self.transfer(from, to, amount)?;
 
         // Transfer succeeded — now commit the allowance deduction.
-        if let Some(entry) = self.allowances.get_mut(&from).and_then(|m| m.get_mut(&caller)) {
+        if let Some(entry) = self
+            .allowances
+            .get_mut(&from)
+            .and_then(|m| m.get_mut(&caller))
+        {
             *entry = new_allowance;
         }
         Ok(())
@@ -290,7 +294,10 @@ mod tests {
         state.approve(addr(2), addr(3), 500).unwrap();
 
         let result = state.transfer_from(addr(3), addr(2), addr(4), 300);
-        assert!(result.is_err(), "transfer should fail: sender has no balance");
+        assert!(
+            result.is_err(),
+            "transfer should fail: sender has no balance"
+        );
 
         // Allowance must be fully preserved — it was not consumed by the failed transfer
         assert_eq!(

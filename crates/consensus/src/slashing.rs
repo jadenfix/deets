@@ -226,9 +226,9 @@ fn verify_vote_signature(vote: &Vote) -> anyhow::Result<()> {
 /// `slash_amount * 10_000` overflows u128).
 pub fn slash_rate_bps(proof_type: &SlashType) -> u32 {
     match proof_type {
-        SlashType::DoubleSign => 500,      // 5%
-        SlashType::SurroundVote => 500,    // 5%
-        SlashType::Downtime { .. } => 0,   // Downtime is variable; handled separately
+        SlashType::DoubleSign => 500,    // 5%
+        SlashType::SurroundVote => 500,  // 5%
+        SlashType::Downtime { .. } => 0, // Downtime is variable; handled separately
     }
 }
 
@@ -236,7 +236,7 @@ pub fn slash_rate_bps(proof_type: &SlashType) -> u32 {
 /// Uses overflow-safe mul_div to avoid silent truncation on large u128 stakes.
 pub fn calculate_slash_amount(stake: u128, proof_type: &SlashType) -> u128 {
     match proof_type {
-        SlashType::DoubleSign => mul_div(stake, 5, 100),   // 5%
+        SlashType::DoubleSign => mul_div(stake, 5, 100), // 5%
         SlashType::SurroundVote => mul_div(stake, 5, 100), // 5%
         SlashType::Downtime { missing_slots } => {
             let leak = *missing_slots as u128;
@@ -475,7 +475,10 @@ mod tests {
     fn test_slash_rate_bps() {
         assert_eq!(slash_rate_bps(&SlashType::DoubleSign), 500);
         assert_eq!(slash_rate_bps(&SlashType::SurroundVote), 500);
-        assert_eq!(slash_rate_bps(&SlashType::Downtime { missing_slots: 100 }), 0);
+        assert_eq!(
+            slash_rate_bps(&SlashType::Downtime { missing_slots: 100 }),
+            0
+        );
     }
 
     #[test]
@@ -496,7 +499,12 @@ mod tests {
         );
         // Downtime cap at 10% of stake
         assert_eq!(
-            calculate_slash_amount(stake, &SlashType::Downtime { missing_slots: 1_000_000 }),
+            calculate_slash_amount(
+                stake,
+                &SlashType::Downtime {
+                    missing_slots: 1_000_000
+                }
+            ),
             100_000
         );
         // Overflow-safe: mul_div(u128::MAX, 5, 100) == exact 5% of u128::MAX
@@ -521,7 +529,10 @@ mod tests {
         assert_eq!(slash, expected);
 
         // The old (wrong) value was u128::MAX / 100 ≈ 1% — ensure we're higher
-        assert!(slash > u128::MAX / 100, "slash should be ~5x larger than the old 1% result");
+        assert!(
+            slash > u128::MAX / 100,
+            "slash should be ~5x larger than the old 1% result"
+        );
     }
 
     #[test]

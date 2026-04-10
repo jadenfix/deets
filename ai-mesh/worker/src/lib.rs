@@ -227,14 +227,14 @@ mod proptests {
             prop::string::string_regex("/[a-z/]{1,50}").unwrap(),
             1usize..=64,
         )
-            .prop_map(|(worker_id, tee_type, model_cache_dir, max_concurrent_jobs)| {
-                WorkerConfig {
+            .prop_map(
+                |(worker_id, tee_type, model_cache_dir, max_concurrent_jobs)| WorkerConfig {
                     worker_id,
                     tee_type,
                     model_cache_dir,
                     max_concurrent_jobs,
-                }
-            })
+                },
+            )
     }
 
     fn arb_job() -> impl Strategy<Value = InferenceJob> {

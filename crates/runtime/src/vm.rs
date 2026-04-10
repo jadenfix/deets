@@ -80,12 +80,7 @@ impl ResourceLimiter for StoreData {
         Ok(desired <= MAX_MEMORY_BYTES && desired >= current)
     }
 
-    fn table_growing(
-        &mut self,
-        current: u32,
-        desired: u32,
-        _maximum: Option<u32>,
-    ) -> Result<bool> {
+    fn table_growing(&mut self, current: u32, desired: u32, _maximum: Option<u32>) -> Result<bool> {
         Ok(desired <= MAX_TABLE_ELEMENTS && desired >= current)
     }
 }
@@ -251,11 +246,7 @@ impl WasmVm {
         linker.func_wrap(
             "env",
             "storage_read",
-            |mut caller: Caller<'_, StoreData>,
-             key_ptr: i32,
-             key_len: i32,
-             val_ptr: i32|
-             -> i32 {
+            |mut caller: Caller<'_, StoreData>, key_ptr: i32, key_len: i32, val_ptr: i32| -> i32 {
                 // Charge fuel for storage_read (200 fuel units)
                 match caller.get_fuel() {
                     Ok(fuel) if fuel >= 200 => {
@@ -500,17 +491,13 @@ impl WasmVm {
         )?;
 
         // env.timestamp() -> i64
-        linker.func_wrap(
-            "env",
-            "timestamp",
-            |caller: Caller<'_, StoreData>| -> i64 {
-                let state = match caller.data().host.lock() {
-                    Ok(s) => s,
-                    Err(_) => return -1,
-                };
-                state.context.timestamp as i64
-            },
-        )?;
+        linker.func_wrap("env", "timestamp", |caller: Caller<'_, StoreData>| -> i64 {
+            let state = match caller.data().host.lock() {
+                Ok(s) => s,
+                Err(_) => return -1,
+            };
+            state.context.timestamp as i64
+        })?;
 
         Ok(())
     }
@@ -765,7 +752,10 @@ mod tests {
         .unwrap();
 
         let result = vm.execute(&wasm, &context, b"").unwrap();
-        assert!(!result.success, "OOF execution must report failure, not retry");
+        assert!(
+            !result.success,
+            "OOF execution must report failure, not retry"
+        );
     }
 
     #[test]
@@ -948,7 +938,10 @@ mod tests {
         .unwrap();
 
         let result = vm.execute(&wasm, &context, b"").unwrap();
-        assert!(result.success, "contract should succeed (write silently rejected)");
+        assert!(
+            result.success,
+            "contract should succeed (write silently rejected)"
+        );
         assert!(
             result.storage_changes.is_empty(),
             "negative pointer write must be rejected"
@@ -988,8 +981,14 @@ mod tests {
         .unwrap();
 
         let result = vm.execute(&wasm, &context, b"").unwrap();
-        assert!(result.success, "contract should succeed (log silently rejected)");
-        assert!(result.logs.is_empty(), "negative length log must be rejected");
+        assert!(
+            result.success,
+            "contract should succeed (log silently rejected)"
+        );
+        assert!(
+            result.logs.is_empty(),
+            "negative length log must be rejected"
+        );
         // Key check: gas_used should be small, not billions from u64-wrapped cost
         assert!(
             result.gas_used < 10_000,
@@ -1039,19 +1038,16 @@ mod proptests {
     use proptest::prelude::*;
 
     fn arb_context() -> impl Strategy<Value = ExecutionContext> {
-        (
-            any::<u128>(),
-            any::<u64>(),
-            any::<u64>(),
-        )
-            .prop_map(|(value, block_number, timestamp)| ExecutionContext {
+        (any::<u128>(), any::<u64>(), any::<u64>()).prop_map(|(value, block_number, timestamp)| {
+            ExecutionContext {
                 contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
                 caller: Address::from_slice(&[2u8; 20]).unwrap(),
                 value,
                 gas_limit: 1_000_000,
                 block_number,
                 timestamp,
-            })
+            }
+        })
     }
 
     /// Compile a simple WAT module that returns a constant.

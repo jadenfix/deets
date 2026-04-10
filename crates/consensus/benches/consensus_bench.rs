@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use aether_consensus::hybrid::HybridConsensus;
 use aether_consensus::has_quorum;
+use aether_consensus::hybrid::HybridConsensus;
 use aether_consensus::ConsensusEngine;
 use aether_crypto_bls::BlsKeypair;
 use aether_crypto_primitives::Keypair;
@@ -75,8 +75,12 @@ fn bench_bls_verify(c: &mut Criterion) {
     c.bench_function("bls_verify_vote", |b| {
         b.iter(|| {
             black_box(
-                aether_crypto_bls::keypair::verify(black_box(&pk), black_box(&msg), black_box(&sig))
-                    .unwrap(),
+                aether_crypto_bls::keypair::verify(
+                    black_box(&pk),
+                    black_box(&msg),
+                    black_box(&sig),
+                )
+                .unwrap(),
             )
         });
     });
@@ -118,7 +122,8 @@ fn bench_process_vote(c: &mut Criterion) {
         // Setup: create n validators
         let validators_and_keys: Vec<(ValidatorInfo, BlsKeypair)> =
             (0..n).map(|_| create_validator_with_bls(1000)).collect();
-        let validators: Vec<ValidatorInfo> = validators_and_keys.iter().map(|(v, _)| v.clone()).collect();
+        let validators: Vec<ValidatorInfo> =
+            validators_and_keys.iter().map(|(v, _)| v.clone()).collect();
 
         group.bench_with_input(BenchmarkId::new("validators", n), &n, |b, _| {
             b.iter_batched(
@@ -172,14 +177,7 @@ fn bench_vrf_eligibility(c: &mut Criterion) {
         active: true,
     }];
 
-    let _consensus = HybridConsensus::new(
-        validators,
-        0.8,
-        100,
-        Some(vrf_kp),
-        None,
-        None,
-    );
+    let _consensus = HybridConsensus::new(validators, 0.8, 100, Some(vrf_kp), None, None);
     let vrf_kp2 = VrfKeypair::generate();
     let slot_msg = format!("slot-eligibility-{}-{}", 42u64, H256::zero());
 

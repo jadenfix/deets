@@ -132,8 +132,8 @@ fn test_byzantine_double_sign_detected_consensus_continues() {
     let slash_vote_b = make_slash_vote(block_b);
 
     // Detect double-sign with fully-signed votes
-    let proof = detect_double_sign(&slash_vote_a, &slash_vote_b)
-        .expect("double-sign must be detected");
+    let proof =
+        detect_double_sign(&slash_vote_a, &slash_vote_b).expect("double-sign must be detected");
     assert_eq!(proof.proof_type, SlashType::DoubleSign);
     assert_eq!(proof.validator, addresses[0]);
 
@@ -280,7 +280,11 @@ fn test_multiple_byzantine_validators_detected() {
             Signature::from_bytes(bls_keys[i].sign(&v.signing_message()))
         };
         let proof = detector.record_vote(addrs[i], pubkeys[i].clone(), slot, block_b, sig_b);
-        assert!(proof.is_some(), "validator {} double-sign must be caught", i);
+        assert!(
+            proof.is_some(),
+            "validator {} double-sign must be caught",
+            i
+        );
     }
 
     // Validators 2 and 3 vote honestly — no slash
@@ -409,7 +413,12 @@ fn test_downtime_slash_calculation() {
     assert_eq!(amount, 100, "100 missing slots = 100 leak");
 
     // Large downtime: capped at 10% of stake
-    let capped = calculate_slash_amount(10_000, &SlashType::Downtime { missing_slots: 5000 });
+    let capped = calculate_slash_amount(
+        10_000,
+        &SlashType::Downtime {
+            missing_slots: 5000,
+        },
+    );
     assert_eq!(capped, 1000, "capped at 10% of 10000");
 
     // Zero downtime: no slash

@@ -92,11 +92,11 @@ impl PeerScores {
             return;
         }
         // Evict the peer with the lowest score.
-        if let Some((&worst_peer, _)) = self
-            .scores
-            .iter()
-            .min_by(|a, b| a.1.score.partial_cmp(&b.1.score).unwrap_or(std::cmp::Ordering::Equal))
-        {
+        if let Some((&worst_peer, _)) = self.scores.iter().min_by(|a, b| {
+            a.1.score
+                .partial_cmp(&b.1.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
             self.scores.remove(&worst_peer);
         }
     }

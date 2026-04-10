@@ -641,7 +641,11 @@ fn test_epoch_pruning_removes_old_data() {
 
     // Verify state root is still valid (pruning didn't corrupt state)
     let root = network.nodes[0].get_state_root();
-    assert_ne!(root, H256::zero(), "State root should be non-zero after pruning");
+    assert_ne!(
+        root,
+        H256::zero(),
+        "State root should be non-zero after pruning"
+    );
 }
 
 // ============================================================================
@@ -658,12 +662,12 @@ fn test_partition_tolerance_and_recovery() {
     // Phase 1: Normal operation — all nodes communicate freely
     network.run_slots(30);
 
-    let pre_partition_finalized: Vec<u64> = network
-        .nodes
-        .iter()
-        .map(|n| n.finalized_slot())
-        .collect();
-    println!("Pre-partition finalized slots: {:?}", pre_partition_finalized);
+    let pre_partition_finalized: Vec<u64> =
+        network.nodes.iter().map(|n| n.finalized_slot()).collect();
+    println!(
+        "Pre-partition finalized slots: {:?}",
+        pre_partition_finalized
+    );
 
     // Phase 2: PARTITION — split [0,1] vs [2,3]
     // Each half has 2/4 = 50% stake, but BFT finality needs >66%.
@@ -671,11 +675,8 @@ fn test_partition_tolerance_and_recovery() {
     let partitions = vec![vec![0, 1], vec![2, 3]];
     network.run_slots_partitioned(40, &partitions);
 
-    let during_partition_finalized: Vec<u64> = network
-        .nodes
-        .iter()
-        .map(|n| n.finalized_slot())
-        .collect();
+    let during_partition_finalized: Vec<u64> =
+        network.nodes.iter().map(|n| n.finalized_slot()).collect();
     println!(
         "During-partition finalized slots: {:?}",
         during_partition_finalized
@@ -685,8 +686,7 @@ fn test_partition_tolerance_and_recovery() {
     // A small advance (<=3 slots) is allowed for blocks that were already
     // close to finality before the partition happened.
     for i in 0..4 {
-        let advance = during_partition_finalized[i]
-            .saturating_sub(pre_partition_finalized[i]);
+        let advance = during_partition_finalized[i].saturating_sub(pre_partition_finalized[i]);
         assert!(
             advance <= 3,
             "Node {} finality advanced by {} slots during partition — \
@@ -704,14 +704,8 @@ fn test_partition_tolerance_and_recovery() {
     let root_a1 = network.nodes[1].get_state_root();
     let root_b0 = network.nodes[2].get_state_root();
     let root_b1 = network.nodes[3].get_state_root();
-    println!(
-        "Partition A state roots: {} | {}",
-        root_a0, root_a1
-    );
-    println!(
-        "Partition B state roots: {} | {}",
-        root_b0, root_b1
-    );
+    println!("Partition A state roots: {} | {}", root_a0, root_a1);
+    println!("Partition B state roots: {} | {}", root_b0, root_b1);
     assert_eq!(
         root_a0, root_a1,
         "Nodes within partition A should agree on state"
@@ -724,11 +718,7 @@ fn test_partition_tolerance_and_recovery() {
     // Phase 3: HEAL — restore full connectivity
     network.run_slots(50);
 
-    let post_heal_finalized: Vec<u64> = network
-        .nodes
-        .iter()
-        .map(|n| n.finalized_slot())
-        .collect();
+    let post_heal_finalized: Vec<u64> = network.nodes.iter().map(|n| n.finalized_slot()).collect();
     println!("Post-heal finalized slots: {:?}", post_heal_finalized);
 
     // Liveness: finality should resume after partition heals
@@ -740,15 +730,15 @@ fn test_partition_tolerance_and_recovery() {
     );
 
     // All nodes must converge on the same state after healing
-    let post_roots: Vec<H256> = network
-        .nodes
-        .iter()
-        .map(|n| n.get_state_root())
-        .collect();
+    let post_roots: Vec<H256> = network.nodes.iter().map(|n| n.get_state_root()).collect();
     println!("Post-heal state roots: {:?}", post_roots);
 
     let converged_root = post_roots[0];
-    assert_ne!(converged_root, H256::zero(), "State root should be non-zero");
+    assert_ne!(
+        converged_root,
+        H256::zero(),
+        "State root should be non-zero"
+    );
     for (i, root) in post_roots.iter().enumerate().skip(1) {
         assert_eq!(
             *root, converged_root,

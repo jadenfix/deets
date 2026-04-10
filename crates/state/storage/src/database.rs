@@ -205,11 +205,7 @@ impl Storage {
     }
 
     /// Iterate all keys in a column family that start with the given prefix.
-    pub fn prefix_iterator<'a>(
-        &'a self,
-        cf: &str,
-        prefix: &[u8],
-    ) -> Result<DbIterator<'a>> {
+    pub fn prefix_iterator<'a>(&'a self, cf: &str, prefix: &[u8]) -> Result<DbIterator<'a>> {
         let cf_handle = self.db.cf_handle(cf).context("column family not found")?;
         let prefix_owned = prefix.to_vec();
         let iter = self
@@ -484,9 +480,7 @@ mod tests {
 
     #[test]
     fn test_pruning_blocks_and_receipts() {
-        use aether_types::{
-            Address, Block, BlockHeader, H256, VrfProof,
-        };
+        use aether_types::{Address, Block, BlockHeader, VrfProof, H256};
 
         let temp_dir = TempDir::new().unwrap();
         let storage = Storage::open(temp_dir.path()).unwrap();

@@ -79,8 +79,7 @@ impl TransferBuilder {
             memo: self.memo,
         };
 
-        let payload_bytes = bincode::serialize(&payload)
-            .map_err(AetherSdkError::serialization)?;
+        let payload_bytes = bincode::serialize(&payload).map_err(AetherSdkError::serialization)?;
         let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
         let sender_address = sender_pubkey.to_address();
 

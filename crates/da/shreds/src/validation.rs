@@ -41,7 +41,16 @@ mod tests {
         let payload_hash = Shred::hash_payload(&payload);
         let msg = Shred::build_signing_message(slot, 0, &payload_hash);
         let sig = Signature::from_bytes(key.sign(&msg));
-        Shred::new(ShredVariant::Data, slot, 0, 1, 0, H256::zero(), payload, sig)
+        Shred::new(
+            ShredVariant::Data,
+            slot,
+            0,
+            1,
+            0,
+            H256::zero(),
+            payload,
+            sig,
+        )
     }
 
     #[test]
@@ -117,7 +126,10 @@ mod tests {
         let shred = make_signed_shred(&key, u64::MAX - 50);
         // current_slot is close to MAX but shred.slot + max_slot_age would overflow
         let result = validate_shred(&shred, u64::MAX - 40, 100, &key.public_key());
-        assert!(result.is_ok(), "near-max slot shred should not be falsely stale");
+        assert!(
+            result.is_ok(),
+            "near-max slot shred should not be falsely stale"
+        );
     }
 
     #[test]
@@ -144,7 +156,16 @@ mod proptests {
         let payload_hash = Shred::hash_payload(&payload);
         let msg = Shred::build_signing_message(slot, index, &payload_hash);
         let sig = Signature::from_bytes(key.sign(&msg));
-        Shred::new(ShredVariant::Data, slot, index, 1, 0, H256::zero(), payload, sig)
+        Shred::new(
+            ShredVariant::Data,
+            slot,
+            index,
+            1,
+            0,
+            H256::zero(),
+            payload,
+            sig,
+        )
     }
 
     proptest! {

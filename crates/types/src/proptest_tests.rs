@@ -3,9 +3,9 @@
 // Covers: serialization roundtrips (bincode), hash determinism,
 // conflict symmetry, blob validation invariants, fee calculation safety.
 
+use crate::account::*;
 use crate::primitives::*;
 use crate::transaction::*;
-use crate::account::*;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use std::collections::HashSet;
@@ -36,13 +36,16 @@ fn arb_utxo_id() -> impl Strategy<Value = UtxoId> {
 }
 
 fn arb_utxo_output() -> impl Strategy<Value = UtxoOutput> {
-    (any::<u128>(), arb_pubkey(), proptest::option::of(arb_h256())).prop_map(
-        |(amount, owner, script_hash)| UtxoOutput {
+    (
+        any::<u128>(),
+        arb_pubkey(),
+        proptest::option::of(arb_h256()),
+    )
+        .prop_map(|(amount, owner, script_hash)| UtxoOutput {
             amount,
             owner,
             script_hash,
-        },
-    )
+        })
 }
 
 fn arb_transaction() -> impl Strategy<Value = Transaction> {
@@ -78,21 +81,36 @@ fn arb_transaction() -> impl Strategy<Value = Transaction> {
 }
 
 fn arb_account() -> impl Strategy<Value = Account> {
-    (arb_address(), any::<u128>(), any::<u64>(), proptest::option::of(arb_h256()), arb_h256())
-        .prop_map(|(address, balance, nonce, code_hash, storage_root)| Account {
-            address,
-            balance,
-            nonce,
-            code_hash,
-            storage_root,
-        })
+    (
+        arb_address(),
+        any::<u128>(),
+        any::<u64>(),
+        proptest::option::of(arb_h256()),
+        arb_h256(),
+    )
+        .prop_map(
+            |(address, balance, nonce, code_hash, storage_root)| Account {
+                address,
+                balance,
+                nonce,
+                code_hash,
+                storage_root,
+            },
+        )
 }
 
 fn arb_blob_tx(blob_count: u32) -> impl Strategy<Value = BlobTransaction> {
     let count = blob_count;
-    (any::<u64>(), any::<u64>(), arb_address(), arb_pubkey(), any::<u64>(), any::<u128>())
-        .prop_map(move |(nonce, chain_id, sender, sender_pubkey, gas_limit, fee)| {
-            BlobTransaction {
+    (
+        any::<u64>(),
+        any::<u64>(),
+        arb_address(),
+        arb_pubkey(),
+        any::<u64>(),
+        any::<u128>(),
+    )
+        .prop_map(
+            move |(nonce, chain_id, sender, sender_pubkey, gas_limit, fee)| BlobTransaction {
                 nonce,
                 chain_id,
                 sender,
@@ -105,8 +123,8 @@ fn arb_blob_tx(blob_count: u32) -> impl Strategy<Value = BlobTransaction> {
                 total_blob_size: (count as u64) * 1000,
                 program_id: None,
                 data: vec![],
-            }
-        })
+            },
+        )
 }
 
 // ── Serialization Roundtrip Tests ───────────────────────────────────

@@ -145,7 +145,10 @@ impl HotStuffConsensus {
         my_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
-        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let total_stake: u128 = validators
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))
@@ -307,7 +310,10 @@ impl HotStuffConsensus {
         block_votes.push(vote.clone());
 
         // Check for quorum
-        let stake: u128 = block_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let stake: u128 = block_votes
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let has_quorum = crate::has_quorum(stake, self.total_stake);
 
         if !has_quorum {
@@ -351,10 +357,7 @@ impl HotStuffConsensus {
                 // may be multiple slots back (not just slot-1).
                 // SAFETY: Do NOT fall back to vote.slot - 1 — with skipped slots,
                 // that guess is wrong and could finalize a non-existent block.
-                let parent_slot = self
-                    .block_slots
-                    .get(&parent_hash)
-                    .copied();
+                let parent_slot = self.block_slots.get(&parent_hash).copied();
 
                 if let Some(parent_slot) = parent_slot {
                     // Look for parent block's prevote QC using the PARENT's hash
@@ -465,7 +468,10 @@ impl HotStuffConsensus {
 
         round_votes.push(tv.clone());
 
-        let stake: u128 = round_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let stake: u128 = round_votes
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         if !crate::has_quorum(stake, self.total_stake) {
             return Ok(None);
         }
@@ -573,7 +579,10 @@ impl HotStuffConsensus {
         let valid =
             aether_crypto_bls::keypair::verify(&recomputed_agg_pk, &msg, &tc.aggregated_signature)?;
         if !valid {
-            bail!("invalid aggregated BLS signature on timeout certificate for round {}", tc.round);
+            bail!(
+                "invalid aggregated BLS signature on timeout certificate for round {}",
+                tc.round
+            );
         }
 
         // Update locked block to the highest QC from the TC.
@@ -742,7 +751,10 @@ impl HotStuffConsensus {
             slot: votes[0].slot,
             block_hash: votes[0].block_hash,
             phase: votes[0].phase.clone(),
-            total_stake: votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add),
+            total_stake: votes
+                .iter()
+                .map(|v| v.stake)
+                .fold(0u128, u128::saturating_add),
             signers: votes.iter().map(|v| v.validator).collect(),
             aggregated_signature: agg_sig,
             aggregated_pubkey: agg_pk,
@@ -910,7 +922,10 @@ mod tests {
             block_votes.push(vote.clone());
 
             // Check quorum manually
-            let stake: u128 = block_votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+            let stake: u128 = block_votes
+                .iter()
+                .map(|v| v.stake)
+                .fold(0u128, u128::saturating_add);
             if stake.saturating_mul(3) >= consensus.total_stake.saturating_mul(2) {
                 // Quorum reached — the old code would recurse here.
                 // New code: create_vote returns an action instead.
@@ -988,10 +1003,7 @@ mod tests {
             .iter()
             .map(|&i| bls_keys[i].public_key())
             .collect();
-        let total_stake: u128 = signer_indices
-            .iter()
-            .map(|&i| validators[i].stake)
-            .sum();
+        let total_stake: u128 = signer_indices.iter().map(|&i| validators[i].stake).sum();
 
         let aggregated_signature = aggregate_signatures(&signatures).unwrap();
         let aggregated_pubkey = aggregate_public_keys(&pubkeys).unwrap();
@@ -1239,7 +1251,10 @@ mod tests {
         };
 
         let result = consensus.on_timeout_certificate(&tc);
-        assert!(result.is_err(), "TC with duplicate signers must be rejected");
+        assert!(
+            result.is_err(),
+            "TC with duplicate signers must be rejected"
+        );
     }
 
     #[test]
@@ -1346,16 +1361,21 @@ mod tests {
             total_stake: 3000,
             aggregated_pubkey: vec![],
         };
-        consensus.qcs.insert((1, Phase::Prevote, block_a), dummy_qc.clone());
-        consensus.qcs.insert((2, Phase::Prevote, block_b), AggregatedVote {
-            slot: 2,
-            block_hash: block_b,
-            phase: Phase::Prevote,
-            aggregated_signature: vec![],
-            signers: vec![],
-            total_stake: 3000,
-            aggregated_pubkey: vec![],
-        });
+        consensus
+            .qcs
+            .insert((1, Phase::Prevote, block_a), dummy_qc.clone());
+        consensus.qcs.insert(
+            (2, Phase::Prevote, block_b),
+            AggregatedVote {
+                slot: 2,
+                block_hash: block_b,
+                phase: Phase::Prevote,
+                aggregated_signature: vec![],
+                signers: vec![],
+                total_stake: 3000,
+                aggregated_pubkey: vec![],
+            },
+        );
 
         // Simulate precommit QC for block_c (slot 3) → should finalize block_b (slot 2)
         consensus.current_phase = Phase::Precommit;
@@ -1382,21 +1402,26 @@ mod tests {
         assert!(crate::has_quorum(stake, consensus.total_stake));
 
         // Build a dummy aggregated QC for the precommit
-        consensus.qcs.insert((3, Phase::Precommit, block_c), AggregatedVote {
-            slot: 3,
-            block_hash: block_c,
-            phase: Phase::Precommit,
-            aggregated_signature: vec![],
-            signers: vec![],
-            total_stake: 3000,
-            aggregated_pubkey: vec![],
-        });
+        consensus.qcs.insert(
+            (3, Phase::Precommit, block_c),
+            AggregatedVote {
+                slot: 3,
+                block_hash: block_c,
+                phase: Phase::Precommit,
+                aggregated_signature: vec![],
+                signers: vec![],
+                total_stake: 3000,
+                aggregated_pubkey: vec![],
+            },
+        );
 
         // Apply finality logic: parent of C is B (slot 2), B has prevote QC → finalize B
         let parent_hash = *consensus.block_parents.get(&block_c).unwrap();
         let parent_slot = *consensus.block_slots.get(&parent_hash).unwrap();
         assert_eq!(parent_slot, 2);
-        assert!(consensus.qcs.contains_key(&(parent_slot, Phase::Prevote, parent_hash)));
+        assert!(consensus
+            .qcs
+            .contains_key(&(parent_slot, Phase::Prevote, parent_hash)));
 
         // Set finalized_slot to 2 (as if B was finalized)
         consensus.finalized_slot = 2;
@@ -1408,8 +1433,14 @@ mod tests {
 
         // The finality code checks: parent_slot (1) > finalized_slot (2)? No → skip.
         // This is exactly what the monotonicity guard enforces.
-        assert!(1 <= old_finalized, "slot 1 <= finalized 2, so no regression should occur");
-        assert_eq!(consensus.finalized_slot, 2, "finalized_slot must not regress");
+        assert!(
+            1 <= old_finalized,
+            "slot 1 <= finalized 2, so no regression should occur"
+        );
+        assert_eq!(
+            consensus.finalized_slot, 2,
+            "finalized_slot must not regress"
+        );
     }
 
     #[test]
@@ -1428,15 +1459,18 @@ mod tests {
 
         // Insert a prevote QC for slot 9 with unknown_parent hash
         // (would match if we incorrectly guessed parent_slot = 10-1 = 9)
-        consensus.qcs.insert((9, Phase::Prevote, unknown_parent), AggregatedVote {
-            slot: 9,
-            block_hash: unknown_parent,
-            phase: Phase::Prevote,
-            aggregated_signature: vec![],
-            signers: vec![],
-            total_stake: 3000,
-            aggregated_pubkey: vec![],
-        });
+        consensus.qcs.insert(
+            (9, Phase::Prevote, unknown_parent),
+            AggregatedVote {
+                slot: 9,
+                block_hash: unknown_parent,
+                phase: Phase::Prevote,
+                aggregated_signature: vec![],
+                signers: vec![],
+                total_stake: 3000,
+                aggregated_pubkey: vec![],
+            },
+        );
 
         // Simulate precommit quorum for block_x
         consensus.current_phase = Phase::Precommit;
@@ -1446,7 +1480,10 @@ mod tests {
         // so finalization must NOT happen.
         let parent_slot = consensus.block_slots.get(&unknown_parent).copied();
         assert!(parent_slot.is_none(), "parent slot must be unknown");
-        assert_eq!(consensus.finalized_slot, 0, "finalized_slot must remain 0 — no guessing");
+        assert_eq!(
+            consensus.finalized_slot, 0,
+            "finalized_slot must remain 0 — no guessing"
+        );
     }
 
     #[test]
@@ -1475,7 +1512,10 @@ mod tests {
                 transactions_root: H256::zero(),
                 receipts_root: H256::zero(),
                 proposer: Address::from_slice(&[0; 20]).unwrap(),
-                vrf_proof: aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+                vrf_proof: aether_types::VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
                 timestamp: 0,
             },
             transactions: vec![],
@@ -1485,7 +1525,10 @@ mod tests {
 
         // This should be accepted (parent slot 6 >= locked slot 5)
         let actions = consensus.on_propose(&block).unwrap();
-        assert!(!actions.is_empty(), "block with higher-QC parent must be accepted");
+        assert!(
+            !actions.is_empty(),
+            "block with higher-QC parent must be accepted"
+        );
     }
 
     #[test]
@@ -1512,7 +1555,10 @@ mod tests {
                 transactions_root: H256::zero(),
                 receipts_root: H256::zero(),
                 proposer: Address::from_slice(&[0; 20]).unwrap(),
-                vrf_proof: aether_types::VrfProof { output: [0u8; 32], proof: vec![] },
+                vrf_proof: aether_types::VrfProof {
+                    output: [0u8; 32],
+                    proof: vec![],
+                },
                 timestamp: 0,
             },
             transactions: vec![],
@@ -1522,7 +1568,10 @@ mod tests {
 
         // This should be rejected (parent slot 3 < locked slot 5)
         let actions = consensus.on_propose(&block).unwrap();
-        assert!(actions.is_empty(), "block with lower-QC parent must be rejected");
+        assert!(
+            actions.is_empty(),
+            "block with lower-QC parent must be rejected"
+        );
     }
 
     #[test]
@@ -1538,14 +1587,20 @@ mod tests {
         if vote_slot > consensus.committed_slot {
             consensus.committed_slot = vote_slot;
         }
-        assert_eq!(consensus.committed_slot, 10, "committed_slot must not regress");
+        assert_eq!(
+            consensus.committed_slot, 10,
+            "committed_slot must not regress"
+        );
 
         // A precommit for slot 12 should advance it
         let vote_slot: Slot = 12;
         if vote_slot > consensus.committed_slot {
             consensus.committed_slot = vote_slot;
         }
-        assert_eq!(consensus.committed_slot, 12, "committed_slot should advance");
+        assert_eq!(
+            consensus.committed_slot, 12,
+            "committed_slot should advance"
+        );
     }
 
     #[test]
@@ -1665,12 +1720,8 @@ mod tests {
         assert!(consensus.block_parents.contains_key(&hash_c));
 
         // QC at slot 1 pruned, QC at slot 10 kept
-        assert!(!consensus
-            .qcs
-            .contains_key(&(1, Phase::Prevote, hash_a)));
-        assert!(consensus
-            .qcs
-            .contains_key(&(10, Phase::Prevote, hash_c)));
+        assert!(!consensus.qcs.contains_key(&(1, Phase::Prevote, hash_a)));
+        assert!(consensus.qcs.contains_key(&(10, Phase::Prevote, hash_c)));
     }
 
     #[test]

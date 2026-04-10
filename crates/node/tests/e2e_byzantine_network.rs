@@ -221,9 +221,7 @@ fn test_byzantine_double_vote_slashed_across_network() {
 
     // Verify every node detected the double-sign and slashed the offender
     for (i, node) in network.nodes.iter().enumerate() {
-        let validator = node
-            .staking_state()
-            .get_validator(&byzantine_addr);
+        let validator = node.staking_state().get_validator(&byzantine_addr);
 
         if let Some(v) = validator {
             assert!(
@@ -295,11 +293,7 @@ fn test_state_convergence_with_byzantine_validator() {
     network.run_slots(40);
 
     // All nodes must converge on the same state root
-    let state_roots: Vec<H256> = network
-        .nodes
-        .iter()
-        .map(|n| n.get_state_root())
-        .collect();
+    let state_roots: Vec<H256> = network.nodes.iter().map(|n| n.get_state_root()).collect();
 
     let first = state_roots[0];
     assert_ne!(first, H256::zero(), "State root should be non-zero");
@@ -378,7 +372,10 @@ fn test_multiple_byzantine_validators_independently_slashed() {
 
     for (i, node) in network.nodes.iter().enumerate() {
         // Validator 0 should be slashed
-        if let Some(v0) = node.staking_state().get_validator(&network.validator_addrs[0]) {
+        if let Some(v0) = node
+            .staking_state()
+            .get_validator(&network.validator_addrs[0])
+        {
             assert_eq!(
                 v0.staked_amount, expected_slashed,
                 "Node {}: validator 0 should be slashed to {}",
@@ -387,7 +384,10 @@ fn test_multiple_byzantine_validators_independently_slashed() {
         }
 
         // Validator 1 should be slashed
-        if let Some(v1) = node.staking_state().get_validator(&network.validator_addrs[1]) {
+        if let Some(v1) = node
+            .staking_state()
+            .get_validator(&network.validator_addrs[1])
+        {
             assert_eq!(
                 v1.staked_amount, expected_slashed,
                 "Node {}: validator 1 should be slashed to {}",
@@ -396,14 +396,20 @@ fn test_multiple_byzantine_validators_independently_slashed() {
         }
 
         // Validators 2 and 3 should NOT be slashed
-        if let Some(v2) = node.staking_state().get_validator(&network.validator_addrs[2]) {
+        if let Some(v2) = node
+            .staking_state()
+            .get_validator(&network.validator_addrs[2])
+        {
             assert_eq!(
                 v2.staked_amount, initial_stake,
                 "Node {}: honest validator 2 must not be slashed",
                 i
             );
         }
-        if let Some(v3) = node.staking_state().get_validator(&network.validator_addrs[3]) {
+        if let Some(v3) = node
+            .staking_state()
+            .get_validator(&network.validator_addrs[3])
+        {
             assert_eq!(
                 v3.staked_amount, initial_stake,
                 "Node {}: honest validator 3 must not be slashed",

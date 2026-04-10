@@ -223,6 +223,7 @@ name = "aether-crypto-primitives"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "criterion",
  "ed25519-dalek",
  "proptest",
  "rand 0.8.5",
@@ -251,6 +252,7 @@ name = "aether-da-erasure"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "criterion",
  "proptest",
  "reed-solomon-erasure",
 ]
@@ -277,6 +279,7 @@ dependencies = [
  "aether-da-shreds",
  "aether-types",
  "anyhow",
+ "criterion",
  "proptest",
  "rand 0.8.5",
  "sha2",
@@ -405,6 +408,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "criterion",
  "proptest",
  "thiserror 1.0.69",
  "tokio",
@@ -478,6 +482,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "criterion",
  "libp2p",
  "proptest",
  "serde",
@@ -503,6 +508,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "criterion",
  "num-bigint",
  "num-traits",
  "proptest",
@@ -515,6 +521,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "criterion",
  "proptest",
  "serde",
 ]
@@ -551,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "aether-types",
  "anyhow",
+ "criterion",
  "proptest",
  "serde",
  "thiserror 1.0.69",
@@ -602,6 +610,7 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "criterion",
  "futures",
  "hex",
  "proptest",
@@ -696,7 +705,9 @@ dependencies = [
  "aether-types",
  "anyhow",
  "bincode",
+ "criterion",
  "num_cpus",
+ "proptest",
  "rocksdb",
  "serde",
  "tempfile",
@@ -709,6 +720,7 @@ dependencies = [
  "aether-crypto-primitives",
  "anyhow",
  "bincode",
+ "criterion",
  "hex",
  "proptest",
  "serde",

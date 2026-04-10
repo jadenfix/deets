@@ -354,28 +354,26 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             .and_then(handle_rpc_request);
 
         let health_backend = self.backend.clone();
-        let health = warp::get()
-            .and(warp::path("health"))
-            .and_then(move || {
-                let backend = health_backend.clone();
-                async move {
-                    let backend = backend.read().await;
-                    let slot = backend.get_slot_number().unwrap_or(0);
-                    let finalized = backend.get_finalized_slot().unwrap_or(0);
-                    let peer_count = backend.get_peer_count().unwrap_or(0);
-                    let sync_status = backend
-                        .get_sync_status()
-                        .unwrap_or_else(|_| json!({"syncing": false}));
-                    Ok::<_, warp::Rejection>(warp::reply::json(&json!({
-                        "status": "ok",
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "latestSlot": slot,
-                        "finalizedSlot": finalized,
-                        "peerCount": peer_count,
-                        "sync": sync_status,
-                    })))
-                }
-            });
+        let health = warp::get().and(warp::path("health")).and_then(move || {
+            let backend = health_backend.clone();
+            async move {
+                let backend = backend.read().await;
+                let slot = backend.get_slot_number().unwrap_or(0);
+                let finalized = backend.get_finalized_slot().unwrap_or(0);
+                let peer_count = backend.get_peer_count().unwrap_or(0);
+                let sync_status = backend
+                    .get_sync_status()
+                    .unwrap_or_else(|_| json!({"syncing": false}));
+                Ok::<_, warp::Rejection>(warp::reply::json(&json!({
+                    "status": "ok",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "latestSlot": slot,
+                    "finalizedSlot": finalized,
+                    "peerCount": peer_count,
+                    "sync": sync_status,
+                })))
+            }
+        });
 
         // WebSocket subscription endpoint with connection limit
         let ws_subs = subs.clone();
@@ -418,11 +416,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
             cors = cors.allow_origin(origin.as_str());
         }
 
-        let routes = rpc
-            .or(health)
-            .or(ws)
-            .recover(handle_rejection)
-            .with(cors);
+        let routes = rpc.or(health).or(ws).recover(handle_rejection).with(cors);
 
         tracing::info!(
             port = self.port,
@@ -446,9 +440,7 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
     }
 }
 
-async fn handle_rejection(
-    err: warp::Rejection,
-) -> Result<impl Reply, warp::Rejection> {
+async fn handle_rejection(err: warp::Rejection) -> Result<impl Reply, warp::Rejection> {
     if err.find::<RateLimited>().is_some() {
         Ok(warp::reply::with_status(
             warp::reply::json(&json!({
@@ -569,16 +561,17 @@ async fn process_rpc_request<B: RpcBackend>(
     chain_id: u64,
 ) -> JsonRpcResponse {
     let method = req.method.clone();
-    RPC_METRICS.requests_total.with_label_values(&[&method]).inc();
+    RPC_METRICS
+        .requests_total
+        .with_label_values(&[&method])
+        .inc();
     let timer = RPC_METRICS
         .request_duration_seconds
         .with_label_values(&[&method])
         .start_timer();
     let result = match req.method.as_str() {
         "aeth_sendRawTransaction" => handle_send_raw_transaction(&req.params, backend).await,
-        "aeth_sendTransaction" => {
-            handle_send_transaction(&req.params, backend, chain_id).await
-        }
+        "aeth_sendTransaction" => handle_send_transaction(&req.params, backend, chain_id).await,
         "aeth_chainId" => Ok(json!(format!("0x{:x}", chain_id))),
         "aeth_getBlockByNumber" => handle_get_block_by_number(&req.params, backend).await,
         "aeth_getBlockByHash" => handle_get_block_by_hash(&req.params, backend).await,
@@ -1077,9 +1070,7 @@ async fn handle_request_airdrop<B: RpcBackend>(
     Ok(json!({"success": true}))
 }
 
-async fn handle_health<B: RpcBackend>(
-    backend: Arc<RwLock<B>>,
-) -> Result<Value, JsonRpcError> {
+async fn handle_health<B: RpcBackend>(backend: Arc<RwLock<B>>) -> Result<Value, JsonRpcError> {
     let backend = backend.read().await;
     let slot = backend.get_slot_number().unwrap_or(0);
     let finalized = backend.get_finalized_slot().unwrap_or(0);

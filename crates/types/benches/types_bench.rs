@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use aether_types::{
-    Address, Block, PublicKey, Signature, Transaction, TransactionReceipt,
-    TransactionStatus, VrfProof, H256,
+    Address, Block, PublicKey, Signature, Transaction, TransactionReceipt, TransactionStatus,
+    VrfProof, H256,
 };
 use std::collections::HashSet;
 
@@ -25,7 +25,9 @@ fn make_transaction(nonce: u64, data_size: usize) -> Transaction {
 }
 
 fn make_block(tx_count: usize) -> Block {
-    let txs: Vec<Transaction> = (0..tx_count).map(|i| make_transaction(i as u64, 32)).collect();
+    let txs: Vec<Transaction> = (0..tx_count)
+        .map(|i| make_transaction(i as u64, 32))
+        .collect();
     Block::new(
         42,
         H256::zero(),
@@ -56,11 +58,9 @@ fn bench_tx_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("tx_serialize");
     for data_size in [0, 64, 1024, 8192] {
         let tx = make_transaction(0, data_size);
-        group.bench_with_input(
-            BenchmarkId::new("bincode", data_size),
-            &tx,
-            |b, tx| b.iter(|| bincode::serialize(black_box(tx)).unwrap()),
-        );
+        group.bench_with_input(BenchmarkId::new("bincode", data_size), &tx, |b, tx| {
+            b.iter(|| bincode::serialize(black_box(tx)).unwrap())
+        });
     }
     group.finish();
 }
@@ -96,11 +96,9 @@ fn bench_block_serialize(c: &mut Criterion) {
     let mut group = c.benchmark_group("block_serialize");
     for tx_count in [0, 10, 100, 500] {
         let block = make_block(tx_count);
-        group.bench_with_input(
-            BenchmarkId::new("bincode", tx_count),
-            &block,
-            |b, block| b.iter(|| bincode::serialize(black_box(block)).unwrap()),
-        );
+        group.bench_with_input(BenchmarkId::new("bincode", tx_count), &block, |b, block| {
+            b.iter(|| bincode::serialize(black_box(block)).unwrap())
+        });
     }
     group.finish();
 }
@@ -110,11 +108,9 @@ fn bench_block_deserialize(c: &mut Criterion) {
     for tx_count in [0, 10, 100, 500] {
         let block = make_block(tx_count);
         let bytes = bincode::serialize(&block).unwrap();
-        group.bench_with_input(
-            BenchmarkId::new("bincode", tx_count),
-            &bytes,
-            |b, bytes| b.iter(|| bincode::deserialize::<Block>(black_box(bytes)).unwrap()),
-        );
+        group.bench_with_input(BenchmarkId::new("bincode", tx_count), &bytes, |b, bytes| {
+            b.iter(|| bincode::deserialize::<Block>(black_box(bytes)).unwrap())
+        });
     }
     group.finish();
 }

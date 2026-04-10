@@ -90,9 +90,7 @@ fn bench_tx_hash(c: &mut Criterion) {
     let keypair = Keypair::generate();
     let tx = make_signed_tx(&keypair, 0, 100);
 
-    c.bench_function("tx_hash", |b| {
-        b.iter(|| black_box(&tx).hash())
-    });
+    c.bench_function("tx_hash", |b| b.iter(|| black_box(&tx).hash()));
 }
 
 fn bench_apply_simple_tx(c: &mut Criterion) {
@@ -145,24 +143,20 @@ fn bench_sequential_transactions(c: &mut Criterion) {
             .map(|i| make_transfer_tx(&keypair, recipient, 100, i as u64, 100))
             .collect();
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &txs,
-            |b, txs| {
-                b.iter_with_setup(
-                    || {
-                        let mut ledger = temp_ledger();
-                        fund_account(&mut ledger, &address, 1_000_000_000);
-                        ledger
-                    },
-                    |mut ledger| {
-                        for tx in txs {
-                            black_box(ledger.apply_transaction(tx).unwrap());
-                        }
-                    },
-                )
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(count), &txs, |b, txs| {
+            b.iter_with_setup(
+                || {
+                    let mut ledger = temp_ledger();
+                    fund_account(&mut ledger, &address, 1_000_000_000);
+                    ledger
+                },
+                |mut ledger| {
+                    for tx in txs {
+                        black_box(ledger.apply_transaction(tx).unwrap());
+                    }
+                },
+            )
+        });
     }
     group.finish();
 }

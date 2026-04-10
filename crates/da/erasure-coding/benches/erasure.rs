@@ -26,8 +26,12 @@ fn bench_decode_full(c: &mut Criterion) {
         let data = vec![0xCDu8; size];
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
-        let shards: Vec<Option<Vec<u8>>> =
-            encoder.encode(&data).unwrap().into_iter().map(Some).collect();
+        let shards: Vec<Option<Vec<u8>>> = encoder
+            .encode(&data)
+            .unwrap()
+            .into_iter()
+            .map(Some)
+            .collect();
 
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &shards, |b, shards| {
@@ -45,8 +49,12 @@ fn bench_decode_recovery(c: &mut Criterion) {
         let data = vec![0xEFu8; size];
         let encoder = ReedSolomonEncoder::new(10, 2).unwrap();
         let decoder = ReedSolomonDecoder::new(10, 2).unwrap();
-        let mut shards: Vec<Option<Vec<u8>>> =
-            encoder.encode(&data).unwrap().into_iter().map(Some).collect();
+        let mut shards: Vec<Option<Vec<u8>>> = encoder
+            .encode(&data)
+            .unwrap()
+            .into_iter()
+            .map(Some)
+            .collect();
         // Drop 2 shards (max recoverable for r=2)
         shards[0] = None;
         shards[5] = None;

@@ -795,7 +795,13 @@ fn test_slash_evidence_reduces_validator_stake() {
     // Register the validator in the node's staking state.
     network.nodes[0]
         .staking_state_mut()
-        .register_validator(validator_addr, validator_addr, initial_stake, 0, validator_addr)
+        .register_validator(
+            validator_addr,
+            validator_addr,
+            initial_stake,
+            0,
+            validator_addr,
+        )
         .expect("register_validator should succeed");
 
     // Confirm baseline stake.
@@ -804,7 +810,10 @@ fn test_slash_evidence_reduces_validator_stake() {
         .get_validator(&validator_addr)
         .expect("validator must exist after registration")
         .staked_amount;
-    assert_eq!(before, initial_stake, "stake should equal initial_stake before slash");
+    assert_eq!(
+        before, initial_stake,
+        "stake should equal initial_stake before slash"
+    );
 
     // Apply a 5% slash (500 bps). This is the same code path that on_block_received
     // calls when processing slash_evidence entries in a block.
@@ -814,7 +823,10 @@ fn test_slash_evidence_reduces_validator_stake() {
         .expect("slash should succeed");
 
     let expected_slash = initial_stake * 500 / 10_000;
-    assert_eq!(slashed, expected_slash, "slashed amount should be 5% of stake");
+    assert_eq!(
+        slashed, expected_slash,
+        "slashed amount should be 5% of stake"
+    );
 
     let after = network.nodes[0]
         .staking_state()
@@ -865,7 +877,9 @@ fn test_slash_evidence_without_proof_is_skipped() {
 
     // Process slash evidence the same way the node does
     // (we can't easily call on_block_received here, so we replicate the logic)
-    use aether_consensus::slashing::{self as slash_verify, SlashProof, SlashType, Vote as SlashVote};
+    use aether_consensus::slashing::{
+        self as slash_verify, SlashProof, SlashType, Vote as SlashVote,
+    };
 
     let evidence = &fake_evidence;
     let applied = match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type) {
@@ -905,5 +919,8 @@ fn test_slash_evidence_without_proof_is_skipped() {
         .get_validator(&victim_addr)
         .expect("validator must exist")
         .staked_amount;
-    assert_eq!(after, initial_stake, "stake must be unchanged when proof is missing");
+    assert_eq!(
+        after, initial_stake,
+        "stake must be unchanged when proof is missing"
+    );
 }

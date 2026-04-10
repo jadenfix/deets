@@ -70,8 +70,9 @@ fn main() -> Result<()> {
     };
 
     println!("Generating {num_validators} validator keypairs...");
-    let keypairs: Vec<ValidatorKeypair> =
-        (0..num_validators).map(|_| ValidatorKeypair::generate()).collect();
+    let keypairs: Vec<ValidatorKeypair> = (0..num_validators)
+        .map(|_| ValidatorKeypair::generate())
+        .collect();
 
     // Save individual key files
     for (i, kp) in keypairs.iter().enumerate() {
@@ -88,11 +89,13 @@ fn main() -> Result<()> {
 
     // Build genesis config
     let genesis = GenesisConfig::from_keypairs(chain_config, &keypairs, stake_per_validator);
-    genesis.validate().context("genesis config validation failed")?;
+    genesis
+        .validate()
+        .context("genesis config validation failed")?;
 
     let genesis_path = output_dir.join("genesis.json");
-    let genesis_json = serde_json::to_string_pretty(&genesis)
-        .context("failed to serialize genesis config")?;
+    let genesis_json =
+        serde_json::to_string_pretty(&genesis).context("failed to serialize genesis config")?;
     std::fs::write(&genesis_path, &genesis_json)
         .with_context(|| format!("failed to write {}", genesis_path.display()))?;
 
@@ -103,14 +106,21 @@ fn main() -> Result<()> {
         stake_per_validator,
         stake_per_validator * num_validators as u128
     );
-    println!("  chain: {} ({})", genesis.chain_config.chain.chain_id, network);
+    println!(
+        "  chain: {} ({})",
+        genesis.chain_config.chain.chain_id, network
+    );
 
     // Print env var hints for docker-compose
     println!("\nDocker environment variables:");
     println!("  AETHER_GENESIS_PATH={}", genesis_path.display());
     for (i, _) in keypairs.iter().enumerate() {
         let key_path = output_dir.join(format!("validator-{}.key", i + 1));
-        println!("  AETHER_VALIDATOR_KEY={} (validator-{})", key_path.display(), i + 1);
+        println!(
+            "  AETHER_VALIDATOR_KEY={} (validator-{})",
+            key_path.display(),
+            i + 1
+        );
     }
 
     Ok(())

@@ -416,7 +416,9 @@ impl StakingState {
             .delegations
             .iter()
             .filter(|delegation| delegation.validator == validator)
-            .fold(0u128, |acc, delegation| acc.saturating_add(delegation.amount));
+            .fold(0u128, |acc, delegation| {
+                acc.saturating_add(delegation.amount)
+            });
 
         // Proportionally reduce pending unbonding entries for this validator's delegators.
         // Without this, a delegator who unbonds before a slash can withdraw the full
@@ -738,7 +740,12 @@ mod tests {
 
         // Add a delegation
         state
-            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+            )
             .unwrap();
 
         let pre_total = state.get_total_staked();
@@ -940,10 +947,20 @@ mod tests {
             .unwrap();
         // Add delegators so rewards are actually distributed
         state
-            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+            )
             .unwrap();
         state
-            .delegate(test_address(4), test_address(4), test_address(2), 500_000_000)
+            .delegate(
+                test_address(4),
+                test_address(4),
+                test_address(2),
+                500_000_000,
+            )
             .unwrap();
 
         let initial_total = state.get_total_staked();
@@ -962,7 +979,11 @@ mod tests {
         // Second epoch: rewards should be based on updated total_staked
         state.distribute_rewards(epoch_rewards);
         // After two epochs, total must reflect both distributions
-        let actual_total: u128 = state.validators.iter().map(|v| v.staked_amount).sum::<u128>()
+        let actual_total: u128 = state
+            .validators
+            .iter()
+            .map(|v| v.staked_amount)
+            .sum::<u128>()
             + state.delegations.iter().map(|d| d.amount).sum::<u128>();
         assert_eq!(
             state.get_total_staked(),
@@ -984,7 +1005,12 @@ mod tests {
             )
             .unwrap();
         state
-            .delegate(test_address(3), test_address(3), test_address(1), 500_000_000)
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                500_000_000,
+            )
             .unwrap();
 
         let initial_total = state.get_total_staked();
@@ -1049,10 +1075,20 @@ mod tests {
             )
             .unwrap();
         state
-            .delegate(test_address(3), test_address(3), test_address(1), 200_000_000)
+            .delegate(
+                test_address(3),
+                test_address(3),
+                test_address(1),
+                200_000_000,
+            )
             .unwrap();
         state
-            .delegate(test_address(4), test_address(4), test_address(2), 300_000_000)
+            .delegate(
+                test_address(4),
+                test_address(4),
+                test_address(2),
+                300_000_000,
+            )
             .unwrap();
 
         for _ in 0..5 {
@@ -1135,12 +1171,7 @@ mod tests {
             )
             .unwrap();
         state
-            .delegate(
-                test_address(3),
-                test_address(3),
-                test_address(1),
-                100,
-            )
+            .delegate(test_address(3), test_address(3), test_address(1), 100)
             .unwrap();
 
         state
@@ -1266,7 +1297,11 @@ mod tests {
         state.slash(val, 100, 0).unwrap();
 
         let err = state
-            .unjail(test_address(99), val, StakingState::UNJAIL_COOLDOWN_SLOTS + 1)
+            .unjail(
+                test_address(99),
+                val,
+                StakingState::UNJAIL_COOLDOWN_SLOTS + 1,
+            )
             .unwrap_err();
         assert!(matches!(err, StakingError::Unauthorized));
     }
@@ -1289,10 +1324,7 @@ mod tests {
         let err = state
             .unjail(val, val, StakingState::UNJAIL_COOLDOWN_SLOTS + 1)
             .unwrap_err();
-        assert!(matches!(
-            err,
-            StakingError::UnjailInsufficientStake { .. }
-        ));
+        assert!(matches!(err, StakingError::UnjailInsufficientStake { .. }));
     }
 
     #[test]

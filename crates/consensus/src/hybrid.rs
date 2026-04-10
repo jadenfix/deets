@@ -152,14 +152,21 @@ impl HybridConsensus {
     ) -> Self {
         // Guard against division-by-zero in advance_slot epoch boundary check.
         let epoch_length = epoch_length.max(1);
-        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let total_stake: u128 = validators
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))
             .collect();
 
         // Convert f64 tau to integer fraction: multiply by 10000 to preserve 4 decimal places
-        let tau_clamped = if tau.is_finite() { tau.clamp(0.0, 1.0) } else { 0.5 };
+        let tau_clamped = if tau.is_finite() {
+            tau.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
         let tau_numerator = (tau_clamped * 10000.0).round() as u128;
         let tau_denominator = 10000u128;
 
@@ -482,7 +489,10 @@ impl HybridConsensus {
         votes_map.insert(voter_addr, vote.clone());
 
         // Check for quorum (2/3+ stake)
-        let voted_stake: u128 = votes_map.values().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let voted_stake: u128 = votes_map
+            .values()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         // Use epoch-frozen total stake for quorum calculation so mid-epoch
         // slashing cannot lower the quorum threshold within an epoch.
         let has_quorum = crate::has_quorum(voted_stake, self.epoch_total_stake);
@@ -536,8 +546,7 @@ impl HybridConsensus {
                     if let Some(parent_hash) = self.block_parents.get(&vote.block_hash).copied() {
                         if let Some(&parent_slot) = self.block_slots.get(&parent_hash) {
                             // Parent's QC was also formed in Propose phase
-                            let parent_key =
-                                (parent_slot, Phase::Propose, parent_hash);
+                            let parent_key = (parent_slot, Phase::Propose, parent_hash);
                             if self.qcs.contains_key(&parent_key)
                                 && parent_slot > self.finalized_slot
                             {
@@ -626,7 +635,10 @@ impl HybridConsensus {
         let agg_sig = aggregate_signatures(&signatures)?;
         let agg_pk = aggregate_public_keys(&pubkeys)?;
 
-        let total_stake = votes.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let total_stake = votes
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let signers: Vec<Address> = votes.iter().map(|v| v.validator.to_address()).collect();
 
         Ok(QuorumCertificate {
@@ -1050,7 +1062,10 @@ mod tests {
             "Dedup should prevent duplicate accumulation"
         );
 
-        let voted_stake: u128 = votes.values().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let voted_stake: u128 = votes
+            .values()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         assert_eq!(
             voted_stake, 1000,
             "Total stake should be 1000, not 1,000,000"
@@ -1143,10 +1158,7 @@ mod tests {
 
         // Now epoch snapshot should reflect the slashed stake
         assert_eq!(consensus.epoch_total_stake, 500);
-        assert_eq!(
-            consensus.epoch_validators.get(&v1_addr).unwrap().stake,
-            500
-        );
+        assert_eq!(consensus.epoch_validators.get(&v1_addr).unwrap().stake, 500);
     }
 
     #[test]
@@ -1180,7 +1192,10 @@ mod tests {
         for _ in 0..5 {
             c1.advance_slot();
         }
-        assert_ne!(c1.epoch_randomness, r_before, "fallback should change randomness");
+        assert_ne!(
+            c1.epoch_randomness, r_before,
+            "fallback should change randomness"
+        );
 
         // Case 2: VRF update applied — fallback should NOT override at boundary
         let mut c2 = HybridConsensus::new(vec![v1], 0.8, 5, None, None, None);
@@ -1680,9 +1695,15 @@ mod tests {
 
         let block = make_valid_block(&consensus, &vrf_kp, proposer, 7, other_parent);
         let result = consensus.validate_block(&block);
-        assert!(result.is_err(), "should reject: parent slot 3 < locked slot 5");
         assert!(
-            result.unwrap_err().to_string().contains("safe node predicate"),
+            result.is_err(),
+            "should reject: parent slot 3 < locked slot 5"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("safe node predicate"),
             "error message should mention safe node predicate"
         );
     }
@@ -1825,14 +1846,8 @@ mod tests {
         // Verify that create_vote uses epoch-frozen stake, not live stake.
         let (v1, bls1) = create_test_validator_with_bls(1000);
         let addr1 = v1.pubkey.to_address();
-        let mut consensus = HybridConsensus::new(
-            vec![v1.clone()],
-            0.8,
-            100,
-            None,
-            Some(bls1),
-            Some(addr1),
-        );
+        let mut consensus =
+            HybridConsensus::new(vec![v1.clone()], 0.8, 100, None, Some(bls1), Some(addr1));
 
         // Slash the validator mid-epoch — live stake drops but epoch stake stays
         consensus.slash_validator(&addr1, 5000); // 50% slash
@@ -1845,7 +1860,10 @@ mod tests {
             .create_vote(block_hash, Phase::Propose)
             .unwrap()
             .unwrap();
-        assert_eq!(vote.stake, 1000, "vote should carry epoch-frozen stake, not live stake");
+        assert_eq!(
+            vote.stake, 1000,
+            "vote should carry epoch-frozen stake, not live stake"
+        );
     }
 
     #[test]
@@ -1866,7 +1884,8 @@ mod tests {
 
         // Epoch snapshot should now reflect the slashed stake
         assert_eq!(
-            consensus.epoch_validators.get(&addr1).unwrap().stake, 500,
+            consensus.epoch_validators.get(&addr1).unwrap().stake,
+            500,
             "epoch snapshot should be updated at epoch boundary"
         );
         assert_eq!(consensus.epoch_total_stake, 500);
@@ -1904,7 +1923,7 @@ mod tests {
 
         assert!(consensus.process_vote(vote1).unwrap().is_none());
         assert!(consensus.process_vote(vote2).unwrap().is_some()); // QC at 2/3
-        // Don't need vote3 for quorum; phase advances to Prevote
+                                                                   // Don't need vote3 for quorum; phase advances to Prevote
 
         assert_eq!(consensus.finalized_slot, 0, "no finality yet — only one QC");
 
@@ -2001,7 +2020,7 @@ mod tests {
 
         let slashed = consensus.slash_validator(&addr, 500); // 5%
         let expected = large_stake / 20; // exact 5%
-        // Allow ±1 for rounding
+                                         // Allow ±1 for rounding
         assert!(
             slashed >= expected - 1 && slashed <= expected + 1,
             "expected ~{expected}, got {slashed}"

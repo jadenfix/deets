@@ -331,8 +331,8 @@ mod tests {
 
     mod proptests {
         use super::*;
-        use proptest::prelude::*;
         use proptest::collection::vec as pvec;
+        use proptest::prelude::*;
 
         fn arb_hash() -> impl Strategy<Value = H256> {
             any::<[u8; 32]>().prop_map(|b| H256::from_slice(&b).unwrap())

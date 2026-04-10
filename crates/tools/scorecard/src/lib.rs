@@ -197,9 +197,17 @@ mod tests {
                 0u32..=50u32,
                 0u32..=200u32,
             )
-                .prop_map(|(identity, uptime, avg_latency_ms, finality_faults, missed_slots)| {
-                    ValidatorSample { identity, uptime, avg_latency_ms, finality_faults, missed_slots }
-                })
+                .prop_map(
+                    |(identity, uptime, avg_latency_ms, finality_faults, missed_slots)| {
+                        ValidatorSample {
+                            identity,
+                            uptime,
+                            avg_latency_ms,
+                            finality_faults,
+                            missed_slots,
+                        }
+                    },
+                )
         }
 
         proptest! {

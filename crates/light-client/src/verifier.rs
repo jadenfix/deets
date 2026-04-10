@@ -49,7 +49,9 @@ pub struct LightClientVerifier {
 impl LightClientVerifier {
     /// Create a new light client verifier with the initial validator set.
     pub fn new(validators: Vec<ValidatorEntry>) -> Self {
-        let total_stake: u128 = validators.iter().fold(0u128, |acc, v| acc.saturating_add(v.stake));
+        let total_stake: u128 = validators
+            .iter()
+            .fold(0u128, |acc, v| acc.saturating_add(v.stake));
         let validators_map: HashMap<Vec<u8>, ValidatorEntry> = validators
             .into_iter()
             .map(|v| (v.pubkey.as_bytes().to_vec(), v))
@@ -134,10 +136,7 @@ impl LightClientVerifier {
 
         // Aggregate public keys and verify
         if signer_pk_bytes.is_empty() {
-            bail!(
-                "finalized header at slot {} has no signers",
-                header.slot
-            );
+            bail!("finalized header at slot {} has no signers", header.slot);
         }
         if !finalized.aggregate_signature.is_empty() {
             let agg_pk = aether_crypto_bls::aggregate_public_keys(&signer_pk_bytes)
@@ -181,7 +180,9 @@ impl LightClientVerifier {
 
     /// Update the validator set (on epoch boundary).
     pub fn update_validators(&mut self, validators: Vec<ValidatorEntry>) {
-        self.total_stake = validators.iter().fold(0u128, |acc, v| acc.saturating_add(v.stake));
+        self.total_stake = validators
+            .iter()
+            .fold(0u128, |acc, v| acc.saturating_add(v.stake));
         self.validators = validators
             .into_iter()
             .map(|v| (v.pubkey.as_bytes().to_vec(), v))

@@ -50,14 +50,21 @@ impl VrfPosConsensus {
     pub fn new(validators: Vec<ValidatorInfo>, tau: f64, epoch_length: u64) -> Self {
         // Guard against division-by-zero in advance_slot epoch boundary check.
         let epoch_length = epoch_length.max(1);
-        let total_stake: u128 = validators.iter().map(|v| v.stake).fold(0u128, u128::saturating_add);
+        let total_stake: u128 = validators
+            .iter()
+            .map(|v| v.stake)
+            .fold(0u128, u128::saturating_add);
         let validators_map: HashMap<Address, ValidatorInfo> = validators
             .into_iter()
             .map(|v| (v.pubkey.to_address(), v))
             .collect();
 
         // Convert f64 tau to integer fraction: multiply by 10000 to preserve 4 decimal places
-        let tau_clamped = if tau.is_finite() { tau.clamp(0.0, 1.0) } else { 0.5 };
+        let tau_clamped = if tau.is_finite() {
+            tau.clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
         let tau_numerator = (tau_clamped * 10000.0).round() as u128;
         let tau_denominator = 10000u128;
 
@@ -211,7 +218,10 @@ impl VrfPosConsensus {
             .get_mut(address)
             .ok_or_else(|| anyhow::anyhow!("validator not found"))?;
 
-        self.total_stake = self.total_stake.saturating_sub(validator.stake).saturating_add(new_stake);
+        self.total_stake = self
+            .total_stake
+            .saturating_sub(validator.stake)
+            .saturating_add(new_stake);
         validator.stake = new_stake;
 
         Ok(())

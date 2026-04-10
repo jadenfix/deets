@@ -364,13 +364,7 @@ mod tests {
         let mut pool = CommitRevealPool::new(1, 100);
 
         // Create 5 transactions committed at different slots
-        let salts: [[u8; 32]; 5] = [
-            [10u8; 32],
-            [20u8; 32],
-            [30u8; 32],
-            [40u8; 32],
-            [50u8; 32],
-        ];
+        let salts: [[u8; 32]; 5] = [[10u8; 32], [20u8; 32], [30u8; 32], [40u8; 32], [50u8; 32]];
         let commit_slots = [15u64, 10, 20, 10, 12]; // intentionally unordered, with ties
 
         let mut hashes = Vec::new();

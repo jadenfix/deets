@@ -115,4 +115,6 @@ pub mod io;
 
 pub use generator::{decode_snapshot, generate_snapshot, SnapshotMetadata, StateSnapshot};
 pub use importer::import_snapshot;
-pub use io::{export_snapshot_to_file, import_snapshot_from_file, list_snapshots, prune_old_snapshots};
+pub use io::{
+    export_snapshot_to_file, import_snapshot_from_file, list_snapshots, prune_old_snapshots,
+};

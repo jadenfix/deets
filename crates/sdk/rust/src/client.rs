@@ -65,11 +65,9 @@ impl AetherClient {
             .map_err(|e| AetherSdkError::InvalidFee(e.to_string()))?;
 
         let tx_hash = tx.hash();
-        let payload =
-            SubmitRpcRequest::new(tx).map_err(AetherSdkError::serialization)?;
+        let payload = SubmitRpcRequest::new(tx).map_err(AetherSdkError::serialization)?;
         let endpoint = HttpEndpoint::parse(&self.endpoint)?;
-        let body =
-            serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
+        let body = serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             endpoint.path,
@@ -100,12 +98,9 @@ impl AetherClient {
         stream
             .read_to_end(&mut raw)
             .await
-            .map_err(|e| {
-                AetherSdkError::network(format!("failed to read rpc response: {e}"))
-            })?;
-        let response_text = String::from_utf8(raw).map_err(|_| {
-            AetherSdkError::invalid_response("rpc response was not valid utf-8")
-        })?;
+            .map_err(|e| AetherSdkError::network(format!("failed to read rpc response: {e}")))?;
+        let response_text = String::from_utf8(raw)
+            .map_err(|_| AetherSdkError::invalid_response("rpc response was not valid utf-8"))?;
         let (status_line, rpc_body) = parse_http_response(&response_text)?;
         if !status_line.contains(" 200 ") {
             return Err(AetherSdkError::invalid_response(format!(
@@ -113,12 +108,9 @@ impl AetherClient {
             )));
         }
 
-        let response: JsonRpcResponse<String> =
-            serde_json::from_str(rpc_body).map_err(|e| {
-                AetherSdkError::invalid_response(format!(
-                    "failed to decode rpc response body: {e}"
-                ))
-            })?;
+        let response: JsonRpcResponse<String> = serde_json::from_str(rpc_body).map_err(|e| {
+            AetherSdkError::invalid_response(format!("failed to decode rpc response body: {e}"))
+        })?;
 
         if let Some(error) = response.error {
             return Err(AetherSdkError::Rpc {
@@ -218,9 +210,7 @@ impl HttpEndpoint {
 
         let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
             let parsed_port = p.parse::<u16>().map_err(|_| {
-                AetherSdkError::invalid_endpoint(format!(
-                    "invalid endpoint port in {endpoint}"
-                ))
+                AetherSdkError::invalid_endpoint(format!("invalid endpoint port in {endpoint}"))
             })?;
             (h.to_string(), parsed_port)
         } else {
@@ -257,9 +247,8 @@ fn parse_http_response(response: &str) -> Result<(&str, &str), AetherSdkError> {
 }
 
 fn parse_h256_hex(value: &str) -> Result<aether_types::H256, AetherSdkError> {
-    let bytes = hex::decode(value.trim_start_matches("0x")).map_err(|_| {
-        AetherSdkError::invalid_response(format!("invalid tx hash hex: {value}"))
-    })?;
+    let bytes = hex::decode(value.trim_start_matches("0x"))
+        .map_err(|_| AetherSdkError::invalid_response(format!("invalid tx hash hex: {value}")))?;
     aether_types::H256::from_slice(&bytes)
         .map_err(|e| AetherSdkError::invalid_response(format!("invalid tx hash: {e}")))
 }

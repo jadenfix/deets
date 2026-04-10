@@ -317,8 +317,7 @@ mod proptests {
 
     /// Generate a valid 0x-prefixed 40-hex-char address.
     fn valid_address() -> impl Strategy<Value = String> {
-        prop::array::uniform20(any::<u8>())
-            .prop_map(|bytes| format!("0x{}", hex::encode(bytes)))
+        prop::array::uniform20(any::<u8>()).prop_map(|bytes| format!("0x{}", hex::encode(bytes)))
     }
 
     /// Generate a valid amount in [1, 250_000].

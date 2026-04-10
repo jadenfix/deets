@@ -85,25 +85,21 @@ fn bench_get_transactions(c: &mut Criterion) {
     for pool_size in [100, 1_000, 5_000] {
         let txs = generate_txs(pool_size, 1);
 
-        group.bench_with_input(
-            BenchmarkId::new("pack_block", pool_size),
-            &txs,
-            |b, txs| {
-                b.iter_batched(
-                    || {
-                        let mut pool = Mempool::with_defaults();
-                        for tx in txs {
-                            let _ = pool.add_transaction(tx.clone());
-                        }
-                        pool
-                    },
-                    |mut pool| {
-                        black_box(pool.get_transactions(500, 10_000_000));
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("pack_block", pool_size), &txs, |b, txs| {
+            b.iter_batched(
+                || {
+                    let mut pool = Mempool::with_defaults();
+                    for tx in txs {
+                        let _ = pool.add_transaction(tx.clone());
+                    }
+                    pool
+                },
+                |mut pool| {
+                    black_box(pool.get_transactions(500, 10_000_000));
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
 
     group.finish();

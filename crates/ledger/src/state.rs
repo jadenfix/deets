@@ -176,8 +176,7 @@ impl Ledger {
         // (total_input - total_output >= fee). For account/transfer transactions,
         // the fee is deducted from the sender's account balance.
         if !is_utxo_tx {
-            let transfer_amount =
-                transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
+            let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
             let total_debit = tx
                 .fee
                 .checked_add(transfer_amount)
@@ -569,11 +568,8 @@ impl Ledger {
         transactions: &[Transaction],
         expected_chain_id: Option<u64>,
     ) -> Result<(Vec<TransactionReceipt>, PendingOverlay)> {
-        let _span = tracing::info_span!(
-            "apply_block_speculative",
-            tx_count = transactions.len(),
-        )
-        .entered();
+        let _span = tracing::info_span!("apply_block_speculative", tx_count = transactions.len(),)
+            .entered();
         let start = Instant::now();
         let mut overlay = PendingOverlay::new();
         let mut receipts = Vec::new();
@@ -680,8 +676,7 @@ impl Ledger {
         // (total_input - total_output >= fee). For account/transfer transactions,
         // the fee is deducted from the sender's account balance.
         if !is_utxo_tx {
-            let transfer_amount =
-                transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
+            let transfer_amount = transfer_payload.as_ref().map(|p| p.amount).unwrap_or(0);
             let total_debit = tx
                 .fee
                 .checked_add(transfer_amount)
@@ -953,11 +948,8 @@ impl Ledger {
         &mut self,
         transactions: &[Transaction],
     ) -> Result<Vec<TransactionReceipt>> {
-        let _span = tracing::info_span!(
-            "apply_block_transactions",
-            tx_count = transactions.len(),
-        )
-        .entered();
+        let _span = tracing::info_span!("apply_block_transactions", tx_count = transactions.len(),)
+            .entered();
         let mut receipts = Vec::new();
 
         if transactions.is_empty() {
@@ -1307,7 +1299,11 @@ mod tests {
             .get(CF_METADATA, b"state_root")
             .unwrap()
             .map(|b| H256::from_slice(&b).unwrap());
-        assert_ne!(root_before, Some(overlay_root), "batch should not be written yet");
+        assert_ne!(
+            root_before,
+            Some(overlay_root),
+            "batch should not be written yet"
+        );
 
         // Extend with extra data (simulating block persistence)
         let mut extra = StorageBatch::new();
@@ -1510,9 +1506,7 @@ mod tests {
         let hash = tx.hash();
         tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
 
-        let (receipts, _overlay) = ledger
-            .apply_block_speculatively(&[tx.clone(), tx])
-            .unwrap();
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx.clone(), tx]).unwrap();
         assert_eq!(receipts.len(), 2);
         assert!(matches!(receipts[0].status, TransactionStatus::Success));
         assert!(
@@ -1756,8 +1750,7 @@ mod tests {
         let hash = tx.hash();
         tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
 
-        let (receipts, _overlay) =
-            ledger.apply_block_speculatively(&[tx]).unwrap();
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx]).unwrap();
         assert_eq!(receipts.len(), 1);
         assert!(
             matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("cannot mix")),
@@ -1829,7 +1822,10 @@ mod tests {
         let result = ledger.apply_transaction(&tx);
         assert!(result.is_err(), "duplicate UTxO input must be rejected");
         assert!(
-            result.unwrap_err().to_string().contains("duplicate UTxO input"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate UTxO input"),
             "error should mention duplicate input"
         );
     }
@@ -1985,8 +1981,7 @@ mod tests {
         let hash2 = tx2.hash();
         tx2.signature = Signature::from_bytes(keypair.sign(hash2.as_bytes()));
 
-        let (receipts, _overlay) =
-            ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
         assert_eq!(receipts.len(), 2);
         assert!(
             matches!(&receipts[0].status, TransactionStatus::Success),
@@ -2087,7 +2082,10 @@ mod tests {
         ledger.write_batch(batch).unwrap();
 
         let root_after = ledger.state_root();
-        assert_ne!(root_before, root_after, "state root must change after credit");
+        assert_ne!(
+            root_before, root_after,
+            "state root must change after credit"
+        );
     }
 
     #[test]
@@ -2230,8 +2228,7 @@ mod tests {
         let hash2 = tx2.hash();
         tx2.signature = Signature::from_bytes(keypair.sign(hash2.as_bytes()));
 
-        let (receipts, _overlay) =
-            ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
+        let (receipts, _overlay) = ledger.apply_block_speculatively(&[tx1, tx2]).unwrap();
         assert_eq!(receipts.len(), 2);
 
         // tx1 must have failed (non-existent UTxO)

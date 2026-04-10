@@ -40,13 +40,9 @@ fn bench_compact_block_creation(c: &mut Criterion) {
     let mut group = c.benchmark_group("compact_block_create");
     for num_txs in [10, 100, 500, 1000] {
         let block = make_block(num_txs);
-        group.bench_with_input(
-            BenchmarkId::from_parameter(num_txs),
-            &block,
-            |b, block| {
-                b.iter(|| CompactBlock::from_block(black_box(block)));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(num_txs), &block, |b, block| {
+            b.iter(|| CompactBlock::from_block(black_box(block)));
+        });
     }
     group.finish();
 }
@@ -99,9 +95,7 @@ fn bench_compress_message(c: &mut Criterion) {
     }
     // Random data (worst case for compression)
     for size in [1024, 16384] {
-        let data: Vec<u8> = (0..size)
-            .map(|i| ((i * 7 + 13) % 256) as u8)
-            .collect();
+        let data: Vec<u8> = (0..size).map(|i| ((i * 7 + 13) % 256) as u8).collect();
         group.bench_with_input(BenchmarkId::new("pseudorandom", size), &data, |b, data| {
             b.iter(|| compress_message(black_box(data)));
         });

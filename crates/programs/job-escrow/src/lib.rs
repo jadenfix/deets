@@ -28,7 +28,7 @@
 // ============================================================================
 
 use aether_types::{Address, H256};
-use aether_verifiers_vcr::{VerifiableComputeReceipt, VcrValidator};
+use aether_verifiers_vcr::{VcrValidator, VerifiableComputeReceipt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -233,8 +233,8 @@ impl JobEscrowState {
             // Cryptographically verify the VCR proof (TEE attestation, KZG trace
             // commitment, and worker signature) before releasing payment.
             let proof_bytes = job.vcr_proof.as_deref().ok_or("missing VCR proof")?;
-            let receipt: VerifiableComputeReceipt =
-                serde_json::from_slice(proof_bytes).map_err(|e| format!("invalid VCR proof encoding: {e}"))?;
+            let receipt: VerifiableComputeReceipt = serde_json::from_slice(proof_bytes)
+                .map_err(|e| format!("invalid VCR proof encoding: {e}"))?;
             vcr_validator
                 .verify(&receipt)
                 .map_err(|e| format!("VCR proof verification failed: {e}"))?;
@@ -496,12 +496,19 @@ mod tests {
         state.accept_job(job_id, addr(2)).unwrap();
         // Submit garbage bytes as the VCR proof
         state
-            .submit_result(job_id, addr(2), H256::zero(), vec![0xde, 0xad, 0xbe, 0xef], 150)
+            .submit_result(
+                job_id,
+                addr(2),
+                H256::zero(),
+                vec![0xde, 0xad, 0xbe, 0xef],
+                150,
+            )
             .unwrap();
 
         let err = state.verify_job(job_id, 200, &validator).unwrap_err();
         assert!(
-            err.contains("invalid VCR proof encoding") || err.contains("VCR proof verification failed"),
+            err.contains("invalid VCR proof encoding")
+                || err.contains("VCR proof verification failed"),
             "unexpected error: {err}"
         );
         // Job must remain Submitted (not completed) after a failed verification
@@ -547,10 +554,8 @@ mod tests {
         );
 
         // A provider at exactly MIN_PROVIDER_REPUTATION is also blocked.
-        *state
-            .provider_reputation
-            .entry(addr(2))
-            .or_insert(0) = JobEscrowState::MIN_PROVIDER_REPUTATION;
+        *state.provider_reputation.entry(addr(2)).or_insert(0) =
+            JobEscrowState::MIN_PROVIDER_REPUTATION;
         let err2 = state.accept_job(job_id, addr(2)).unwrap_err();
         assert!(err2.contains("too low"), "unexpected error: {err2}");
     }
@@ -567,10 +572,7 @@ mod tests {
         // addr(2) has reputation -49, one above the threshold — should be allowed.
         *state.provider_reputation.entry(addr(2)).or_insert(0) = -49;
         state.accept_job(job_id, addr(2)).unwrap();
-        assert_eq!(
-            state.get_job(&job_id).unwrap().status,
-            JobStatus::Accepted
-        );
+        assert_eq!(state.get_job(&job_id).unwrap().status, JobStatus::Accepted);
     }
 
     #[test]

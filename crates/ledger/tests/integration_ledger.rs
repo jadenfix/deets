@@ -92,7 +92,10 @@ fn speculative_empty_block() {
     let root_before = ledger.state_root();
     let (receipts, overlay) = ledger.apply_block_speculatively(&[]).unwrap();
     assert!(receipts.is_empty());
-    assert_eq!(overlay.state_root, root_before, "empty block must not change state root");
+    assert_eq!(
+        overlay.state_root, root_before,
+        "empty block must not change state root"
+    );
 }
 
 #[test]
@@ -106,7 +109,11 @@ fn speculative_single_tx() {
 
     assert_eq!(receipts.len(), 1);
     assert!(matches!(receipts[0].status, TransactionStatus::Success));
-    assert_ne!(overlay.state_root, ledger.state_root(), "speculative root should differ from committed");
+    assert_ne!(
+        overlay.state_root,
+        ledger.state_root(),
+        "speculative root should differ from committed"
+    );
 }
 
 #[test]
@@ -120,7 +127,11 @@ fn speculative_multiple_txs_sequential_nonces() {
 
     assert_eq!(receipts.len(), 5);
     for r in &receipts {
-        assert!(matches!(r.status, TransactionStatus::Success), "tx failed: {:?}", r.status);
+        assert!(
+            matches!(r.status, TransactionStatus::Success),
+            "tx failed: {:?}",
+            r.status
+        );
     }
 
     // Commit and verify account state
@@ -186,7 +197,10 @@ fn speculative_matches_sequential_state_root() {
     }
     let root_b = ledger_b.state_root();
 
-    assert_eq!(root_a, root_b, "speculative+commit must produce same state root as sequential");
+    assert_eq!(
+        root_a, root_b,
+        "speculative+commit must produce same state root as sequential"
+    );
 }
 
 // ─── chain_id mismatch ───────────────────────────────────────────────
@@ -207,7 +221,10 @@ fn chain_id_mismatch_produces_failed_receipt() {
     assert_eq!(receipts.len(), 1);
     match &receipts[0].status {
         TransactionStatus::Failed { reason } => {
-            assert!(reason.contains("wrong chain_id"), "unexpected reason: {reason}");
+            assert!(
+                reason.contains("wrong chain_id"),
+                "unexpected reason: {reason}"
+            );
         }
         other => panic!("expected Failed, got {:?}", other),
     }
@@ -500,5 +517,8 @@ fn utxo_ownership_mismatch_rejected() {
     let result = ledger.apply_transaction(&tx);
     assert!(result.is_err(), "spending someone else's UTxO should fail");
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("not sender"), "unexpected error: {err_msg}");
+    assert!(
+        err_msg.contains("not sender"),
+        "unexpected error: {err_msg}"
+    );
 }

@@ -21,21 +21,17 @@ fn setup_state(num_validators: usize) -> StakingState {
 fn bench_register_validator(c: &mut Criterion) {
     let mut group = c.benchmark_group("staking/register_validator");
     for count in [10, 50, 100] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(count),
-            &count,
-            |b, &count| {
-                b.iter_batched(
-                    || setup_state(count),
-                    |mut state| {
-                        // Register one more validator
-                        let a = addr(count as u8 + 1);
-                        black_box(state.register_validator(a, a, 1_000_000_000, 500, a))
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
+            b.iter_batched(
+                || setup_state(count),
+                |mut state| {
+                    // Register one more validator
+                    let a = addr(count as u8 + 1);
+                    black_box(state.register_validator(a, a, 1_000_000_000, 500, a))
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
     group.finish();
 }

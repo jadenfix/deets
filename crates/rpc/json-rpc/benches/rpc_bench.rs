@@ -49,8 +49,7 @@ fn bench_request_parsing(c: &mut Criterion) {
         g.throughput(Throughput::Bytes(payload.len() as u64));
         g.bench_with_input(BenchmarkId::from_parameter(label), &payload, |b, p| {
             b.iter(|| {
-                let _: JsonRpcRequest =
-                    serde_json::from_slice(p).expect("valid JSON-RPC request");
+                let _: JsonRpcRequest = serde_json::from_slice(p).expect("valid JSON-RPC request");
             });
         });
     }
@@ -151,9 +150,7 @@ fn bench_rate_limiter(c: &mut Criterion) {
     let limiter3 = RateLimiter::new(1_000_000, 1_000_000.0);
     rt.block_on(async {
         for i in 0u32..10_000 {
-            limiter3
-                .check(IpAddr::V4(Ipv4Addr::from(i)))
-                .await;
+            limiter3.check(IpAddr::V4(Ipv4Addr::from(i))).await;
         }
     });
     g.bench_function("cleanup_10k_entries", |b| {
