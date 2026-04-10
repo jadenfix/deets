@@ -1,6 +1,22 @@
 # Aether Status Snapshot
 
-**Date**: March 31, 2026
+**Date**: April 9, 2026
+
+## Agent 2 — Cycle 44 (2026-04-09)
+
+- **Task**: fix(da,p2p): harden DA layer against DoS and fix gossip dedup eviction order
+- **Tier**: 3 (Networking & Resilience) + DA safety
+- **Branch**: `fix/agent2-da-networking-harden`, PR #353
+- **Details**:
+  - Erasure decoder: replaced `unwrap()` with proper error propagation, added safe `usize::try_from` + `checked_add` for integer overflow protection on adversarial length prefixes
+  - Turbine receiver: added `MAX_PENDING_BYTES` (128 MiB) cap on aggregate pending shred memory to prevent DoS via unbounded memory growth
+  - Gossip dedup cache: replaced `HashSet` random-order eviction with `HashSet` + `VecDeque` FIFO eviction to prevent message replay attacks
+  - Added 4 new regression tests across turbine receiver and gossip dedup
+  - Full workspace tests pass, clippy clean
+
+---
+
+**Previous date**: March 31, 2026
 
 ## Agent 1 — Cycle 43 (2026-04-02)
 
