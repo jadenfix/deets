@@ -18,12 +18,7 @@ pub struct KesSignature {
 }
 
 impl KesSignature {
-    /// Verify the signature against a KES verification key and message.
-    ///
-    /// Steps:
-    /// 1. Verify the Ed25519 signature against the leaf public key
-    /// 2. Verify the Merkle authentication path from leaf to root
-    /// 3. Compare the reconstructed root to the verification key's root
+    #[must_use = "verification result must not be silently discarded"]
     pub fn verify(&self, vk: &KesVerificationKey, message: &[u8]) -> bool {
         if self.period >= vk.max_periods {
             return false;

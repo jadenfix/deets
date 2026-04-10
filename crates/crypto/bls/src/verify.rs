@@ -34,6 +34,7 @@ const DST: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 /// - aggregated_signature: The sum of all signatures (96 bytes)
 ///
 /// Returns: true if signature is valid, false otherwise
+#[must_use = "verification result must not be silently discarded"]
 pub fn verify_aggregated(
     aggregated_pubkey: &[u8],
     message: &[u8],
@@ -62,6 +63,7 @@ pub fn verify_aggregated(
 /// many aggregated signatures to verify (e.g., from different blocks).
 ///
 /// Uses batch pairing techniques to amortize the cost.
+#[must_use = "verification results must not be silently discarded"]
 pub fn batch_verify_aggregated(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (pubkey, message, signature)
 ) -> Result<Vec<bool>> {
@@ -79,6 +81,7 @@ pub fn batch_verify_aggregated(
 ///
 /// This function first verifies each individual PoP, then aggregates the
 /// public keys and verifies the aggregated signature.
+#[must_use = "verification result must not be silently discarded"]
 pub fn verify_aggregated_with_pop(
     individual_pubkeys: &[Vec<u8>],
     pop_signatures: &[Vec<u8>],

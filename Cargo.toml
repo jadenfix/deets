@@ -140,6 +140,7 @@ sha2 = "0.10"
 blake3 = "1"
 rand = "0.8"
 zeroize = { version = "1", features = ["derive"] }
+subtle = "2"
 
 # Networking
 quinn = "0.10"
