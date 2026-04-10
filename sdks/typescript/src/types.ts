@@ -66,7 +66,7 @@ export interface RpcReceipt {
 export type RpcAccountState = Record<string, unknown>;
 
 export interface NodeHealth {
-  status: "ok" | string;
+  status: "ok" | "syncing" | "error";
   version: string;
   latestSlot: number;
   finalizedSlot: number;

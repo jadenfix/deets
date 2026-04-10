@@ -89,8 +89,8 @@ export class AetherClient {
     return this.rpcCall<RpcAccountState | null>("aeth_getAccount", params);
   }
 
-  async getBlockByHash(blockHash: string): Promise<RpcBlock | null> {
-    return this.rpcCall<RpcBlock | null>("aeth_getBlockByHash", [blockHash, true]);
+  async getBlockByHash(blockHash: string, fullTx = true): Promise<RpcBlock | null> {
+    return this.rpcCall<RpcBlock | null>("aeth_getBlockByHash", [blockHash, fullTx]);
   }
 
   async getStateRoot(blockRef?: string): Promise<string> {

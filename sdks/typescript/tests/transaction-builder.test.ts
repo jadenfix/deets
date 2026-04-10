@@ -141,6 +141,27 @@ test("getBlockByHash calls aeth_getBlockByHash", async () => {
   }
 });
 
+test("getBlockByHash passes fullTx=false when specified", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  const fakeHash = "0x" + "ab".repeat(32);
+  const fakeBlock = { header: { slot: 7, timestamp: 1000, proposer: null }, transactions: [] };
+  try {
+    globalThis.fetch = async (_input, init) => {
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      assert.equal(payload.params[0], fakeHash);
+      assert.equal(payload.params[1], false);
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: fakeBlock }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    const block = await client.getBlockByHash(fakeHash, false);
+    assert.deepEqual(block, fakeBlock);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("getBlockByHash returns null for unknown hash", async () => {
   const client = new AetherClient("http://rpc.aether.local");
   try {
