@@ -6,7 +6,9 @@
 
 use crate::{ConsensusEngine, Pacemaker};
 use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
-use aether_crypto_vrf::{check_leader_eligibility_integer, verify_proof, VrfKeypair, VrfProof};
+use aether_crypto_vrf::{
+    check_leader_eligibility_integer, EcVrfVerifier, VrfKeypair, VrfProof, VrfSigner, VrfVerifier,
+};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, Vote, H256};
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
@@ -107,7 +109,8 @@ pub struct HybridConsensus {
     tau: f64, // Leader rate (0 < tau <= 1) — kept for API compatibility
     tau_numerator: u128, // Integer numerator for deterministic eligibility check
     tau_denominator: u128, // Integer denominator for deterministic eligibility check
-    my_vrf_keypair: Option<VrfKeypair>,
+    my_vrf_keypair: Option<Box<dyn VrfSigner>>,
+    vrf_verifier: Box<dyn VrfVerifier>,
     my_bls_keypair: Option<BlsKeypair>,
     my_address: Option<Address>,
 
@@ -150,6 +153,26 @@ impl HybridConsensus {
         my_bls_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
+        Self::with_vrf(
+            validators,
+            tau,
+            epoch_length,
+            my_vrf_keypair.map(|k| Box::new(k) as Box<dyn VrfSigner>),
+            Box::new(EcVrfVerifier),
+            my_bls_keypair,
+            my_address,
+        )
+    }
+
+    pub fn with_vrf(
+        validators: Vec<ValidatorInfo>,
+        tau: f64,
+        epoch_length: u64,
+        my_vrf_keypair: Option<Box<dyn VrfSigner>>,
+        vrf_verifier: Box<dyn VrfVerifier>,
+        my_bls_keypair: Option<BlsKeypair>,
+        my_address: Option<Address>,
+    ) -> Self {
         // Guard against division-by-zero in advance_slot epoch boundary check.
         let epoch_length = epoch_length.max(1);
         let total_stake: u128 = validators
@@ -184,6 +207,7 @@ impl HybridConsensus {
             tau_numerator,
             tau_denominator,
             my_vrf_keypair,
+            vrf_verifier,
             my_bls_keypair,
             my_address,
             current_phase: Phase::Propose,
@@ -215,8 +239,7 @@ impl HybridConsensus {
         input.extend_from_slice(self.epoch_randomness.as_bytes());
         input.extend_from_slice(&slot.to_le_bytes());
 
-        // Generate VRF proof
-        let proof = vrf_keypair.prove(&input);
+        let proof = VrfSigner::prove(vrf_keypair.as_ref(), &input);
 
         // Check eligibility threshold against epoch-frozen stake
         if check_leader_eligibility_integer(
@@ -264,11 +287,10 @@ impl HybridConsensus {
             )
         })?;
 
-        if !verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
+        if !self.vrf_verifier.verify(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
         }
 
-        // Check eligibility threshold against epoch-frozen stake
         Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
