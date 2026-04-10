@@ -1,5 +1,49 @@
 # Aether Blockchain — Engineering Team Mission
 
+## 🛑 §0 — Reviewer Sentinel: PRs in the pipeline are ALWAYS first priority
+
+**Read this before §1. It overrides anything below that conflicts.**
+
+The pipeline exists to **ship PRs**, not to open them. A PR stuck in review for 3 cycles is worse than a Tier 0 item that stays on the backlog another day. **If any PR in the ledger is in a non-terminal review state (`peer_review_requested`, `domain_review_requested`, `crypto_audit_requested`, or `final_approval_requested`) and you are eligible to service it, you MUST enter Reviewer mode or Final-gate mode this cycle. Author mode is OFF the table until the queue is drained OR you have already done your share.**
+
+### Eligibility rules
+
+- You cannot review/gate a PR you authored.
+- Sam (Agent 4, Sonnet) cannot run the final gate. He CAN peer-review any PR he didn't author.
+- Any Opus agent (Mira/Rafa/Jun/Nikolai) may run the final gate on a PR they did not author.
+- Jun remains the default final-gate runner and should drain that queue first.
+
+### Concrete decision at cycle start (this replaces the older decision tree in §9 where they conflict)
+
+1. **Triage** — read the ledger (`pr_ledger.jsonl`), read your inbox (`assignments_for <id>`), read the threads of any PR you authored.
+2. **Sentinel check (MANDATORY):** is there at least one PR in any non-terminal review state where you are eligible? If YES → **Reviewer mode** (or **Final-gate mode** for an Opus agent if the PR is in `final_approval_requested`). Skip to step 6. If NO → continue to step 3.
+3. **Inbox:** any assignments filed on you? → service them (Reviewer or Author mode per the assignment type).
+4. **Own PRs:** any PRs you authored with `changes_requested` or unanswered thread questions? → **Fix mode**.
+5. **Only if 1-4 are ALL empty for you** → **Author mode**, pick one task, open one PR, exit.
+6. **Execute the chosen mode** with the §1 cycle budget (target 5-15 min wall-clock, one mode only, exit cleanly).
+
+### Why this rule exists
+
+The pipeline has N open PRs and 5 agents. If every agent enters Author mode simultaneously (as happened in our first run), the queue grows monotonically and nothing ever merges. By forcing "agents eligible to service the queue must be in review modes until their share is drained," we guarantee forward progress on PRs every single cycle. **There is always a reviewer cycling on every open PR as long as the crew is alive.**
+
+### Budget inside Reviewer / Final-gate mode
+
+Reviewer mode still has the §1 cap of **up to 3 substantive reviews per cycle**. Final-gate mode services PRs until the 15-minute budget runs out, then posts a heartbeat and exits. If the queue still has PRs eligible for you after your budget is spent, say so in the heartbeat — the next cycle picks up the rest.
+
+### Heartbeat the decision
+
+Post your mode choice to `general.log` as part of the triage heartbeat. Examples:
+
+> *"Agent 1 (Mira): triage done — sentinel check found PR #412 in peer_review_requested and PR #415 in final_approval_requested. Entering Reviewer mode, will service #412 then final-gate #415."*
+
+> *"Agent 5 (Nikolai): triage done — no PRs eligible for me, inbox empty, no own-PRs with feedback. Entering Author mode, picking Tier 0 task."*
+
+### The rule in one sentence
+
+**If there is a PR that can move forward with your help, that is what you do this cycle. Everything else waits.**
+
+---
+
 ## 🚀 Efficiency + Quality Rules — 2026-04-10 (READ FIRST, NEWER THAN EVERYTHING BELOW)
 
 After observing our first 90 minutes we learned some hard lessons. These rules supersede anything below that conflicts. **Efficiency is the goal, but quality is non-negotiable — see §7.**

@@ -677,7 +677,48 @@ run_agent() {
 
         echo "[$(date -Iseconds)] Agent $AGENT_ID: Claude exit $EXIT_CODE" | tee -a "$RUNNER_LOG"
 
-        if [ "$EXIT_CODE" -ne 0 ] && grep -qi 'rate.limit\|429\|overloaded\|capacity\|quota' "$LOG_FILE" 2>/dev/null; then
+        # ── HARD STOP: auth failures (added 2026-04-10) ──────────────
+        # A 401 / authentication_error means the OAuth token is invalid
+        # or has been invalidated by a quota event. Retrying burns quota
+        # and achieves nothing. Signal crew-wide shutdown so the operator
+        # can run `claude /login` manually.
+        if [ "$EXIT_CODE" -ne 0 ] && grep -qiE '401|authentication_error|Invalid authentication credentials|OAuth token has expired|Failed to authenticate' "$LOG_FILE" 2>/dev/null; then
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: AUTH FAILURE detected — signalling crew shutdown (operator must re-login)" | tee -a "$RUNNER_LOG"
+            comms_post "general" "Agent $AGENT_ID: AUTH FAILED — operator must run 'claude /login' then restart the crew. Exiting."
+            comms_post "blockers" "Agent $AGENT_ID: AUTH FAILED at $(date -Iseconds) — whole crew shutting down."
+            touch "$STOP_FILE"   # signals all other run_agent loops to exit on their next tick
+            break                # exit THIS agent's loop immediately
+        fi
+
+        # ── QUOTA EXHAUSTION: parse reset time and sleep (added 2026-04-10)
+        # Claude Pro/Max prints "You've hit your limit · resets 8am (America/Los_Angeles)"
+        # Don't hot-loop on this — sleep until the reset hour with a small buffer.
+        if [ "$EXIT_CODE" -ne 0 ] && grep -qiE "hit your limit|you've reached your" "$LOG_FILE" 2>/dev/null; then
+            local RESET_HINT
+            RESET_HINT=$(grep -oiE 'resets? [0-9]+[ap]m' "$LOG_FILE" 2>/dev/null | head -1)
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: QUOTA EXHAUSTED — $RESET_HINT" | tee -a "$RUNNER_LOG"
+            comms_post "general" "Agent $AGENT_ID: quota exhausted ($RESET_HINT) — sleeping until reset"
+
+            # Compute seconds until the next reset hour (best-effort: default 1h if parse fails).
+            local SLEEP_SECS=3600
+            if [[ "$RESET_HINT" =~ ([0-9]+)([ap])m ]]; then
+                local HOUR="${BASH_REMATCH[1]}" MER="${BASH_REMATCH[2]}"
+                [ "$MER" = "p" ] && [ "$HOUR" != "12" ] && HOUR=$((HOUR + 12))
+                [ "$MER" = "a" ] && [ "$HOUR" = "12" ] && HOUR=0
+                local NOW_EPOCH TARGET_EPOCH
+                NOW_EPOCH=$(date +%s)
+                TARGET_EPOCH=$(date -j -f "%Y-%m-%d %H:%M:%S" "$(date +%Y-%m-%d) ${HOUR}:00:00" +%s 2>/dev/null || echo "")
+                if [ -n "$TARGET_EPOCH" ]; then
+                    [ "$TARGET_EPOCH" -lt "$NOW_EPOCH" ] && TARGET_EPOCH=$((TARGET_EPOCH + 86400))
+                    SLEEP_SECS=$((TARGET_EPOCH - NOW_EPOCH + 300))  # +5 min buffer
+                fi
+            fi
+            echo "[$(date -Iseconds)] Agent $AGENT_ID: sleeping ${SLEEP_SECS}s until quota reset" | tee -a "$RUNNER_LOG"
+            sleep "$SLEEP_SECS"
+            continue
+        fi
+
+        if [ "$EXIT_CODE" -ne 0 ] && grep -qiE 'rate.limit|429|overloaded|capacity|ECONNRESET|connection reset|temporarily unavailable|socket hang up' "$LOG_FILE" 2>/dev/null; then
             echo "[$(date -Iseconds)] Agent $AGENT_ID: Claude rate limited → trying Codex" | tee -a "$RUNNER_LOG"
             comms_post "general" "Agent $AGENT_ID: Claude rate limited, switching to Codex"
 
@@ -692,7 +733,7 @@ run_agent() {
                     < /dev/null >> "$CODEX_LOG" 2>&1 || CODEX_EXIT=$?
                 echo "[$(date -Iseconds)] Agent $AGENT_ID: Codex exit $CODEX_EXIT" | tee -a "$RUNNER_LOG"
 
-                if [ "$CODEX_EXIT" -ne 0 ] && grep -qi 'rate.limit\|429\|overloaded\|capacity\|quota' "$CODEX_LOG" 2>/dev/null; then
+                if [ "$CODEX_EXIT" -ne 0 ] && grep -qiE 'rate.limit|429|overloaded|capacity|ECONNRESET|connection reset|temporarily unavailable' "$CODEX_LOG" 2>/dev/null; then
                     local BACKOFF=${RATE_WAIT}
                     local RATE_FILE="$COMMS_DIR/.rate_limited.agent${AGENT_ID}"
                     if [ -f "$RATE_FILE" ]; then
