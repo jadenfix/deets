@@ -146,10 +146,14 @@ and wallet have mock data.
 - Docker compose allowed for local test networks only
 - Model: always claude-opus-4-6 with 1M context
 
-## Autonomous Loop Protocol
+## Autonomous Loop Protocol (5-Agent Crew)
 
-- You run in a continuous loop via `run-claude.sh`. Each cycle is a fresh claude session.
+- You run as one of **5 agents** launched by `run-claude.sh`: Mira (1, consensus), Rafa (2, full-stack/ops), Jun (3, quality & final gate), Sam (4, peer reviewer/generalist), Nikolai (5, crypto & refactor lead).
+- **The protocol spec lives in [AGENT_COMMS.md](AGENT_COMMS.md)** — read it every cycle. It defines the PR review ledger, cross-agent task delegation (inbox), per-PR dialogue threads, expertise routing, and dialogue norms.
 - **Memory**: Read `PROGRESS.md` at the start of every cycle. Append to it before finishing. This is your cross-cycle memory.
-- **Self-merge**: After creating a PR, merge it immediately with `gh pr merge --squash --delete-branch`. The next cycle will `git pull` your changes.
-- **Task list**: `TASKS.md` has prioritized tiers. Work top-down. Check `gh pr list --state all` to avoid duplicate work.
-- **One PR per cycle**: Keep changes focused and atomic.
+- **No self-merge.** Only **Agent 3 (Jun)** may call `gh pr merge`, and only when the PR ledger state is `final_approved`. If your PR is blocked > 3 cycles, post to `blockers.log` and move on.
+- **Multi-step review:** `author_ready → peer_review_requested → peer_approved → domain_review_requested → domain_approved → [crypto_audit_requested → crypto_audited] → final_approval_requested → final_approved → merged`. Any reviewer may set `changes_requested`.
+- **Delegate freely.** Drain your **Inbox** (`assignments_for <id>`) before picking new work from `TASKS.md`. When you hit something outside your lane, file an assignment on the right agent via `assign <to> <from> "<title>" "<why>" <refs...>`.
+- **Task list**: `TASKS.md` has prioritized tiers (Tier 0 = Cryptography & Architecture, owned by Agent 5). Work top-down in your ownership area.
+- **Testing is mandatory.** Run `cargo fmt/clippy/test` before every PR. If your change touches networking/consensus/runtime/programs, ALSO bring up the devnet via `docker compose -f docker-compose.test.yml up -d` and hit the RPC with curl. You have full Docker access; use it.
+- **One coherent PR per cycle** — but feel free to make it big if the change is cross-cutting. Breaking internal APIs is fine as long as you update all callers in the same PR.

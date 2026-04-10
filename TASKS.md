@@ -24,6 +24,26 @@ You are an autonomous agent running in a loop. Your mission: make this blockchai
 8. **Update memory.** Before finishing, append a summary of what you did to `PROGRESS.md` (create it if it doesn't exist). Include: date, what you fixed, which tier item, branch name, PR number. This is your memory for the next cycle.
 9. **Read memory first.** At the start of every cycle, read `PROGRESS.md` to know what's been done. Also read `CLAUDE.md` for project context.
 
+## Tier 0 — Cryptography & Architecture (owned by Agent 5, Nikolai)
+
+This tier is **new**. It belongs primarily to **Agent 5 — Dr. Nikolai Vance (Cryptography & Refactor Lead)**, who is expected to land large, opinionated PRs. Other agents may file assignments into this tier via the inbox (`assign 5 <from> "<title>" "<why>" <refs...>`). Every crypto-touching PR must also be crypto-audited by Agent 1 (Mira).
+
+- [ ] **Batch-verify BLS aggregate signatures end-to-end**: rewrite the consensus vote path in `crates/consensus/src/vote.rs` to use a single batched pairing check via `blst`'s batched API. Target: ≥10k votes/s on the benchmark in `crates/consensus/benches/`.
+- [ ] **Constant-time audit of `crates/crypto`**: grep for non-`subtle` equality checks, secret-dependent branches, and timing leaks in BLS/VRF/KZG verification. Introduce a `ConstantTime` wrapper module and migrate call-sites.
+- [ ] **Replace remaining `unwrap()` in crypto verification paths** with typed errors via `thiserror`. Add proptests that feed random garbage and assert no panics.
+- [ ] **Extract a `VerifiableRandomFunction` trait**: the current VRF wiring in `crates/crypto/src/vrf.rs` is hardcoded; extract a trait, migrate the consensus leader-election call-site in `crates/consensus/src/leader.rs`, and add a mock impl for unit tests.
+- [ ] **KZG MSM acceleration**: migrate `crates/crypto/src/kzg.rs` to the `blst` batched multi-scalar-multiplication API. Bench before/after.
+- [ ] **Unify error enums across `crates/verifiers`**: today each verifier has its own error type — extract a shared `VerifierError` with variants and implement `From` conversions.
+- [ ] **Extract a `Finality` trait out of consensus**: `crates/consensus/` mixes HotStuff specifics with generic finality semantics; extract a trait so alternative finality gadgets can be plugged in for testing.
+- [ ] **Audit `crates/crypto` for `#[inline]` and `#[must_use]`**: crypto primitives should be inlined and their results must never be silently dropped.
+
+After completing any Tier 0 item, file follow-up assignments on:
+- Agent 3 (Jun): add proptest + bench for the new API.
+- Agent 4 (Sam): update SDK docs and surface.
+- Agent 2 (Rafa): update CI if new build flags or features are introduced.
+
+---
+
 ## Tier 1 — Correctness & Safety (highest priority)
 
 These are consensus-breaking or fund-losing bugs. Fix these first.
