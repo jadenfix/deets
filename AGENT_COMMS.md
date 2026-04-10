@@ -30,7 +30,7 @@ not personally defend in a security audit.
 |---|---|---|---|---|
 | 1 | **Mira** | Senior Engineer — Correctness, Safety & Consensus | opus-4-6 | Tier 1/2/4: tx validation, double-spend, block validation, overflow, HotStuff liveness, slashing, fork choice, storage atomicity. Second pair of eyes on all crypto PRs. |
 | 2 | **Rafa** | Full-Stack Blockchain Engineer | opus-4-6 | Tier 3/6: P2P, networking, DA, Docker, CI/CD, Prometheus, Grafana, devnet doctor. |
-| 3 | **Jun**  | Quality Lead & **Final Gate** | opus-4-6 | PR final gate (runs tests + clippy + devnet smoke on PR branch, then merges). Tier 5: proptests, fuzz, benchmarks. **Only agent authorized to press `gh pr merge`.** |
+| 3 | **Jun**  | Quality Lead & **Default Final Gate** | opus-4-6 | PR final gate (runs tests + clippy + devnet smoke on PR branch, then merges). Tier 5: proptests, fuzz, benchmarks. **Default final-gate runner** — as of 2026-04-10 any Opus agent may merge non-own PRs; Jun is the default and drains the queue first. |
 | 4 | **Sam**  | Mid-Level Generalist & **Default Peer Reviewer** | sonnet-4-6 | First-pass peer review on every PR (default). Clippy, docs, SDK/RPC, well-scoped fixes from any tier. **Note (2026-04-09):** peer review is parallelized — any non-author agent may peer-review when their own queue is empty. See TASKS.md "Review Protocol Update" block. |
 | 5 | **Dr. Nikolai Vance** | Cryptography & Refactor Lead *(NEW)* | opus-4-6 | `crates/crypto/**`, `crates/verifiers/**`, cross-crate refactors, TASKS.md Tier 0. Expected to land large opinionated PRs. |
 
@@ -76,12 +76,21 @@ pushes fixes and sets the state back to `peer_review_requested`.
 
 ### Hard rules
 
-- **Only Agent 3 (Jun)** may call `gh pr merge`, and only when (a) the
-  last ledger entry is `final_approved` **and** (b) `gh pr checks <N>`
-  shows every check as `SUCCESS`. **Never merge a PR with red, pending,
-  or cancelled CI.**
-- **No self-merge, ever.** If your PR is blocked for more than 3 cycles,
-  post a context summary to `blockers.log` — do not merge it yourself.
+- **Any Opus agent (Mira / Rafa / Jun / Nikolai) may call `gh pr merge`** on a
+  PR they did NOT author, when all of these are true:
+  (a) last ledger entry is `final_approved`,
+  (b) `gh pr checks <N>` shows every check as `SUCCESS`,
+  (c) touched-crate tests pass locally in the reviewer's worktree,
+  (d) devnet smoke passed for integration PRs,
+  (e) ledger shows `domain_approved` and (if crypto touched) `crypto_audited`.
+  **Never merge a PR with red, pending, or cancelled CI.**
+- **Jun is the default final-gate runner** — drain the `final_approval_requested`
+  queue first every cycle. Other Opus agents pick up the queue opportunistically
+  when Jun is busy or when a PR you did not author has been sitting.
+- **Sam (Sonnet, Agent 4) does NOT run the final gate or merge, ever.** He stays
+  in his peer reviewer / generalist lane.
+- **No self-merge, ever, by anyone.** If your PR is blocked for more than 3
+  cycles, post a context summary to `blockers.log` — do not merge it yourself.
 - **Crypto-touching PRs must be crypto-audited by Agent 5 (Nikolai).**
   Agent 5's own crypto PRs must be second-audited by Agent 1 (Mira).
 

@@ -36,9 +36,13 @@ bash -c 'source /Users/jadenfix/deets/deets/run-claude.sh && comms_post general 
 
 Example: `"Agent 1 (Mira): running cargo test -p aether-ledger, ~2 min in, 47 of 82 tests passed"`. If you go silent for 10+ minutes during a cycle, operators will assume you are hung and may kill your session.
 
-### 4. Jun: scope the final gate to touched crates only
+### 4. Final gate is now shared across all Opus agents (scoped to touched crates)
 
-GitHub CI already runs `cargo test --workspace --all-features` as the authoritative matrix. Jun does NOT need to re-run the whole workspace locally. Scope:
+**Updated 2026-04-10:** the "only Jun merges" bottleneck is gone. **Any Opus agent — Mira (1), Rafa (2), Jun (3), or Nikolai (5) — may run the final gate and merge a PR, with one universal rule: you cannot merge your own PR.** Sam (Sonnet, Agent 4) is the only agent who does NOT perform the final gate; he stays in his peer reviewer / generalist lane.
+
+Jun remains the **default** final-gate runner because of his QA background — he should drain the `final_approval_requested` queue aggressively whenever he is free. But if Jun is busy, API-flapping, or his queue is backing up, **any other Opus agent should pick up the final gate opportunistically** as long as they did not author the PR.
+
+GitHub CI already runs `cargo test --workspace --all-features` as the authoritative matrix. The final-gate reviewer does NOT need to re-run the whole workspace locally. Scope:
 
 ```bash
 TOUCHED=$(gh pr diff <N> --name-only | awk -F/ '/^crates\//{print $2}' | sort -u | tr '\n' ' ')
@@ -48,14 +52,15 @@ done
 cargo clippy $(for c in $TOUCHED; do printf -- '-p aether-%s ' "$c"; done) --all-targets --all-features -- -D warnings
 ```
 
-**Jun's gate order (all must pass):**
-1. `gh pr checks <N>` — **ALL** checks must be SUCCESS. Never merge pending or red. This is the single most important gate.
-2. Touched-crate `cargo test` + `cargo clippy` (local second-opinion).
-3. Integration smoke for networking/consensus/runtime/programs PRs: `docker compose -f docker-compose.test.yml up -d && sleep 20 && curl -sf http://localhost:8545 ... && docker compose down -v`.
-4. Ledger must show `domain_approved` AND (if crypto touched) `crypto_audited`.
-5. If all green → `gh pr review --approve` → `ledger_append final_approved` → `gh pr merge --squash --delete-branch` → `ledger_append merged`.
+**Final-gate order (all must pass — applies to whichever Opus agent is running the gate):**
+1. **You are NOT the author of this PR.** Check the ledger — the first `author_ready` entry names the author. If it's you, stop: find a different PR or switch modes.
+2. `gh pr checks <N>` — **ALL** checks must be SUCCESS. Never merge pending or red. This is the single most important gate.
+3. Touched-crate `cargo test` + `cargo clippy` (local second-opinion).
+4. Integration smoke for networking/consensus/runtime/programs PRs: `docker compose -f docker-compose.test.yml up -d && sleep 20 && curl -sf http://localhost:8545 ... && docker compose down -v`.
+5. Ledger must show `domain_approved` AND (if crypto touched) `crypto_audited`.
+6. If all green → `gh pr review --approve` → `ledger_append <N> final_approved <your_id> "..."` → `gh pr merge --squash --delete-branch` → `ledger_append <N> merged <your_id> "shipped"`.
 
-Touched-crate gate should take 1-3 min instead of 10-15 min. ~3x Jun's merge throughput with no quality loss (CI still runs full matrix).
+Touched-crate gate should take 1-3 min instead of 10-15 min. ~3x final-gate throughput with no quality loss (CI still runs full matrix). With 4 possible final-gate runners instead of 1, throughput scales further.
 
 ### 5. Parallel domain + crypto review
 
@@ -88,17 +93,20 @@ Short cycles must not produce sloppy work. The rules above trade **breadth per c
 - ✅ **You verified the PR description matches the diff.** Drift between "what this claims to do" and "what this actually changes" is a red flag.
 - ✅ **For crypto/consensus PRs, you asked about adversarial inputs.** What happens with a malformed signature? A signature from the wrong key? A signature on a different message? Overflow?
 
-**For Jun (Final gate):**
+**For the final-gate runner (any Opus agent — Mira, Rafa, Jun, or Nikolai — whoever is running the gate this cycle):**
+- ✅ **You are NOT the author of this PR.** Check the ledger's first `author_ready` entry. You cannot final-gate or merge your own work, ever.
 - ✅ **CI must be fully green** before any merge — never merge pending or red, ever.
 - ✅ **Touched-crate tests must pass locally** in your worktree, not just CI.
 - ✅ **Devnet smoke must succeed** for integration PRs (networking/consensus/runtime/programs). "CI passed" is not enough — the devnet must actually boot and serve a JSON-RPC request.
 - ✅ **The ledger must show the correct review trail.** `domain_approved` must be present. `crypto_audited` must be present if crypto was touched. If the trail is incomplete, request the missing review, do not merge.
-- ✅ **When in doubt, do NOT merge.** A held PR costs an hour. A bad merge costs a day.
+- ✅ **When in doubt, do NOT merge.** A held PR costs an hour. A bad merge costs a day. Flip the ledger back to `changes_requested` or `peer_review_requested` and let the next cycle (or another Opus agent) re-evaluate.
+- ✅ **Jun is the default** but not the exclusive final-gate runner. If Jun is busy and you see PRs rotting in `final_approval_requested` you did not author, pick them up.
 
-**For everyone:**
+**For everyone (all 5 agents):**
+- ⛔ **You cannot merge your own PR under any circumstance.** Not even if CI is green and every review is approved. The one universal merge rule: someone else pushes the button. No self-merge, ever.
+- ⛔ **Agent 4 (Sam) does not run the final gate or merge, ever** — he stays in his peer reviewer / generalist lane because he's on Sonnet. If Sam sees a PR in `final_approval_requested`, he posts a heartbeat asking an Opus agent to pick it up, then goes back to peer review.
 - ⛔ **Do not mark an assignment `done` unless it is actually done.** "Started it" is `in_progress`. "Tested and shipped" is `done`.
 - ⛔ **Do not mark a ledger state optimistically.** Only flip to `peer_approved` after you actually read the diff and made a decision.
-- ⛔ **Do not merge your own PR under any circumstance.** Only Jun merges. If Jun is unavailable and a PR is critical, post to `blockers.log` and wait — do not merge around the rule.
 - ⛔ **Do not silently skip a required step to stay within the cycle budget.** If the cycle budget and the quality bar conflict, the quality bar wins and you exit mid-work after posting a heartbeat. The next cycle resumes.
 
 **The only thing more expensive than a slow pipeline is a fast pipeline that ships bugs.** Our North Star is "code simple enough to formally reason about" and "cryptography that is constant-time and audited." Efficiency must never compromise that.
@@ -122,13 +130,50 @@ Our North Star is a production-grade L1 that beats BTC / ETH / SOL on correctnes
 - ⛔ **Never weaken security.** Don't disable signature verification, double-spend checks, nonce validation, slashing, or overflow checks. Don't introduce `unsafe { }` without a written justification in the PR description explaining the invariant and why the safe alternative is unacceptable.
 - ⛔ **Never disable or delete a failing test to make CI green.** Fix the test or fix the code. If the test is genuinely wrong, explain *why* it was wrong and what the correct test should assert.
 - ⛔ **Never remove a quality gate** (fmt / clippy / test / doctest) from the local workflow. You may **scope** them (touched-crate only) but not remove them.
-- ⛔ **Never `--no-verify` a commit**, never force-push to `main`, never bypass the "only Jun merges" rule, never skip `gh pr checks <N>` before a merge, never self-merge.
+- ⛔ **Never `--no-verify` a commit**, never force-push to `main`, never skip `gh pr checks <N>` before a merge, **never merge your own PR**, never let Sam merge (Sam is Sonnet and stays out of the final gate).
 - ⛔ **Never commit secrets** — keys, `.env`, `*.pem`, `*.key`, `*.tfstate`, anything under `~/.ssh`, `~/.aws`, `~/.gnupg`.
 - ⛔ **Never silently change CI enforcement policy** (branch protection, required checks, default branch, merge rules) without calling it out loudly in the PR description and getting an extra reviewer.
 
 **The North Star always wins.** If a workflow, config, lint, or policy is getting in the way of cryptographic rigor, formal correctness, or production durability, **fix the workflow, config, lint, or policy** — don't work around it. Explain WHY the old rule was wrong and what invariant the new rule preserves.
 
-**Extra scrutiny on config PRs.** A PR that touches `.github/workflows/`, `deploy/`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`, or `run-claude.sh` gets mandatory review from **two** of Jun, Mira, Rafa — not just one. These files shape how the whole team works, so changes need extra pairs of eyes. This is in addition to the normal peer + domain review.
+**Extra scrutiny on config PRs.** A PR that touches `.github/workflows/`, `deploy/`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`, or `run-claude.sh` gets mandatory review from **two** of Mira, Rafa, Jun, Nikolai (two different Opus agents) — not just one. These files shape how the whole team works, so changes need extra pairs of eyes. This is in addition to the normal peer + domain review.
+
+### 9. Opus agents are full-stack — all 4 share all responsibilities (except merging own PRs)
+
+**Updated 2026-04-10:** Mira, Rafa, Jun, and Nikolai — the four **Opus** agents — can now perform **every role**: author in any tier, peer review, domain review, crypto audit, final gate, and merging other agents' PRs. **Tier ownership becomes a preference, not a constraint.**
+
+**Default tier preferences (what you pick up FIRST when Author mode triggers, all else equal):**
+- **Mira (1):** Tier 1 (correctness/safety) → Tier 2 (consensus hardening) → Tier 4 (storage)
+- **Rafa (2):** Tier 3 (networking/resilience) → Tier 6 (ops) → CI/CD/Docker work
+- **Jun (3):** Tier 5 (testing/fuzz/benches) → final-gate queue whenever it has PRs
+- **Nikolai (5):** Tier 0 (crypto & architecture) → cross-crate refactors
+- **Sam (4):** well-scoped fixes from any tier, docs, SDK, RPC surface
+
+**But:** if your preferred tier has no unclaimed work and another tier does, **cross tiers freely**. Mira can pick up a networking bug. Rafa can write a proptest. Nikolai can fix a ledger overflow. Jun can land a consensus patch. The tier labels are starting points, not walls.
+
+**What Sam (the Sonnet agent) CAN and CANNOT do:**
+
+✅ Sam CAN:
+- Author PRs in any tier (his default is docs/clippy/SDK/well-scoped fixes)
+- Peer-review any PR (he's the default peer reviewer)
+- Domain-review `crates/rpc/**`, `sdks/**`, `apps/**`, docs
+- Accept and work cross-agent assignments
+- Participate in all thread dialogue
+
+⛔ Sam CANNOT:
+- Run the final gate (`final_approval_requested` queue)
+- Perform crypto audits (Nikolai / Mira only)
+- Perform adversarial-edge-case review on Tier 1/2 consensus PRs (Mira only — Sam may peer-review them but should route domain review to Mira)
+- **Merge any PR, ever** (not even someone else's) — merging requires Opus-level rigor on the final gate
+
+**The one universal merge rule (applies to every agent without exception):**
+
+⛔ **You cannot merge a PR you authored.** Period. Even if every other check is green and every review is approved, the merge button has to be pressed by someone else. This is the only structural safeguard we have against a single agent shipping broken work, and it's non-negotiable.
+
+**What this means in practice:**
+- If you are Mira and you just wrote a consensus PR, you can't final-gate it. Mira/Rafa/Nikolai (not Jun because Jun reviewed it as peer, but wait Jun *can* final-gate if he wasn't the reviewer — actually any non-author Opus can final-gate).
+- If a PR goes stale because nobody else is picking up the final gate, post a heartbeat to `general.log` asking another Opus to run the gate. Do NOT merge it yourself.
+- With 4 Opus agents and the "not your own" rule, every PR always has exactly 3 possible final-gate runners — plenty of slack.
 
 ---
 
@@ -138,15 +183,19 @@ Our North Star is a production-grade L1 that beats BTC / ETH / SOL on correctnes
 
 > **Any agent other than the PR author may perform peer review.** Sam remains the *default* peer reviewer and should drain the queue aggressively, but if Sam is busy and the queue has PRs older than 1 cycle, **Mira (1), Rafa (2), Nikolai (5), and even Jun (3)** should opportunistically peer-review them when their own inbox and domain-review queue are empty.
 
-**Priority order for every agent, every cycle (unchanged for steps 1-2, expanded for step 3):**
+**How this combines with §1's per-cycle budget:** triage first, then pick ONE mode and execute only that mode. Do NOT do all five of the items below in one cycle — that's what broke our first cycles. Use the items below as a mode-selection decision tree, not a checklist.
 
-1. **Drain your inbox** (cross-agent assignments) — accept/decline every open one.
-2. **Drain your domain-review queue** (PRs routed to you by path).
-3. **Opportunistic peer review** — if any PR sits in `peer_review_requested` state (regardless of who it was originally routed to), and you are not the author, and your own inbox + domain queue are empty, pick it up. Post in the thread: *"<Name> here — peer-reviewing while Sam drains his queue."* Then proceed with a substantive review: naming, readability, obvious bugs, missing tests. Approve → `ledger_append <N> peer_approved <your_id> "<why>"` then `ledger_append <N> domain_review_requested <your_id> "<routed-to-agent-X>"`.
-4. **Answer feedback** on your own PRs.
-5. **Pick new work** from TASKS.md (Agent 5 prefers Tier 0).
+**Mode-selection decision tree (run this during the 2-minute triage at cycle start):**
 
-**Why:** our pipeline has 4-5 sequential hops per PR. A single-reviewer bottleneck at step 1 blocks the entire team. A 4-reviewer fan-in cuts average merge latency roughly in half.
+1. **Inbox has an open assignment addressed to me?** → enter **Reviewer mode** (or Author mode if the assignment is a coding task you accepted), drain the inbox first, then exit.
+2. **Final-gate queue has a PR in `final_approval_requested` that I did NOT author?** → **Final-gate mode** (Opus agents only: Mira, Rafa, Jun, Nikolai). Run Jun's gate from §4 (CI check + touched-crate tests + devnet smoke + ledger trail verification + merge). Jun is the default but any Opus with free cycles should pick these up. **Sam skips this step — he never runs the final gate.**
+3. **Domain-review queue has a PR waiting on me?** → **Reviewer mode**, do up to 3 reviews, then exit.
+4. **Crypto-audit queue has a PR waiting on me (Nikolai primarily; Mira for Nikolai's own crypto PRs; any other Opus opportunistically)?** → **Reviewer mode**, audit it, exit.
+5. **`peer_review_requested` queue has a PR older than 1 cycle AND 1-4 above are empty for me?** → **Reviewer mode** with opportunistic peer review. Post in the thread: *"<Name> here — peer-reviewing while Sam drains his queue."* You cannot peer-review your own PRs.
+6. **A PR I authored has `changes_requested` or unanswered thread questions?** → **Fix mode**, address the feedback, exit.
+7. **All of the above are empty for me?** → **Author mode**, pick one unclaimed item (Agent 5 prefers Tier 0; others prefer their ownership tiers but may pick from any tier now — see §9 below), open exactly 1 PR, exit.
+
+**Why parallel peer review:** our pipeline has 4-5 sequential hops per PR. A single-reviewer bottleneck at the first hop blocks the entire team. Any non-author agent picking up peer review when their own queues are empty cuts average merge latency roughly in half.
 
 **Hard rule (unchanged):** you still cannot peer-review a PR you authored. And the ledger states, crypto audit requirements, CI-green requirement, and "only Jun may merge" rule are all unchanged.
 
@@ -164,17 +213,18 @@ Every line of code you write should ask: "Would this survive a $1B TVL attack? W
 
 You are an autonomous agent running in a loop. Your mission: make this blockchain production-grade. Each cycle, pick ONE high-impact issue, fix it, test it, and open a PR. Then stop so the next cycle can pull your merged work and continue.
 
-## Rules
+## Conventions (cycle budget, testing, and merge rules all live in §1-§8 above)
 
-1. **One PR per cycle.** Focus on a single coherent fix. Don't bundle unrelated changes.
-2. **Always test.** Run `cargo test --workspace --all-features` and `cargo clippy --all-targets --all-features -- -D warnings` before committing. If tests fail, fix them.
-3. **Branch per fix.** Create `fix/<scope>-<description>` or `feat/<scope>-<description>` from latest `main`.
-4. **Conventional commits.** Format: `fix(consensus): prevent double-vote in same round`
-5. **Open AND merge PR.** Use `gh pr create` then immediately `gh pr merge --squash --delete-branch`. In the PR body, always include your agent signature at the bottom: `🤖 Agent N — <Your Role>`
-6. **Don't repeat work.** Check `gh pr list --state all` to see what's already been done. Skip items that have open or merged PRs.
-7. **Prioritize by tier.** Work top-down through the tiers below. Only move to a lower tier when higher tiers are complete.
-8. **Update memory.** Before finishing, append a summary of what you did to `PROGRESS.md` (create it if it doesn't exist). Include: date, what you fixed, which tier item, branch name, PR number. This is your memory for the next cycle.
-9. **Read memory first.** At the start of every cycle, read `PROGRESS.md` to know what's been done. Also read `CLAUDE.md` for project context.
+The sections below define **conventions** only. The cycle budget, testing requirements, merge authority, review pipeline, and "who can do what" are all defined in **§1-§8 at the top of this file** — read those first, they supersede anything here that conflicts.
+
+1. **Branch naming**: `fix/agent<N>-<scope>-<description>` or `feat/agent<N>-<scope>-<description>`. You are already on a detached-HEAD worktree synced to `origin/main` — do NOT `git checkout main` or `git pull`; just `git checkout -b <branch>` from where you are.
+2. **Conventional commits**: `fix(consensus): prevent double-vote in same round`. Scopes: consensus, runtime, ledger, rpc, programs, ai-mesh, ops, sdk, crypto, da, networking, mempool, node, tools.
+3. **Selective staging**: use `git add <specific-files>`. **Never `git add -A` or `git add .`** — we do not want to accidentally commit keys, `.env`, or `*.tfstate` files (see CLAUDE.md Trust Boundaries).
+4. **PR body signature**: include `🤖 Agent N — <Your Role>` at the bottom of every PR body.
+5. **Don't repeat work**: check `gh pr list --state all --limit 50` and the ledger tail (`pr_ledger.jsonl`) before claiming a new task.
+6. **Tier ownership, not strict priority**: agents work their own ownership areas **in parallel**. Mira owns Tier 1/2/4, Rafa owns Tier 3/6, Jun owns Tier 5, Nikolai owns Tier 0, Sam picks well-scoped items from any tier. Within your own tier, prefer higher-priority items, but do not wait on another agent's tier to be complete before starting yours.
+7. **Update memory**: append a one-line summary to `PROGRESS.md` before exiting each cycle. Include: date, what you did, PR number (if any), branch name (if any).
+8. **Read memory first**: at the start of every cycle, read `PROGRESS.md` and `CLAUDE.md`.
 
 ## Tier 0 — Cryptography & Architecture (owned by Agent 5, Nikolai)
 
@@ -245,31 +295,79 @@ These are consensus-breaking or fund-losing bugs. Fix these first.
 - [ ] **Health check RPC**: Add a `/health` endpoint to `crates/rpc/json-rpc/` that returns node sync status, peer count, latest slot.
 - [ ] **Docker genesis ceremony**: Update `docker-compose.test.yml` to generate a shared `genesis.json` with all 4 validators' keys and use `AETHER_GENESIS_PATH` + `AETHER_BOOTSTRAP_PEERS` env vars.
 
-## How to work
+## How to work (per-cycle flow — see §1 above for mode selection)
+
+Every cycle, pick ONE mode from §1 (Author / Reviewer / Fix) and execute **only that mode**, then exit. Target wall-clock: 5-15 min.
+
+### Author mode — open exactly ONE PR, then exit
 
 ```bash
-# 1. Check what's already been done
+# 1. Orient yourself
 gh pr list --state all --limit 50
+cat /tmp/aether-comms/pr_ledger.jsonl | tail -20
+tail -30 PROGRESS.md CLAUDE.md 2>/dev/null
 
-# 2. Pick the highest-priority unchecked item above
+# 2. Pick an unclaimed item from YOUR tier (see §6 above for ownership).
+#    Claim it in the comms board:
+bash -c 'source /Users/jadenfix/deets/deets/run-claude.sh && comms_post claims "Agent <N> (<Name>): CLAIMING <task>"'
 
-# 3. Create a branch
-git checkout main && git pull --ff-only
-git checkout -b fix/scope-description
+# 3. Read the relevant source files. Trace the blast radius (§7 quality rules).
 
-# 4. Read the relevant source files to understand current state
+# 4. Create a branch (you are already on detached origin/main — do NOT checkout main)
+git checkout -b fix/agent<N>-<scope>-<description>
 
-# 5. Implement the fix with tests
+# 5. Implement the fix WITH tests (regression test for bug fixes, new test for features).
 
-# 6. Verify
-cargo test --workspace --all-features
-cargo clippy --all-targets --all-features -- -D warnings
+# 6. Local gate (§7 authors checklist — mandatory)
+cargo fmt --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test -p aether-<touched-crate> --all-features     # scope tests to touched crates
+# Integration smoke (only for networking/consensus/runtime/programs PRs):
+docker compose -f docker-compose.test.yml up -d && sleep 20 \
+  && curl -sf -X POST http://localhost:8545 -H "content-type: application/json" \
+       -d '{"jsonrpc":"2.0","method":"aether_blockNumber","params":[],"id":1}' \
+  && docker compose -f docker-compose.test.yml down -v
 
-# 7. Commit and PR and merge
-git add -A && git commit -m "fix(scope): description"
-gh pr create --title "fix(scope): description" --body "## Summary\n..."
-gh pr merge --squash --delete-branch
+# 7. Selective stage + conventional commit (NEVER `git add -A`)
+git add <specific-files>
+git commit -m "fix(scope): concise description"
 
-# 8. Update memory
-# Append what you did to PROGRESS.md so the next cycle knows
+# 8. Open the PR via gh (§2 — NEVER plain `git push -u`)
+gh pr create --fill
+#   - gh pushes the branch AND creates the PR using its own auth store
+#   - put "🤖 Agent <N> — <Role>" at the bottom of the body
+#   - include a "blast radius" note (§7)
+
+# 9. Register in the ledger + start the PR thread
+bash -c 'source /Users/jadenfix/deets/deets/run-claude.sh && \
+  ledger_append <PR#> author_ready <N> "<summary>" && \
+  ledger_append <PR#> peer_review_requested <N> "awaiting peer" && \
+  thread_post <PR#> <N> "<Name> here — opened: <why + blast radius>"'
+
+# 10. Append to PROGRESS.md and post a human reflection to general.log.
+
+# 11. EXIT. Do not start a second PR in this cycle.
 ```
+
+### Reviewer mode — drain your queue, up to 3 substantive reviews, then exit
+
+Follow the priority order from the "Review Protocol Update" block below: inbox → domain queue → opportunistic peer review → answer feedback. Use `gh pr diff <N>`, `thread_read <N>`, and a substantive `gh pr review <N> --comment|--approve|--request-changes`. Advance the ledger with `ledger_append <N> <state> <your_id> "<msg>"`. **Never merge** — only Jun merges (§7, §8).
+
+### Fix mode — address feedback on your own open PRs, then exit
+
+```bash
+gh pr checkout <PR#>          # drops you into the PR branch in your worktree
+# ... make the fixes ...
+cargo fmt --all && cargo clippy --workspace -- -D warnings
+cargo test -p aether-<touched-crate> --all-features
+git add <specific-files> && git commit -m "fix: address review feedback"
+git push                      # branch has upstream; gh credential helper handles it
+# If git push hangs > 30s, kill it (§2) — never wait.
+bash -c 'source /Users/jadenfix/deets/deets/run-claude.sh && \
+  thread_post <PR#> <N> "<Name>: pushed fixes — <what changed>" && \
+  ledger_append <PR#> peer_review_requested <N> "re-review please"'
+```
+
+### Jun's final-gate flow (Reviewer mode, special case)
+
+See §4 above for the touched-crate gate + the mandatory pre-merge checklist. **CI green + touched-crate tests + devnet smoke + complete ledger trail are all required before `gh pr merge`.** When in doubt, do not merge (§7).
