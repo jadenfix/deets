@@ -148,6 +148,7 @@ impl KzgVerifier {
     ///
     /// Checks the pairing equation:
     /// `e(C - [y]_1, [1]_2) == e(π, [τ]_2 - [z]_2)`
+    #[must_use = "verification result must not be silently discarded"]
     pub fn verify(
         &self,
         commitment: &KzgCommitment,
