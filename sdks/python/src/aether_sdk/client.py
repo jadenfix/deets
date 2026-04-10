@@ -4,11 +4,20 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 from .builders import JobBuilder, TransferBuilder
 from .transaction import Transaction
-from .types import ClientConfig, JobRequest, JobSubmission, SubmitResponse
+from .types import (
+    ClientConfig,
+    JobRequest,
+    JobSubmission,
+    NodeHealth,
+    RpcAccountState,
+    RpcBlock,
+    RpcReceipt,
+    SubmitResponse,
+)
 
 
 def _normalize_endpoint(endpoint: str) -> str:
@@ -63,6 +72,64 @@ class AetherClient:
         if not isinstance(slot, int):
             raise ValueError("rpc response did not include a finalized slot")
         return slot
+
+    def get_block_by_number(
+        self,
+        block_ref: Union[int, str] = "latest",
+        full_tx: bool = True,
+    ) -> Optional[RpcBlock]:
+        result = self._rpc_call("aeth_getBlockByNumber", [str(block_ref), full_tx])
+        if result is None:
+            return None
+        return RpcBlock.from_dict(result)
+
+    def get_block_by_hash(
+        self,
+        block_hash: str,
+        full_tx: bool = True,
+    ) -> Optional[RpcBlock]:
+        result = self._rpc_call("aeth_getBlockByHash", [block_hash, full_tx])
+        if result is None:
+            return None
+        return RpcBlock.from_dict(result)
+
+    def get_transaction_receipt(self, tx_hash: str) -> Optional[RpcReceipt]:
+        result = self._rpc_call("aeth_getTransactionReceipt", [tx_hash])
+        if result is None:
+            return None
+        return RpcReceipt.from_dict(result)
+
+    def get_account(
+        self,
+        address: str,
+        block_ref: Optional[str] = None,
+    ) -> Optional[RpcAccountState]:
+        params: list[object] = [address] if block_ref is None else [address, block_ref]
+        return self._rpc_call("aeth_getAccount", params)
+
+    def get_state_root(self, block_ref: Optional[str] = None) -> str:
+        params: list[object] = [] if block_ref is None else [block_ref]
+        result = self._rpc_call("aeth_getStateRoot", params)
+        if not isinstance(result, str):
+            raise ValueError("rpc response did not include a state root string")
+        return result
+
+    def get_health(self) -> NodeHealth:
+        """Fetch node health from the HTTP /health endpoint (not a JSON-RPC call)."""
+        request = urllib.request.Request(
+            f"{self.endpoint}/health",
+            headers={"accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise ConnectionError(
+                f"failed to reach health endpoint {self.endpoint}/health"
+            ) from exc
+        data: Dict[str, Any] = json.loads(body)
+        return NodeHealth.from_dict(data)
 
     def prepare_job_submission(self, job: JobRequest) -> JobSubmission:
         return JobSubmission(
