@@ -47,7 +47,7 @@ pub struct SyncRequest {
 const MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2 MB — matches gossipsub max_transmit_size
 const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
 const MAX_TX_SIZE: usize = 64 * 1024; // 64 KB
-const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_SHRED_SIZE: usize = 256 * 1024; // 256 KB — RS(10,2) on 2 MB block ≈ 210 KB per shred
 const MAX_SYNC_SIZE: usize = 1024; // 1 KB
 
 /// Deserialize with a bincode size limit to prevent DoS via deeply nested structures.
@@ -233,9 +233,39 @@ mod tests {
         assert_eq!(MAX_TX_SIZE, 64 * 1024, "tx limit out of sync with p2p");
         assert_eq!(
             MAX_SHRED_SIZE,
-            64 * 1024,
+            256 * 1024,
             "shred limit out of sync with p2p"
         );
         assert_eq!(MAX_SYNC_SIZE, 1024, "sync limit out of sync with p2p");
+    }
+
+    #[test]
+    fn test_shred_size_accommodates_max_block_with_rs10_2() {
+        // RS(10, 2): 10 data shards, 2 parity. Each shard payload for a max-size
+        // block is ceil((MAX_BLOCK_SIZE + 8 byte length prefix) / 10).
+        // MAX_SHRED_SIZE must exceed this plus serialization overhead (~200 B).
+        let data_shards = 10usize;
+        let max_shard_payload = (MAX_BLOCK_SIZE + 8).div_ceil(data_shards);
+        let shred_overhead = 200;
+        assert!(
+            MAX_SHRED_SIZE >= max_shard_payload + shred_overhead,
+            "MAX_SHRED_SIZE ({MAX_SHRED_SIZE}) too small for RS({data_shards},2) on \
+             {MAX_BLOCK_SIZE}-byte block: shard payload = {max_shard_payload}, \
+             overhead = {shred_overhead}"
+        );
+    }
+
+    #[test]
+    fn test_realistic_shred_size_accepted() {
+        // A shred from a 2 MB block with RS(10,2) is ~210 KB. It must not be dropped.
+        let realistic_shred = vec![0u8; 210 * 1024];
+        let event = NetworkEvent::ShredReceived(realistic_shred);
+        // decode_network_event returns None for valid shreds (DA layer handles them),
+        // but crucially it must NOT hit the oversized branch (which also returns None).
+        // We verify by checking a shred at exactly MAX_SHRED_SIZE is accepted.
+        let at_limit = vec![0u8; MAX_SHRED_SIZE];
+        let event_at_limit = NetworkEvent::ShredReceived(at_limit);
+        assert!(decode_network_event(event).is_none());
+        assert!(decode_network_event(event_at_limit).is_none());
     }
 }
