@@ -1,4 +1,6 @@
-use aether_crypto_vrf::{check_leader_eligibility_integer, VrfKeypair, VrfProof};
+use aether_crypto_vrf::{
+    check_leader_eligibility_integer, EcVrfVerifier, VrfProof, VrfSigner, VrfVerifier,
+};
 use aether_types::{Address, Block, Slot, ValidatorInfo, H256};
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -85,7 +87,7 @@ impl VrfPosConsensus {
     /// Check if a validator is eligible to propose for a slot
     pub fn is_eligible_leader(
         &self,
-        vrf_keypair: &VrfKeypair,
+        vrf_keypair: &dyn VrfSigner,
         slot: Slot,
         validator_address: &Address,
     ) -> Result<Option<VrfProof>> {
@@ -119,34 +121,37 @@ impl VrfPosConsensus {
         }
     }
 
-    /// Verify that a validator was eligible to propose a block
-    pub fn verify_leader(&self, block: &Block, proposer: &Address) -> Result<bool> {
-        // Get validator
+    /// Verify that a validator was eligible to propose a block.
+    /// Uses the provided `VrfVerifier` for proof validation, defaulting to
+    /// `EcVrfVerifier` in production.
+    pub fn verify_leader_with(
+        &self,
+        block: &Block,
+        proposer: &Address,
+        verifier: &dyn VrfVerifier,
+    ) -> Result<bool> {
         let validator = self
             .validators
             .get(proposer)
             .ok_or_else(|| anyhow::anyhow!("validator not found"))?;
 
-        // Reconstruct VRF input
         let mut input = Vec::new();
         input.extend_from_slice(self.epoch_randomness.as_bytes());
         input.extend_from_slice(&block.header.slot.to_le_bytes());
 
-        // Convert VRF proof from block
         let vrf_proof = VrfProof {
             output: block.header.vrf_proof.output,
             proof: block.header.vrf_proof.proof.clone(),
         };
 
-        // Verify VRF proof — reject invalid proofs before checking eligibility
         let vrf_pubkey: [u8; 32] = validator.pubkey.as_bytes()[..32]
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
-        if !aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
+
+        if !verifier.verify(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
         }
 
-        // Check eligibility threshold (using deterministic integer arithmetic)
         Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
@@ -154,6 +159,11 @@ impl VrfPosConsensus {
             self.tau_numerator,
             self.tau_denominator,
         ))
+    }
+
+    /// Verify leader eligibility using the default ECVRF verifier.
+    pub fn verify_leader(&self, block: &Block, proposer: &Address) -> Result<bool> {
+        self.verify_leader_with(block, proposer, &EcVrfVerifier)
     }
 
     /// Advance to next epoch and update randomness
@@ -241,6 +251,8 @@ impl VrfPosConsensus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_crypto_vrf::mock::MockVrfSigner;
+    use aether_crypto_vrf::VrfKeypair;
     use aether_types::PublicKey;
 
     fn create_test_validator(stake: u128) -> ValidatorInfo {
@@ -359,6 +371,33 @@ mod tests {
     }
 
     #[test]
+    fn mock_vrf_signer_works_with_eligibility_check() {
+        let validator = create_test_validator(5000);
+        let validator_addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 0.8, 100);
+
+        let mock_signer = MockVrfSigner::from_index(1);
+        let result = consensus.is_eligible_leader(&mock_signer, 0, &validator_addr);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn mock_vrf_is_deterministic_across_calls() {
+        let validator = create_test_validator(10_000);
+        let validator_addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 1.0, 100);
+
+        let mock = MockVrfSigner::from_index(42);
+        let r1 = consensus
+            .is_eligible_leader(&mock, 7, &validator_addr)
+            .unwrap();
+        let r2 = consensus
+            .is_eligible_leader(&mock, 7, &validator_addr)
+            .unwrap();
+        assert_eq!(r1.is_some(), r2.is_some());
+    }
+
+    #[test]
     fn verify_leader_rejects_invalid_vrf_proof() {
         use aether_types::{Block, VrfProof as TypesVrfProof};
 
@@ -414,7 +453,6 @@ mod tests {
             result.is_ok(),
             "verify_leader should not error on valid proof"
         );
-        // With stake=1M (100% of total) and tau=0.99, this should almost certainly be eligible
     }
 }
 

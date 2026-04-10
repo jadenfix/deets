@@ -579,6 +579,16 @@ impl Ledger {
             return Ok((receipts, overlay));
         }
 
+        for tx in transactions {
+            let derived = tx.sender_pubkey.to_address();
+            if derived != tx.sender {
+                bail!(
+                    "sender address does not match public key: tx_hash={}",
+                    tx.hash()
+                );
+            }
+        }
+
         let batch_inputs: Vec<_> = transactions.iter().map(|tx| tx.ed25519_tuple()).collect();
         let batch_results = ed25519::verify_batch(&batch_inputs)
             .map_err(|e| anyhow!("batch signature verification failed: {e:?}"))?;
@@ -586,10 +596,6 @@ impl Ledger {
         // Clone the merkle tree for speculative root computation
         let mut spec_tree = self.merkle_tree.clone();
 
-        // Reject block entirely if ANY transaction has an invalid signature.
-        // A valid block must never contain invalid-signature transactions —
-        // allowing them as Failed receipts would let malicious proposers stuff
-        // blocks with garbage, wasting block space and network bandwidth.
         for (tx, is_valid) in transactions.iter().zip(batch_results.iter()) {
             if !*is_valid {
                 bail!(
@@ -956,11 +962,20 @@ impl Ledger {
             return Ok(receipts);
         }
 
+        for tx in transactions {
+            let derived = tx.sender_pubkey.to_address();
+            if derived != tx.sender {
+                bail!(
+                    "sender address does not match public key: tx_hash={}",
+                    tx.hash()
+                );
+            }
+        }
+
         let batch_inputs: Vec<_> = transactions.iter().map(|tx| tx.ed25519_tuple()).collect();
         let batch_results = ed25519::verify_batch(&batch_inputs)
             .map_err(|e| anyhow!("batch signature verification failed: {e:?}"))?;
 
-        // Reject block entirely if ANY transaction has an invalid signature.
         for (tx, is_valid) in transactions.iter().zip(batch_results.iter()) {
             if !*is_valid {
                 bail!(
@@ -1111,6 +1126,65 @@ mod tests {
         let receipts = ledger.apply_block_transactions(&[tx]).unwrap();
         assert_eq!(receipts.len(), 1);
         assert!(matches!(receipts[0].status, TransactionStatus::Success));
+    }
+
+    #[test]
+    fn test_sender_pubkey_mismatch_rejected_in_batch_paths() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = Storage::open(temp_dir.path()).unwrap();
+        let mut ledger = Ledger::new(storage).unwrap();
+
+        let victim_keypair = Keypair::generate();
+        let victim_address = Address::from_slice(&victim_keypair.to_address()).unwrap();
+        let attacker_keypair = Keypair::generate();
+
+        let account = Account::with_balance(victim_address, 1_000_000);
+        let mut batch = StorageBatch::new();
+        batch.put(
+            CF_ACCOUNTS,
+            victim_address.as_bytes().to_vec(),
+            bincode::serialize(&account).unwrap(),
+        );
+        ledger.storage.write_batch(batch).unwrap();
+
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: victim_address,
+            sender_pubkey: PublicKey::from_bytes(attacker_keypair.public_key()),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 100,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(attacker_keypair.sign(hash.as_bytes()));
+
+        let err = ledger.apply_block_speculatively(&[tx.clone()]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sender address does not match public key"),
+            "expected sender-pubkey mismatch error in speculative path, got: {err}"
+        );
+
+        let err = ledger.apply_block_transactions(&[tx.clone()]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sender address does not match public key"),
+            "expected sender-pubkey mismatch error in block_transactions path, got: {err}"
+        );
+
+        let err = ledger.apply_transaction(&tx).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sender address does not match public key"),
+            "expected sender-pubkey mismatch error in individual path, got: {err}"
+        );
     }
 
     #[test]
