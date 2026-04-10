@@ -138,22 +138,22 @@ impl VrfPosConsensus {
             proof: block.header.vrf_proof.proof.clone(),
         };
 
-        // Verify VRF proof
+        // Verify VRF proof — reject invalid proofs before checking eligibility
         let vrf_pubkey: [u8; 32] = validator.pubkey.as_bytes()[..32]
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid public key length"))?;
-        aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)?;
+        if !aether_crypto_vrf::verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
+            return Ok(false);
+        }
 
         // Check eligibility threshold (using deterministic integer arithmetic)
-        let eligible = check_leader_eligibility_integer(
+        Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
             self.total_stake,
             self.tau_numerator,
             self.tau_denominator,
-        );
-
-        Ok(eligible)
+        ))
     }
 
     /// Advance to next epoch and update randomness
@@ -356,6 +356,65 @@ mod tests {
         assert_eq!(consensus.epoch_length, 1);
         // advance_slot should not panic
         consensus.advance_slot();
+    }
+
+    #[test]
+    fn verify_leader_rejects_invalid_vrf_proof() {
+        use aether_types::{Block, VrfProof as TypesVrfProof};
+
+        let validator = create_test_validator(10_000);
+        let addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 0.8, 100);
+
+        let bogus_proof = TypesVrfProof {
+            output: [0xAA; 32],
+            proof: vec![0xFF; 80],
+        };
+        let block = Block::new(1, H256::zero(), addr, bogus_proof, vec![]);
+
+        let result = consensus.verify_leader(&block, &addr);
+        assert!(
+            result.is_ok(),
+            "verify_leader should not error on bad proof"
+        );
+        assert!(
+            !result.unwrap(),
+            "verify_leader must reject a block with a fabricated VRF proof"
+        );
+    }
+
+    #[test]
+    fn verify_leader_accepts_valid_vrf_proof() {
+        use aether_types::{Block, VrfProof as TypesVrfProof};
+
+        let vrf_keypair = VrfKeypair::generate();
+        let validator = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(vrf_keypair.public_key().to_vec()),
+            stake: 1_000_000,
+            commission: 0,
+            active: true,
+        };
+        let addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 0.99, 100);
+
+        let slot = 42u64;
+        let mut input = Vec::new();
+        input.extend_from_slice(consensus.epoch_randomness.as_bytes());
+        input.extend_from_slice(&slot.to_le_bytes());
+        let proof = vrf_keypair.prove(&input);
+
+        let types_proof = TypesVrfProof {
+            output: proof.output,
+            proof: proof.proof,
+        };
+        let block = Block::new(slot, H256::zero(), addr, types_proof, vec![]);
+
+        let result = consensus.verify_leader(&block, &addr);
+        assert!(
+            result.is_ok(),
+            "verify_leader should not error on valid proof"
+        );
+        // With stake=1M (100% of total) and tau=0.99, this should almost certainly be eligible
     }
 }
 
