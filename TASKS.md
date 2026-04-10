@@ -103,6 +103,33 @@ Short cycles must not produce sloppy work. The rules above trade **breadth per c
 
 **The only thing more expensive than a slow pipeline is a fast pipeline that ships bugs.** Our North Star is "code simple enough to formally reason about" and "cryptography that is constant-time and audited." Efficiency must never compromise that.
 
+### 8. ⭐ Everything is on the table for the North Star — including CI/CD
+
+**IF THE CI/CD IS WRONG, FIX IT.** Do not work around a broken CI job. Do not skip it. Do not add a `continue-on-error` band-aid. If a workflow is flaky, slow, incorrectly gating merges, or enforcing the wrong thing, **edit the workflow file in the same PR as your fix and explain why in the PR description.** Broken CI is a first-class bug and blocks the North Star as surely as a broken test does.
+
+Our North Star is a production-grade L1 that beats BTC / ETH / SOL on correctness, speed, and AI-native verification. **If something in this repo is in the way of that goal, you may change it.** Nothing is sacred. That explicitly includes:
+
+- **GitHub Actions workflows** (`.github/workflows/*.yml`) — if a CI job is broken, slow, flaky, or blocks a correct change, fix the workflow **in the same PR**. Add new jobs, remove stale ones, parallelize matrix builds, cache smarter, bump runner images, rewrite the whole pipeline if it is wrong. Rafa (Agent 2) owns CI health but anyone may touch it.
+- **CI / phase / lint scripts** (`scripts/run_phase*.sh`, `scripts/lint.sh`, `scripts/test.sh`, `./cli-test`, `./cli-format`) — same rule.
+- **`docker-compose.test.yml`** and anything under `deploy/` — update the devnet spec, Dockerfiles, Helm charts, and Prometheus rules as needed.
+- **`clippy.toml`, `rustfmt.toml`, `deny.toml`, `rust-toolchain.toml`** — if a lint or dep rule produces false positives that make it harder to ship correct code, change the config and **explain why in the PR description**.
+- **Cargo workspace manifests** (`Cargo.toml`, `Cargo.lock`) — restructure crates, rename packages, bump MSRV, change dependency versions, introduce/remove features. Bold refactors are welcome.
+- **Your own playbooks** — `PROGRESS.md`, `CLAUDE.md`, `TASKS.md`, `AGENT_COMMS.md`, and even `run-claude.sh` itself. If you learn something while running, write it down so the next cycle benefits. The runner script and the prompts are **not** sacred.
+- **The review pipeline states themselves** — if the ledger state machine is getting in the way, propose a change and ship it.
+
+**Hard constraints that remain in place (still non-negotiable, no exceptions):**
+
+- ⛔ **Never weaken security.** Don't disable signature verification, double-spend checks, nonce validation, slashing, or overflow checks. Don't introduce `unsafe { }` without a written justification in the PR description explaining the invariant and why the safe alternative is unacceptable.
+- ⛔ **Never disable or delete a failing test to make CI green.** Fix the test or fix the code. If the test is genuinely wrong, explain *why* it was wrong and what the correct test should assert.
+- ⛔ **Never remove a quality gate** (fmt / clippy / test / doctest) from the local workflow. You may **scope** them (touched-crate only) but not remove them.
+- ⛔ **Never `--no-verify` a commit**, never force-push to `main`, never bypass the "only Jun merges" rule, never skip `gh pr checks <N>` before a merge, never self-merge.
+- ⛔ **Never commit secrets** — keys, `.env`, `*.pem`, `*.key`, `*.tfstate`, anything under `~/.ssh`, `~/.aws`, `~/.gnupg`.
+- ⛔ **Never silently change CI enforcement policy** (branch protection, required checks, default branch, merge rules) without calling it out loudly in the PR description and getting an extra reviewer.
+
+**The North Star always wins.** If a workflow, config, lint, or policy is getting in the way of cryptographic rigor, formal correctness, or production durability, **fix the workflow, config, lint, or policy** — don't work around it. Explain WHY the old rule was wrong and what invariant the new rule preserves.
+
+**Extra scrutiny on config PRs.** A PR that touches `.github/workflows/`, `deploy/`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`, or `run-claude.sh` gets mandatory review from **two** of Jun, Mira, Rafa — not just one. These files shape how the whole team works, so changes need extra pairs of eyes. This is in addition to the normal peer + domain review.
+
 ---
 
 ## ⚡ Review Protocol Update — 2026-04-09 (READ FIRST EVERY CYCLE)
