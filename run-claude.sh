@@ -43,6 +43,12 @@ fi
 export CARGO_TERM_COLOR=never
 export RUST_BACKTRACE=1
 export CARGO_INCREMENTAL=1
+# Git must fail fast on missing credentials, never hang a cycle on an
+# interactive prompt that will never come (we saw 45-min hangs on 2026-04-09).
+# Relies on `gh auth setup-git` having installed gh's credential helper globally.
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS=""
+export GCM_INTERACTIVE=never
 
 START_EPOCH=$(date +%s)
 MAX_SECONDS=$(awk "BEGIN {printf \"%d\", $MAX_HOURS * 3600}")

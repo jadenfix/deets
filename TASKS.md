@@ -1,5 +1,110 @@
 # Aether Blockchain — Engineering Team Mission
 
+## 🚀 Efficiency + Quality Rules — 2026-04-10 (READ FIRST, NEWER THAN EVERYTHING BELOW)
+
+After observing our first 90 minutes we learned some hard lessons. These rules supersede anything below that conflicts. **Efficiency is the goal, but quality is non-negotiable — see §7.**
+
+### 1. Per-cycle budget — do ONE thing then exit
+
+Our first cycles ran 40-60 minutes each because agents tried to do too much per session. That kills pipeline turnover. **Every cycle, pick exactly ONE of these three modes and exit as soon as you finish it:**
+
+- **(A) Author mode:** open exactly **1** PR, register it in the ledger + thread, post a short reflection to `general.log`, then exit. Do NOT open a second PR in the same cycle.
+- **(B) Reviewer mode:** drain your inbox, then complete up to **3** peer/domain/crypto reviews, then exit. Do NOT also write your own PR in the same cycle.
+- **(C) Fix mode:** address all feedback on your own open PRs (push fixes, reply to threads, flip ledger state), then exit. Do NOT also start new work.
+
+**Target cycle wall-clock time: 5-15 minutes.** If you are still running at the 15-minute mark, stop what you are doing, post a heartbeat to `general.log` explaining what is still in flight, and exit cleanly. The next cycle will resume from the ledger state.
+
+Shorter cycles = faster pipeline turnover = more merges per hour. **But one PR per cycle is a ceiling, not a floor** — if all you can do is leave a thoughtful review on someone else's PR, that IS a successful cycle.
+
+### 2. Never run plain `git push` — use `gh` for everything
+
+Git credential helpers are unreliable in non-interactive subshells. We watched 4 agents hang for 45+ minutes on `git push -u origin <branch>` because stdin was `/dev/null` and the helper blocked forever.
+
+**Rules:**
+- **Opening a PR:** use `gh pr create --fill` or `gh pr create -t "..." -b "..."`. It handles the push itself via gh's own auth store.
+- **Updating an existing PR branch:** use `gh pr checkout <N>`, edit files, commit, then `git push` will work because the branch already has an upstream AND because `gh auth setup-git` has installed a credential helper that uses gh's token. If `git push` hangs for more than 30 seconds, kill it and retry — never wait.
+- **Never use raw `git push` for the first push of a new branch.** Always let `gh pr create` do it.
+- Your environment has `GIT_TERMINAL_PROMPT=0` set, so if creds are missing `git push` will fail fast instead of hanging. Good.
+
+### 3. Heartbeats — post a status line every 5 minutes of wall-clock work
+
+We had 0-byte cycle logs for 58 minutes and no way to distinguish "working hard" from "hung." **Every 5 minutes of wall-clock time in a cycle, post a one-line heartbeat:**
+
+```bash
+bash -c 'source /Users/jadenfix/deets/deets/run-claude.sh && comms_post general "Agent N (Name): <what I am doing right now>"'
+```
+
+Example: `"Agent 1 (Mira): running cargo test -p aether-ledger, ~2 min in, 47 of 82 tests passed"`. If you go silent for 10+ minutes during a cycle, operators will assume you are hung and may kill your session.
+
+### 4. Jun: scope the final gate to touched crates only
+
+GitHub CI already runs `cargo test --workspace --all-features` as the authoritative matrix. Jun does NOT need to re-run the whole workspace locally. Scope:
+
+```bash
+TOUCHED=$(gh pr diff <N> --name-only | awk -F/ '/^crates\//{print $2}' | sort -u | tr '\n' ' ')
+for crate in $TOUCHED; do
+  cargo test -p aether-$crate --all-features || { echo "FAIL: $crate"; break; }
+done
+cargo clippy $(for c in $TOUCHED; do printf -- '-p aether-%s ' "$c"; done) --all-targets --all-features -- -D warnings
+```
+
+**Jun's gate order (all must pass):**
+1. `gh pr checks <N>` — **ALL** checks must be SUCCESS. Never merge pending or red. This is the single most important gate.
+2. Touched-crate `cargo test` + `cargo clippy` (local second-opinion).
+3. Integration smoke for networking/consensus/runtime/programs PRs: `docker compose -f docker-compose.test.yml up -d && sleep 20 && curl -sf http://localhost:8545 ... && docker compose down -v`.
+4. Ledger must show `domain_approved` AND (if crypto touched) `crypto_audited`.
+5. If all green → `gh pr review --approve` → `ledger_append final_approved` → `gh pr merge --squash --delete-branch` → `ledger_append merged`.
+
+Touched-crate gate should take 1-3 min instead of 10-15 min. ~3x Jun's merge throughput with no quality loss (CI still runs full matrix).
+
+### 5. Parallel domain + crypto review
+
+When a peer reviewer approves a crypto-touching PR, advance the ledger to **both** `domain_review_requested` AND `crypto_audit_requested` in the same update. Domain reviewer and Nikolai work in parallel, not sequentially. Final gate fires only when BOTH return approved.
+
+### 6. Comms post quoting discipline
+
+We saw a malformed line in `general.log` that was literally just `"4"` — someone's bash `echo` got cut off by unquoted expansion. **Always quote your message argument:**
+
+- ✅ `comms_post general "Agent 4: opened PR #360"`
+- ❌ `comms_post general Agent 4: opened PR #360`
+
+Use the `comms_post` helper, not raw `echo >>`.
+
+### 7. ⛔ Quality bar is non-negotiable — efficiency never trumps correctness
+
+Short cycles must not produce sloppy work. The rules above trade **breadth per cycle** for **speed per cycle**, NOT depth of thought per unit of work. Every PR and every review still has to clear these bars:
+
+**For authors (Author mode):**
+- ✅ **You ran `cargo fmt --all && cargo clippy --workspace -- -D warnings && cargo test -p <touched-crates> --all-features`** locally before `gh pr create`. No exceptions.
+- ✅ **You added tests.** New code requires new tests (unit or proptest). Bug fixes require a regression test that fails before the fix and passes after. If you cannot justify why a change doesn't need a test, your change is not done.
+- ✅ **You traced the blast radius.** Before editing, you checked what subsystems depend on the invariants you are touching. State this explicitly in the PR description: *"This touches X which is depended on by Y and Z; I verified Y tests still pass because ..."*
+- ✅ **You did not disable, weaken, or `#[allow(...)]` any existing test, lint, or check** to make your change compile. If you need to, file an assignment on Mira explaining why and let her decide.
+- ✅ **You explained the `why`, not just the `what`,** in the PR description and the thread opener.
+
+**For reviewers (Reviewer mode):**
+- ✅ **You actually read the diff.** Not skimmed. Read it. 3 substantive reviews are better than 10 rubber-stamps.
+- ✅ **You asked at least one question OR requested at least one change** on anything non-trivial. If every review is "LGTM" you are not reviewing.
+- ✅ **You checked: are the tests meaningful?** A test that asserts `assert!(true)` is not a test. A proptest with 4 cases is weak. Push back on thin test coverage.
+- ✅ **You verified the PR description matches the diff.** Drift between "what this claims to do" and "what this actually changes" is a red flag.
+- ✅ **For crypto/consensus PRs, you asked about adversarial inputs.** What happens with a malformed signature? A signature from the wrong key? A signature on a different message? Overflow?
+
+**For Jun (Final gate):**
+- ✅ **CI must be fully green** before any merge — never merge pending or red, ever.
+- ✅ **Touched-crate tests must pass locally** in your worktree, not just CI.
+- ✅ **Devnet smoke must succeed** for integration PRs (networking/consensus/runtime/programs). "CI passed" is not enough — the devnet must actually boot and serve a JSON-RPC request.
+- ✅ **The ledger must show the correct review trail.** `domain_approved` must be present. `crypto_audited` must be present if crypto was touched. If the trail is incomplete, request the missing review, do not merge.
+- ✅ **When in doubt, do NOT merge.** A held PR costs an hour. A bad merge costs a day.
+
+**For everyone:**
+- ⛔ **Do not mark an assignment `done` unless it is actually done.** "Started it" is `in_progress`. "Tested and shipped" is `done`.
+- ⛔ **Do not mark a ledger state optimistically.** Only flip to `peer_approved` after you actually read the diff and made a decision.
+- ⛔ **Do not merge your own PR under any circumstance.** Only Jun merges. If Jun is unavailable and a PR is critical, post to `blockers.log` and wait — do not merge around the rule.
+- ⛔ **Do not silently skip a required step to stay within the cycle budget.** If the cycle budget and the quality bar conflict, the quality bar wins and you exit mid-work after posting a heartbeat. The next cycle resumes.
+
+**The only thing more expensive than a slow pipeline is a fast pipeline that ships bugs.** Our North Star is "code simple enough to formally reason about" and "cryptography that is constant-time and audited." Efficiency must never compromise that.
+
+---
+
 ## ⚡ Review Protocol Update — 2026-04-09 (READ FIRST EVERY CYCLE)
 
 **Peer review is now parallelized.** Sam (Agent 4) was becoming a single-point bottleneck because every `peer_review_requested` PR was waiting on him. New rule, effective immediately:
