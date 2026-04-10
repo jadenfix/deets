@@ -5,6 +5,7 @@ use curve25519_dalek::{
     scalar::Scalar,
 };
 use sha2::{Digest, Sha512};
+use subtle::ConstantTimeEq;
 
 /// ECVRF-EDWARDS25519-SHA512-ELL2 implementation per RFC 9381.
 ///
@@ -192,18 +193,15 @@ pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Re
     // Step 5: c' = challenge_generation(Y, H, Gamma, U, V)
     let c_prime = challenge_generation(&y, &h, &gamma, &u, &v);
 
-    // Step 6: verify c == c'
+    // Step 6: verify c == c' (constant-time to prevent timing side-channels)
     let c_bytes = scalar_to_16_bytes(&c);
     let c_prime_bytes = scalar_to_16_bytes(&c_prime);
-    let valid = c_bytes == c_prime_bytes;
+    let challenge_ok = c_bytes.ct_eq(&c_prime_bytes);
 
-    // Also verify that output matches proof_to_hash(Gamma)
-    if valid {
-        let expected_output = proof_to_hash(&gamma);
-        Ok(expected_output == proof.output)
-    } else {
-        Ok(false)
-    }
+    let expected_output = proof_to_hash(&gamma);
+    let output_ok = expected_output.ct_eq(&proof.output);
+
+    Ok(bool::from(challenge_ok & output_ok))
 }
 
 /// Encode input to a curve point using try-and-increment method.
@@ -757,6 +755,21 @@ mod proptests {
         fn output_in_range(output in prop::array::uniform32(any::<u8>())) {
             let val = output_to_value(&output);
             prop_assert!((0.0..1.0).contains(&val), "output_to_value {} not in [0,1)", val);
+        }
+
+        /// Random garbage proofs must never panic — they should return Ok(false) or Err.
+        #[test]
+        fn garbage_proofs_no_panic(
+            pubkey in prop::array::uniform32(any::<u8>()),
+            proof_bytes in prop::collection::vec(any::<u8>(), 0..120),
+            output in prop::array::uniform32(any::<u8>()),
+            input in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let proof = VrfProof { proof: proof_bytes, output };
+            let result = verify_proof(&pubkey, &input, &proof);
+            if let Ok(valid) = result {
+                prop_assert!(!valid, "random garbage must not verify");
+            }
         }
     }
 }

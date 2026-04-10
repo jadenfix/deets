@@ -201,6 +201,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "sha2",
+ "subtle",
  "thiserror 1.0.69",
  "zeroize",
 ]
@@ -243,6 +244,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "sha2",
+ "subtle",
  "thiserror 1.0.69",
  "zeroize",
 ]
