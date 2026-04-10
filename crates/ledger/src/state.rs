@@ -950,6 +950,23 @@ impl Ledger {
         Ok(())
     }
 
+    /// Insert a UTxO directly into storage for testing.
+    /// Only available in test builds — production code creates UTxOs via transaction outputs.
+    #[cfg(test)]
+    pub fn seed_utxo(&mut self, utxo_id: &UtxoId, amount: u128, owner: Address) -> Result<()> {
+        let utxo = aether_types::Utxo {
+            amount,
+            owner,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        let key = bincode::serialize(utxo_id)?;
+        let value = bincode::serialize(&utxo)?;
+        batch.put(CF_UTXOS, key, value);
+        self.storage.write_batch(batch)?;
+        Ok(())
+    }
+
     pub fn apply_block_transactions(
         &mut self,
         transactions: &[Transaction],
