@@ -364,8 +364,13 @@ impl<B: RpcBackend + 'static> JsonRpcServer<B> {
                 let sync_status = backend
                     .get_sync_status()
                     .unwrap_or_else(|_| json!({"syncing": false}));
+                let status = if sync_status["syncing"].as_bool() == Some(true) {
+                    "syncing"
+                } else {
+                    "ok"
+                };
                 Ok::<_, warp::Rejection>(warp::reply::json(&json!({
-                    "status": "ok",
+                    "status": status,
                     "version": env!("CARGO_PKG_VERSION"),
                     "latestSlot": slot,
                     "finalizedSlot": finalized,
@@ -1078,8 +1083,13 @@ async fn handle_health<B: RpcBackend>(backend: Arc<RwLock<B>>) -> Result<Value, 
     let sync_status = backend
         .get_sync_status()
         .unwrap_or_else(|_| json!({"syncing": false}));
+    let status = if sync_status["syncing"].as_bool() == Some(true) {
+        "syncing"
+    } else {
+        "ok"
+    };
     Ok(json!({
-        "status": "ok",
+        "status": status,
         "version": env!("CARGO_PKG_VERSION"),
         "latestSlot": slot,
         "finalizedSlot": finalized,
@@ -1291,7 +1301,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_health_endpoint_returns_node_status() {
+    async fn test_health_endpoint_returns_ok_when_not_syncing() {
         let backend = Arc::new(RwLock::new(MockBackend::default()));
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -1308,6 +1318,75 @@ mod tests {
         assert_eq!(result["finalizedSlot"], 0);
         assert_eq!(result["peerCount"], 0);
         assert_eq!(result["sync"]["syncing"], false);
+    }
+
+    struct MockSyncingBackend;
+
+    impl RpcBackend for MockSyncingBackend {
+        fn send_raw_transaction(&self, _tx_bytes: Vec<u8>) -> Result<H256> {
+            Ok(H256::zero())
+        }
+
+        fn get_block_by_number(&self, _block_number: u64, _full_tx: bool) -> Result<Option<Block>> {
+            Ok(None)
+        }
+
+        fn get_block_by_hash(&self, _block_hash: H256, _full_tx: bool) -> Result<Option<Block>> {
+            Ok(None)
+        }
+
+        fn get_transaction_receipt(&self, _tx_hash: H256) -> Result<Option<TransactionReceipt>> {
+            Ok(None)
+        }
+
+        fn get_state_root(&self, _block_ref: Option<String>) -> Result<H256> {
+            Ok(H256::zero())
+        }
+
+        fn get_account(
+            &self,
+            _address: Address,
+            _block_ref: Option<String>,
+        ) -> Result<Option<Value>> {
+            Ok(None)
+        }
+
+        fn get_slot_number(&self) -> Result<u64> {
+            Ok(5)
+        }
+
+        fn get_finalized_slot(&self) -> Result<u64> {
+            Ok(2)
+        }
+
+        fn get_sync_status(&self) -> Result<Value> {
+            Ok(json!({"syncing": true, "currentSlot": 5, "targetSlot": 100}))
+        }
+
+        fn get_peer_count(&self) -> Result<usize> {
+            Ok(3)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_health_endpoint_returns_syncing_when_node_is_syncing() {
+        let backend = Arc::new(RwLock::new(MockSyncingBackend));
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: "aeth_health".to_string(),
+            params: vec![],
+            id: json!(1),
+        };
+
+        let response = process_rpc_request(req, backend, 100_u64).await;
+        assert!(response.error.is_none());
+        let result = response.result.unwrap();
+        assert_eq!(
+            result["status"], "syncing",
+            "health status must be 'syncing' when node reports syncing=true"
+        );
+        assert_eq!(result["sync"]["syncing"], true);
+        assert_eq!(result["peerCount"], 3);
     }
 
     #[tokio::test]
