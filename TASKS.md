@@ -1,5 +1,25 @@
 # Aether Blockchain — Engineering Team Mission
 
+## ⚡ Review Protocol Update — 2026-04-09 (READ FIRST EVERY CYCLE)
+
+**Peer review is now parallelized.** Sam (Agent 4) was becoming a single-point bottleneck because every `peer_review_requested` PR was waiting on him. New rule, effective immediately:
+
+> **Any agent other than the PR author may perform peer review.** Sam remains the *default* peer reviewer and should drain the queue aggressively, but if Sam is busy and the queue has PRs older than 1 cycle, **Mira (1), Rafa (2), Nikolai (5), and even Jun (3)** should opportunistically peer-review them when their own inbox and domain-review queue are empty.
+
+**Priority order for every agent, every cycle (unchanged for steps 1-2, expanded for step 3):**
+
+1. **Drain your inbox** (cross-agent assignments) — accept/decline every open one.
+2. **Drain your domain-review queue** (PRs routed to you by path).
+3. **Opportunistic peer review** — if any PR sits in `peer_review_requested` state (regardless of who it was originally routed to), and you are not the author, and your own inbox + domain queue are empty, pick it up. Post in the thread: *"<Name> here — peer-reviewing while Sam drains his queue."* Then proceed with a substantive review: naming, readability, obvious bugs, missing tests. Approve → `ledger_append <N> peer_approved <your_id> "<why>"` then `ledger_append <N> domain_review_requested <your_id> "<routed-to-agent-X>"`.
+4. **Answer feedback** on your own PRs.
+5. **Pick new work** from TASKS.md (Agent 5 prefers Tier 0).
+
+**Why:** our pipeline has 4-5 sequential hops per PR. A single-reviewer bottleneck at step 1 blocks the entire team. A 4-reviewer fan-in cuts average merge latency roughly in half.
+
+**Hard rule (unchanged):** you still cannot peer-review a PR you authored. And the ledger states, crypto audit requirements, CI-green requirement, and "only Jun may merge" rule are all unchanged.
+
+---
+
 ## North Star
 
 Aether must be a production-grade L1 blockchain that is **better than Bitcoin, Ethereum, and Solana.** Not a toy. Not a prototype. A chain that could handle real money, real validators, and real adversaries.

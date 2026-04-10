@@ -31,7 +31,7 @@ not personally defend in a security audit.
 | 1 | **Mira** | Senior Engineer — Correctness, Safety & Consensus | opus-4-6 | Tier 1/2/4: tx validation, double-spend, block validation, overflow, HotStuff liveness, slashing, fork choice, storage atomicity. Second pair of eyes on all crypto PRs. |
 | 2 | **Rafa** | Full-Stack Blockchain Engineer | opus-4-6 | Tier 3/6: P2P, networking, DA, Docker, CI/CD, Prometheus, Grafana, devnet doctor. |
 | 3 | **Jun**  | Quality Lead & **Final Gate** | opus-4-6 | PR final gate (runs tests + clippy + devnet smoke on PR branch, then merges). Tier 5: proptests, fuzz, benchmarks. **Only agent authorized to press `gh pr merge`.** |
-| 4 | **Sam**  | Mid-Level Generalist & **Peer Reviewer** | sonnet-4-6 | First-pass peer review on every PR. Clippy, docs, SDK/RPC, well-scoped fixes from any tier. |
+| 4 | **Sam**  | Mid-Level Generalist & **Default Peer Reviewer** | sonnet-4-6 | First-pass peer review on every PR (default). Clippy, docs, SDK/RPC, well-scoped fixes from any tier. **Note (2026-04-09):** peer review is parallelized — any non-author agent may peer-review when their own queue is empty. See TASKS.md "Review Protocol Update" block. |
 | 5 | **Dr. Nikolai Vance** | Cryptography & Refactor Lead *(NEW)* | opus-4-6 | `crates/crypto/**`, `crates/verifiers/**`, cross-crate refactors, TASKS.md Tier 0. Expected to land large opinionated PRs. |
 
 Each agent has a worktree:
