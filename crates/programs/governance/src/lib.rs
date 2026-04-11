@@ -216,10 +216,14 @@ impl GovernanceState {
                 self.quorum_percentage
             ));
         }
-        let total_votes = proposal.votes_for.saturating_add(proposal.votes_against);
+        let total_votes = proposal
+            .votes_for
+            .checked_add(proposal.votes_against)
+            .ok_or("total_votes overflow")?;
         let quorum_threshold = self
             .total_voting_power
-            .saturating_mul(self.quorum_percentage as u128)
+            .checked_mul(self.quorum_percentage as u128)
+            .ok_or("quorum threshold overflow")?
             / 100;
         if quorum_threshold == 0 {
             return Err("quorum is zero: no voting power registered".to_string());
@@ -295,14 +299,17 @@ impl GovernanceState {
     }
 
     /// Update voting power (called from staking module).
-    pub fn update_voting_power(&mut self, account: Address, power: u128) {
+    pub fn update_voting_power(&mut self, account: Address, power: u128) -> Result<(), String> {
         let old_power = self.voting_power.get(&account).copied().unwrap_or(0);
         self.total_voting_power = self
             .total_voting_power
-            .saturating_sub(old_power)
-            .saturating_add(power);
+            .checked_sub(old_power)
+            .ok_or("total_voting_power underflow")?
+            .checked_add(power)
+            .ok_or("total_voting_power overflow")?;
         self.voting_power.insert(account, power);
         self.recompute_effective_power();
+        Ok(())
     }
 
     // ── Liquid Delegation ──────────────────────────────────
@@ -416,7 +423,9 @@ impl GovernanceState {
         if base_power == 0 {
             return Err("no voting power (at proposal creation time)".into());
         }
-        let weighted_power = base_power.saturating_mul(multiplier);
+        let weighted_power = base_power
+            .checked_mul(multiplier)
+            .ok_or("weighted vote power overflow")?;
 
         proposal.voters.insert(voter, vote_for);
         if vote_for {
@@ -491,7 +500,9 @@ mod tests {
     #[test]
     fn test_propose() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 2_000_000_000_000); // 2000 SWR
+        state
+            .update_voting_power(addr(1), 2_000_000_000_000)
+            .unwrap();
 
         let proposal_id = H256::zero();
         state
@@ -514,8 +525,12 @@ mod tests {
     #[test]
     fn test_vote() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 2_000_000_000_000);
-        state.update_voting_power(addr(2), 1_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 2_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
 
         let proposal_id = H256::zero();
         state
@@ -540,8 +555,12 @@ mod tests {
     #[test]
     fn test_finalize_and_execute() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
-        state.update_voting_power(addr(2), 5_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 5_000_000_000_000)
+            .unwrap();
 
         let proposal_id = H256::zero();
         state
@@ -578,8 +597,12 @@ mod tests {
     #[test]
     fn test_delegation() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 3_000_000_000_000); // 3000 SWR
-        state.update_voting_power(addr(2), 1_000_000_000_000); // 1000 SWR
+        state
+            .update_voting_power(addr(1), 3_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
 
         // addr(1) delegates to addr(2)
         state.delegate(addr(1), addr(2)).unwrap();
@@ -592,8 +615,12 @@ mod tests {
     #[test]
     fn test_undelegate() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 3_000_000_000_000);
-        state.update_voting_power(addr(2), 1_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 3_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
 
         state.delegate(addr(1), addr(2)).unwrap();
         state.undelegate(addr(1)).unwrap();
@@ -606,9 +633,15 @@ mod tests {
     #[test]
     fn test_no_delegation_chains() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 1_000_000_000_000);
-        state.update_voting_power(addr(2), 1_000_000_000_000);
-        state.update_voting_power(addr(3), 1_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 1_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(3), 1_000_000_000_000)
+            .unwrap();
 
         // A→B delegation succeeds
         state.delegate(addr(1), addr(2)).unwrap();
@@ -621,9 +654,15 @@ mod tests {
 
         // Reverse direction also blocked: C delegates to B first, then A→B
         let mut state2 = GovernanceState::new();
-        state2.update_voting_power(addr(1), 1_000_000_000_000);
-        state2.update_voting_power(addr(2), 1_000_000_000_000);
-        state2.update_voting_power(addr(3), 1_000_000_000_000);
+        state2
+            .update_voting_power(addr(1), 1_000_000_000_000)
+            .unwrap();
+        state2
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
+        state2
+            .update_voting_power(addr(3), 1_000_000_000_000)
+            .unwrap();
         state2.delegate(addr(3), addr(2)).unwrap();
         // A→B should fail because B already receives delegation from C
         let result2 = state2.delegate(addr(1), addr(2));
@@ -646,8 +685,12 @@ mod tests {
     #[test]
     fn test_conviction_voting() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
-        state.update_voting_power(addr(2), 5_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 5_000_000_000_000)
+            .unwrap();
 
         let pid = H256::zero();
         state
@@ -677,9 +720,15 @@ mod tests {
     #[test]
     fn test_conviction_voting_uses_proposal_snapshot() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
-        state.update_voting_power(addr(2), 1_000_000_000_000);
-        state.update_voting_power(addr(3), 3_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(3), 3_000_000_000_000)
+            .unwrap();
 
         let pid = H256::zero();
         state
@@ -721,8 +770,12 @@ mod tests {
     #[test]
     fn test_delegation_affects_voting() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 3_000_000_000_000);
-        state.update_voting_power(addr(2), 1_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 3_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 1_000_000_000_000)
+            .unwrap();
 
         // addr(1) delegates to addr(2)
         state.delegate(addr(1), addr(2)).unwrap();
@@ -792,8 +845,12 @@ mod tests {
     #[test]
     fn test_cancel_non_active_proposal_fails() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
-        state.update_voting_power(addr(2), 5_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 5_000_000_000_000)
+            .unwrap();
 
         let pid = H256::zero();
         state
@@ -826,7 +883,9 @@ mod tests {
     #[test]
     fn test_cancel_by_non_proposer_fails() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
 
         let pid = H256::zero();
         state
@@ -852,8 +911,12 @@ mod tests {
     #[test]
     fn test_cancelled_proposal_rejects_votes() {
         let mut state = GovernanceState::new();
-        state.update_voting_power(addr(1), 5_000_000_000_000);
-        state.update_voting_power(addr(2), 2_000_000_000_000);
+        state
+            .update_voting_power(addr(1), 5_000_000_000_000)
+            .unwrap();
+        state
+            .update_voting_power(addr(2), 2_000_000_000_000)
+            .unwrap();
 
         let pid = H256::zero();
         state
@@ -923,30 +986,34 @@ mod tests {
     }
 
     #[test]
-    fn test_voting_power_update_saturates() {
+    fn test_voting_power_update_checked() {
         let mut state = GovernanceState::new();
 
-        // Give addr(1) a small amount of voting power
-        state.update_voting_power(addr(1), 100);
+        state.update_voting_power(addr(1), 100).unwrap();
         assert_eq!(state.total_voting_power, 100);
 
-        // Now update with old_power (100) being subtracted via saturating_sub.
-        // Set new power to 0 so total should go to 0, not underflow.
-        state.update_voting_power(addr(1), 0);
+        state.update_voting_power(addr(1), 0).unwrap();
         assert_eq!(state.total_voting_power, 0);
 
-        // Simulate a bug scenario: manually set total_voting_power very low,
-        // then update a user whose recorded power is much larger.
+        // Corrupt total_voting_power to be lower than recorded individual power.
+        // checked_sub must return an error instead of silently underflowing.
         state.voting_power.insert(addr(2), 1_000_000);
-        state.total_voting_power = 10; // Artificially low
+        state.total_voting_power = 10;
 
-        // update_voting_power should use saturating_sub so total doesn't underflow
-        state.update_voting_power(addr(2), 500);
+        let result = state.update_voting_power(addr(2), 500);
         assert!(
-            state.total_voting_power >= 500,
-            "total_voting_power should not underflow; got {}",
-            state.total_voting_power
+            result.is_err(),
+            "should error on underflow, not silently saturate"
         );
+    }
+
+    #[test]
+    fn test_voting_power_overflow_rejected() {
+        let mut state = GovernanceState::new();
+        state.update_voting_power(addr(1), u128::MAX).unwrap();
+
+        let result = state.update_voting_power(addr(2), 1);
+        assert!(result.is_err(), "should error on overflow");
     }
 
     /// quorum_percentage > 100 must return Err from finalize() rather than
@@ -1011,7 +1078,7 @@ mod proptests {
             extra_power in 0u128..1_000_000_000_000u128,
         ) {
             let mut state = GovernanceState::new();
-            state.update_voting_power(addr, MIN_STAKE + extra_power);
+            state.update_voting_power(addr, MIN_STAKE + extra_power).unwrap();
             let result = state.propose(
                 pid,
                 addr,
@@ -1030,7 +1097,7 @@ mod proptests {
             power in 0u128..999_999_999_999u128, // strictly less than 1000 SWR
         ) {
             let mut state = GovernanceState::new();
-            state.update_voting_power(addr, power);
+            state.update_voting_power(addr, power).unwrap();
             let result = state.propose(
                 pid,
                 addr,
@@ -1048,7 +1115,7 @@ mod proptests {
             pid in arb_h256(),
         ) {
             let mut state = GovernanceState::new();
-            state.update_voting_power(addr, MIN_STAKE * 2);
+            state.update_voting_power(addr, MIN_STAKE * 2).unwrap();
             state.propose(
                 pid,
                 addr,
@@ -1075,8 +1142,8 @@ mod proptests {
         ) {
             prop_assume!(proposer != voter);
             let mut state = GovernanceState::new();
-            state.update_voting_power(proposer, MIN_STAKE * 2);
-            state.update_voting_power(voter, MIN_STAKE);
+            state.update_voting_power(proposer, MIN_STAKE * 2).unwrap();
+            state.update_voting_power(voter, MIN_STAKE).unwrap();
             state.propose(
                 pid,
                 proposer,
@@ -1106,8 +1173,8 @@ mod proptests {
         ) {
             prop_assume!(proposer != voter);
             let mut state = GovernanceState::new();
-            state.update_voting_power(proposer, MIN_STAKE * 2);
-            state.update_voting_power(voter, MIN_STAKE);
+            state.update_voting_power(proposer, MIN_STAKE * 2).unwrap();
+            state.update_voting_power(voter, MIN_STAKE).unwrap();
             state.propose(
                 pid,
                 proposer,
@@ -1132,7 +1199,7 @@ mod proptests {
                 map.insert(*addr, *power);
             }
             for (addr, power) in &map {
-                state.update_voting_power(*addr, *power);
+                state.update_voting_power(*addr, *power).unwrap();
             }
             let expected: u128 = map.values().copied().fold(0u128, |a, b| a.saturating_add(b));
             prop_assert_eq!(state.total_voting_power, expected);
@@ -1148,8 +1215,8 @@ mod proptests {
         ) {
             prop_assume!(delegator != delegate);
             let mut state = GovernanceState::new();
-            state.update_voting_power(delegator, d_power);
-            state.update_voting_power(delegate, g_power);
+            state.update_voting_power(delegator, d_power).unwrap();
+            state.update_voting_power(delegate, g_power).unwrap();
 
             let orig_d = state.effective_voting_power(&delegator);
             let orig_g = state.effective_voting_power(&delegate);
@@ -1210,9 +1277,9 @@ mod proptests {
         ) {
             prop_assume!(proposer != voter1 && proposer != voter2 && voter1 != voter2);
             let mut state = GovernanceState::new();
-            state.update_voting_power(proposer, MIN_STAKE * 2);
-            state.update_voting_power(voter1, p1);
-            state.update_voting_power(voter2, p2);
+            state.update_voting_power(proposer, MIN_STAKE * 2).unwrap();
+            state.update_voting_power(voter1, p1).unwrap();
+            state.update_voting_power(voter2, p2).unwrap();
             state.propose(
                 pid,
                 proposer,

@@ -28,6 +28,7 @@ pub struct BlsKeypair {
 
 impl BlsKeypair {
     /// Generate a new random BLS keypair
+    #[must_use]
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut rng = rand::thread_rng();
@@ -44,6 +45,7 @@ impl BlsKeypair {
     }
 
     /// Create keypair from secret key
+    #[must_use = "constructing a keypair without binding it is a no-op"]
     pub fn from_secret(secret: Vec<u8>) -> Result<Self> {
         if secret.len() != 32 {
             anyhow::bail!("BLS secret key must be 32 bytes");
@@ -58,16 +60,21 @@ impl BlsKeypair {
 
     /// Sign a message
     /// Returns 96-byte BLS signature
+    #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.secret.sign(message, DST, &[]).to_bytes().to_vec()
     }
 
     /// Get public key (compressed 48-byte form)
+    #[inline]
+    #[must_use]
     pub fn public_key(&self) -> Vec<u8> {
         self.public.to_bytes().to_vec()
     }
 
     /// Get secret key bytes (32-byte scalar)
+    #[inline]
+    #[must_use]
     pub fn secret_key(&self) -> Vec<u8> {
         self.secret.to_bytes().to_vec()
     }
@@ -75,6 +82,7 @@ impl BlsKeypair {
     /// Generate a proof-of-possession: sign the public key bytes with a distinct DST.
     /// PoP proves the holder knows the secret key corresponding to their public key,
     /// preventing rogue key attacks in BLS aggregate signatures.
+    #[must_use]
     pub fn proof_of_possession(&self) -> Vec<u8> {
         let pk_bytes = self.public.to_bytes();
         self.secret
@@ -86,6 +94,7 @@ impl BlsKeypair {
 
 /// Verify a proof-of-possession for a BLS public key.
 /// Returns true if the PoP is valid (the key holder proved knowledge of the secret key).
+#[must_use = "discarding a PoP verification result is a security bug"]
 pub fn verify_pop(public_key: &[u8], pop_signature: &[u8]) -> Result<bool> {
     if public_key.len() != 48 {
         anyhow::bail!("BLS public key must be 48 bytes for PoP verification");
@@ -104,6 +113,7 @@ pub fn verify_pop(public_key: &[u8], pop_signature: &[u8]) -> Result<bool> {
 }
 
 /// Verify a single BLS signature
+#[must_use = "discarding a signature verification result is a security bug"]
 pub fn verify(public_key: &[u8], _message: &[u8], signature: &[u8]) -> Result<bool> {
     if public_key.len() != 48 {
         anyhow::bail!("BLS public key must be 48 bytes");

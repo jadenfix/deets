@@ -35,6 +35,7 @@ pub mod types;
 pub use client::AetherClient;
 pub use error::AetherSdkError;
 pub use job_builder::JobBuilder;
+pub use types::{NodeHealth, RpcAccount, RpcBlock, RpcReceipt};
 
 #[cfg(test)]
 mod proptest_tests;

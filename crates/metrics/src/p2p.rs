@@ -12,6 +12,8 @@ pub struct P2PMetrics {
     pub messages_dropped_oversized: IntCounterVec,
     /// Messages dropped from banned peers.
     pub messages_dropped_banned: IntCounter,
+    /// Messages dropped due to per-peer rate limiting.
+    pub messages_dropped_rate_limited: IntCounter,
     /// Peers banned (score below threshold).
     pub peers_banned: IntCounter,
 }
@@ -31,6 +33,11 @@ impl P2PMetrics {
                 &["topic"]
             )
             .expect("register messages_dropped_oversized"),
+            messages_dropped_rate_limited: register_int_counter!(
+                "aether_p2p_messages_dropped_rate_limited_total",
+                "Messages dropped due to per-peer rate limiting"
+            )
+            .expect("register messages_dropped_rate_limited"),
             messages_dropped_banned: register_int_counter!(
                 "aether_p2p_messages_dropped_banned_total",
                 "Messages dropped from banned peers"
