@@ -74,10 +74,11 @@ impl UserOperation {
     }
 
     /// Total gas this operation requires.
-    pub fn total_gas(&self) -> u64 {
+    pub fn total_gas(&self) -> Result<u64> {
         self.call_gas_limit
-            .saturating_add(self.verification_gas_limit)
-            .saturating_add(self.pre_verification_gas)
+            .checked_add(self.verification_gas_limit)
+            .and_then(|g| g.checked_add(self.pre_verification_gas))
+            .ok_or_else(|| anyhow::anyhow!("total gas overflow"))
     }
 
     /// Validate basic structural constraints.
@@ -151,7 +152,9 @@ impl EntryPoint {
                 .get(paymaster)
                 .ok_or_else(|| anyhow::anyhow!("paymaster not registered"))?;
 
-            let required_gas_cost = (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
+            let required_gas_cost = (op.total_gas()? as u128)
+                .checked_mul(op.max_fee_per_gas)
+                .ok_or_else(|| anyhow::anyhow!("gas cost overflow"))?;
             if *deposit < required_gas_cost {
                 bail!(
                     "paymaster deposit {} insufficient for gas cost {}",
@@ -198,7 +201,9 @@ impl EntryPoint {
 
                     // Deduct paymaster deposit if applicable
                     if let Some(paymaster) = &op.paymaster {
-                        let cost = (op.total_gas() as u128).saturating_mul(op.max_fee_per_gas);
+                        let cost = (op.total_gas()? as u128)
+                            .checked_mul(op.max_fee_per_gas)
+                            .ok_or_else(|| anyhow::anyhow!("gas cost overflow"))?;
                         if let Some(deposit) = self.paymasters.get_mut(paymaster) {
                             if *deposit < cost {
                                 return Err(anyhow::anyhow!(
@@ -406,15 +411,18 @@ mod tests {
     #[test]
     fn test_total_gas() {
         let op = make_user_op(1);
-        assert_eq!(op.total_gas(), 100_000 + 50_000 + 10_000);
+        assert_eq!(op.total_gas().unwrap(), 100_000 + 50_000 + 10_000);
     }
 
     #[test]
-    fn test_total_gas_saturates() {
+    fn test_total_gas_overflow_rejected() {
         let mut op = make_user_op(1);
         op.call_gas_limit = u64::MAX;
         op.verification_gas_limit = 1;
-        assert_eq!(op.total_gas(), u64::MAX);
+        assert!(
+            op.total_gas().is_err(),
+            "total_gas must error on overflow, not silently saturate"
+        );
     }
 }
 
@@ -505,9 +513,9 @@ mod proptests {
             prop_assert_eq!(op1.hash(), op2.hash());
         }
 
-        /// total_gas() never overflows — always saturates at u64::MAX.
+        /// total_gas() never panics — returns Ok or Err on overflow.
         #[test]
-        fn total_gas_saturates(
+        fn total_gas_no_panic(
             call_gas in any::<u64>(),
             verif_gas in any::<u64>(),
             pre_gas in any::<u64>(),
@@ -524,7 +532,7 @@ mod proptests {
                 paymaster_data: vec![],
                 signature: vec![0u8; 64],
             };
-            // Must not panic — just return a u64 (possibly saturated)
+            // Must not panic — returns Result
             let _ = op.total_gas();
         }
 

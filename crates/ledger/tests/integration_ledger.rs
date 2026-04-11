@@ -302,13 +302,17 @@ fn burned_fees_zero_is_noop() {
 }
 
 #[test]
-fn burned_fees_saturates_at_max() {
+fn burned_fees_overflow_rejected() {
     let temp = TempDir::new().unwrap();
     let storage = Storage::open(temp.path()).unwrap();
     let mut ledger = Ledger::new(storage).unwrap();
 
     ledger.record_burned_fees(u128::MAX).unwrap();
-    ledger.record_burned_fees(1).unwrap();
+    let result = ledger.record_burned_fees(1);
+    assert!(
+        result.is_err(),
+        "recording burned fees past u128::MAX must error, not silently saturate"
+    );
     assert_eq!(ledger.total_burned(), u128::MAX);
 }
 
