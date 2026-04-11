@@ -180,14 +180,8 @@ pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Re
 
     let mut s_bytes = [0u8; 32];
     s_bytes.copy_from_slice(&proof.proof[48..80]);
-    let s = Scalar::from_canonical_bytes(s_bytes);
-    // curve25519-dalek v4: from_canonical_bytes returns CtOption
-    let s = if bool::from(s.is_some()) {
-        s.unwrap()
-    } else {
-        // Fall back to mod_order for non-canonical but still valid scalars
-        Scalar::from_bytes_mod_order(s_bytes)
-    };
+    let s = Option::from(Scalar::from_canonical_bytes(s_bytes))
+        .unwrap_or_else(|| Scalar::from_bytes_mod_order(s_bytes));
 
     // Step 2: H = encode_to_curve(Y, alpha)
     let h = encode_to_curve_try_and_increment(public_key, alpha);
@@ -201,11 +195,12 @@ pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Re
     // Step 5: c' = challenge_generation(Y, H, Gamma, U, V)
     let c_prime = challenge_generation(&y, &h, &gamma, &u, &v);
 
-    // Step 6: verify c == c' (constant-time to prevent timing side-channels)
+    // Step 6: constant-time verify c == c'
     let c_bytes = scalar_to_16_bytes(&c);
     let c_prime_bytes = scalar_to_16_bytes(&c_prime);
     let challenge_ok = c_bytes.ct_eq(&c_prime_bytes);
 
+    // Constant-time verify output matches proof_to_hash(Gamma)
     let expected_output = proof_to_hash(&gamma);
     let output_ok = expected_output.ct_eq(&proof.output);
 
