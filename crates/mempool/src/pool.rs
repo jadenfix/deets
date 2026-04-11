@@ -172,6 +172,13 @@ impl Mempool {
 
     /// Add a transaction to the mempool with nonce ordering and rate limiting.
     pub fn add_transaction(&mut self, tx: Transaction) -> Result<()> {
+        let _span = tracing::debug_span!(
+            "mempool_add_tx",
+            fee = tx.fee,
+            nonce = tx.nonce,
+            pool_size = self.by_hash.len(),
+        )
+        .entered();
         // Reject cross-chain transactions (replay protection)
         if self.expected_chain_id != 0 && tx.chain_id != self.expected_chain_id {
             MEMPOOL_METRICS.rejected_total.inc();

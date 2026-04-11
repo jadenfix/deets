@@ -554,6 +554,13 @@ impl Node {
     /// apply buffered blocks in order, and handle stalls.
     fn drive_sync(&mut self, current_slot: Slot) {
         let my_latest = self.latest_block_slot.unwrap_or(0);
+        let _span = tracing::debug_span!(
+            "drive_sync",
+            current_slot,
+            my_latest,
+            lag = current_slot.saturating_sub(my_latest),
+        )
+        .entered();
 
         // Check if we've stalled during an active sync.
         if self.sync_manager.is_syncing() && self.sync_manager.check_stalled() {
@@ -791,19 +798,22 @@ impl Node {
         let block_start = Instant::now();
 
         // Forced inclusion: include txs that have been waiting too long (anti-censorship)
-        let forced = self
-            .mempool
-            .must_include_transactions(slot, self.fee_market.base_fee);
-        let forced_count = forced.len();
-        let remaining_capacity = 1000usize.saturating_sub(forced_count);
-        let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
-        let transactions = if forced_count > 0 {
-            tracing::info!(forced_count, "Forced inclusion txs");
-            let mut all = forced;
-            all.extend(regular);
-            all
-        } else {
-            regular
+        let transactions = {
+            let _mempool_span = tracing::debug_span!("mempool_select", slot).entered();
+            let forced = self
+                .mempool
+                .must_include_transactions(slot, self.fee_market.base_fee);
+            let forced_count = forced.len();
+            let remaining_capacity = 1000usize.saturating_sub(forced_count);
+            let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
+            if forced_count > 0 {
+                tracing::info!(forced_count, "Forced inclusion txs");
+                let mut all = forced;
+                all.extend(regular);
+                all
+            } else {
+                regular
+            }
         };
 
         tracing::info!(tx_count = transactions.len(), "Including transactions");
@@ -841,9 +851,15 @@ impl Node {
         }
 
         // Compute block header roots from speculative state
-        let state_root = overlay.state_root;
-        let transactions_root = compute_transactions_root(&transactions);
-        let receipts_root = compute_receipts_root(&receipts);
+        let (state_root, transactions_root, receipts_root) = {
+            let _roots_span =
+                tracing::debug_span!("compute_roots", tx_count = transactions.len()).entered();
+            (
+                overlay.state_root,
+                compute_transactions_root(&transactions),
+                compute_receipts_root(&receipts),
+            )
+        };
 
         let key = self
             .validator_key
@@ -869,10 +885,12 @@ impl Node {
         tracing::info!(?block_hash, %state_root, "Block produced");
 
         // Validate our own block BEFORE committing state
-        if let Err(e) = self.consensus.validate_block(&block) {
-            // Discard overlay — state unchanged
-            tracing::warn!(err = %e, "Self-produced block validation failed");
-            return Ok(());
+        {
+            let _validate_span = tracing::debug_span!("self_validate_block", slot).entered();
+            if let Err(e) = self.consensus.validate_block(&block) {
+                tracing::warn!(err = %e, "Self-produced block validation failed");
+                return Ok(());
+            }
         }
 
         // Build stored receipts (with block context) for both cache and disk
@@ -1169,6 +1187,12 @@ impl Node {
 
         // Verify BLS aggregate signature when present (proves quorum voted for parent)
         if let Some(ref agg_vote) = block.aggregated_vote {
+            let _bls_span = tracing::debug_span!(
+                "verify_bls_aggregate",
+                slot = block.header.slot,
+                signers = agg_vote.signers.len(),
+            )
+            .entered();
             // The QC must reference this block's parent — it certifies that
             // a supermajority voted for the parent, justifying this extension.
             if !is_genesis_or_bootstrap && agg_vote.block_hash != block.header.parent_hash {
@@ -1304,6 +1328,13 @@ impl Node {
         }
 
         if should_commit {
+            let _commit_span = tracing::info_span!(
+                "atomic_block_commit",
+                slot = block.header.slot,
+                ?block_hash,
+                tx_count = block.transactions.len(),
+            )
+            .entered();
             // ATOMIC COMMIT: overlay state + block + receipts + fee distribution in one WriteBatch.
             // Fee distribution is folded in so proposer rewards are never lost if the process
             // crashes after the overlay commit but before the credit write.
@@ -1661,9 +1692,13 @@ impl Node {
         let _span = tracing::debug_span!("handle_network_event").entered();
         match decode_network_event(event) {
             Some(NodeMessage::BlockReceived(block)) => {
+                let _msg_span = tracing::debug_span!(
+                    "msg_block",
+                    slot = block.header.slot,
+                    tx_count = block.transactions.len(),
+                )
+                .entered();
                 CONSENSUS_METRICS.blocks_received.inc();
-                // During active sync, buffer blocks for ordered application
-                // instead of processing them immediately out of order.
                 if self.sync_manager.is_syncing() {
                     let slot = block.header.slot;
                     if !self.sync_manager.buffer_block(block) {
@@ -1674,16 +1709,23 @@ impl Node {
                 }
             }
             Some(NodeMessage::VoteReceived(vote)) => {
+                let _msg_span =
+                    tracing::debug_span!("msg_vote", slot = vote.slot, stake = vote.stake,)
+                        .entered();
                 if let Err(e) = self.on_vote_received(vote) {
                     tracing::debug!(err = %e, "Vote rejected");
                 }
             }
             Some(NodeMessage::TransactionReceived(tx)) => {
+                let _msg_span =
+                    tracing::debug_span!("msg_tx", fee = tx.fee, nonce = tx.nonce,).entered();
                 if let Err(e) = self.mempool.add_transaction(tx) {
                     tracing::debug!(err = %e, "Tx rejected");
                 }
             }
             Some(NodeMessage::BlockRangeRequested { from_slot, to_slot }) => {
+                let _msg_span =
+                    tracing::debug_span!("msg_block_range_req", from_slot, to_slot,).entered();
                 self.handle_block_range_request(from_slot, to_slot);
             }
             Some(NodeMessage::PeerConnected) => {
@@ -1738,6 +1780,7 @@ impl Node {
     fn check_finality(&mut self) {
         let current_slot = self.consensus.current_slot();
         let last_finalized = self.consensus.finalized_slot();
+        let _span = tracing::debug_span!("check_finality", current_slot, last_finalized,).entered();
 
         // Only check slots we haven't checked yet (avoid O(n) scan on restart)
         let start = if last_finalized > 0 {
