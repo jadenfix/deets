@@ -45,6 +45,7 @@ pub struct KesKey {
 impl KesKey {
     /// Generate a new KES key supporting `max_periods` time periods.
     /// `max_periods` is rounded up to the next power of 2.
+    #[must_use]
     pub fn generate(max_periods: u32) -> Self {
         let max_periods = max_periods.max(2);
         let depth = (max_periods as f64).log2().ceil() as u32;
@@ -72,6 +73,7 @@ impl KesKey {
     }
 
     /// Create a KES key from an explicit seed (deterministic).
+    #[must_use]
     pub fn from_seed(seed: [u8; 32], max_periods: u32) -> Self {
         let max_periods = max_periods.max(2);
         let depth = (max_periods as f64).log2().ceil() as u32;
@@ -106,16 +108,21 @@ impl KesKey {
     }
 
     /// Maximum number of supported periods.
+    #[inline]
+    #[must_use]
     pub fn max_periods(&self) -> u32 {
         1u32 << self.depth
     }
 
     /// Current evolved period.
+    #[inline]
+    #[must_use]
     pub fn current_period(&self) -> u32 {
         self.current_period
     }
 
     /// Public verification key (Merkle root + metadata).
+    #[must_use]
     pub fn verification_key(&self) -> KesVerificationKey {
         KesVerificationKey::new(self.root, self.max_periods())
     }
