@@ -1,5 +1,46 @@
-use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Typed errors from TEE attestation verification.
+///
+/// Using typed errors rather than anyhow strings lets callers match on the
+/// specific failure reason (staleness, unapproved measurement, cert chain
+/// issues) without parsing strings.
+#[derive(Debug, Error)]
+pub enum TeeError {
+    #[error("attestation timestamp {timestamp} is in the future (current: {current})")]
+    AttestationInFuture { timestamp: u64, current: u64 },
+
+    #[error("attestation too old: {age_secs} seconds (max {max_secs})")]
+    AttestationStale { age_secs: u64, max_secs: u64 },
+
+    #[error("measurement not approved")]
+    MeasurementNotApproved,
+
+    #[error("no root cert for TEE type {tee_type:?}")]
+    MissingRootCert { tee_type: TeeType },
+
+    #[error("empty certificate chain")]
+    EmptyCertChain,
+
+    #[error("attestation report has empty signature")]
+    EmptySignature,
+
+    #[error(
+        "cryptographic certificate verification for {tee_type:?} attestations is not implemented; \
+         refusing non-simulation report"
+    )]
+    CertVerificationUnimplemented { tee_type: TeeType },
+
+    #[error("invalid {tee_type:?} measurement length (expected {expected}, received {received})")]
+    InvalidMeasurementLength {
+        tee_type: TeeType,
+        expected: usize,
+        received: usize,
+    },
+}
+
+pub type Result<T> = std::result::Result<T, TeeError>;
 
 /// TEE Attestation Verification
 ///
@@ -76,23 +117,21 @@ impl TeeVerifier {
     pub fn verify(&self, report: &AttestationReport, current_time: u64) -> Result<()> {
         // 1. Check freshness — reject future-dated reports
         if report.timestamp > current_time {
-            bail!(
-                "attestation timestamp {} is in the future (current: {})",
-                report.timestamp,
-                current_time
-            );
+            return Err(TeeError::AttestationInFuture {
+                timestamp: report.timestamp,
+                current: current_time,
+            });
         }
         if current_time - report.timestamp > self.max_age_secs {
-            bail!(
-                "attestation too old: {} seconds (max {})",
-                current_time - report.timestamp,
-                self.max_age_secs
-            );
+            return Err(TeeError::AttestationStale {
+                age_secs: current_time - report.timestamp,
+                max_secs: self.max_age_secs,
+            });
         }
 
         // 2. Check measurement is approved
         if !self.approved_measurements.contains(&report.measurement) {
-            bail!("measurement not approved");
+            return Err(TeeError::MeasurementNotApproved);
         }
 
         // 3. Verify signature chain
@@ -116,21 +155,21 @@ impl TeeVerifier {
     }
 
     fn verify_signature_chain(&self, report: &AttestationReport) -> Result<()> {
-        let _root_cert = self
-            .root_certs
-            .get(&report.tee_type)
-            .ok_or_else(|| anyhow::anyhow!("no root cert for TEE type {:?}", report.tee_type))?;
+        if !self.root_certs.contains_key(&report.tee_type) {
+            return Err(TeeError::MissingRootCert {
+                tee_type: report.tee_type.clone(),
+            });
+        }
 
         if report.cert_chain.is_empty() {
-            bail!("empty certificate chain");
+            return Err(TeeError::EmptyCertChain);
         }
         if report.signature.is_empty() {
-            bail!("attestation report has empty signature");
+            return Err(TeeError::EmptySignature);
         }
-        bail!(
-            "cryptographic certificate verification for {:?} attestations is not implemented; refusing non-simulation report",
-            report.tee_type
-        );
+        Err(TeeError::CertVerificationUnimplemented {
+            tee_type: report.tee_type.clone(),
+        })
     }
 
     fn verify_sev_snp(&self, report: &AttestationReport) -> Result<()> {
@@ -140,7 +179,11 @@ impl TeeVerifier {
         // - Check policy (debug, migration flags)
 
         if report.measurement.len() != 48 {
-            bail!("invalid SEV-SNP measurement length (expected 48)");
+            return Err(TeeError::InvalidMeasurementLength {
+                tee_type: TeeType::SevSnp,
+                expected: 48,
+                received: report.measurement.len(),
+            });
         }
 
         Ok(())
@@ -153,7 +196,11 @@ impl TeeVerifier {
         // - Verify quote signature
 
         if report.measurement.len() != 48 {
-            bail!("invalid TDX measurement length (expected 48)");
+            return Err(TeeError::InvalidMeasurementLength {
+                tee_type: TeeType::IntelTdx,
+                expected: 48,
+                received: report.measurement.len(),
+            });
         }
 
         Ok(())
@@ -166,7 +213,11 @@ impl TeeVerifier {
         // - Validate certificate chain to AWS root
 
         if report.measurement.len() != 48 {
-            bail!("invalid Nitro measurement length (expected 48)");
+            return Err(TeeError::InvalidMeasurementLength {
+                tee_type: TeeType::AwsNitro,
+                expected: 48,
+                received: report.measurement.len(),
+            });
         }
 
         Ok(())
@@ -288,6 +339,94 @@ mod tests {
         assert!(
             msg.contains("refusing non-simulation report"),
             "expected fail-closed error, got: {msg}"
+        );
+    }
+
+    // ── Typed-error variant tests ────────────────────────────────────────
+    // These verify correct TeeError variants, not just error strings.
+
+    #[test]
+    fn typed_err_attestation_in_future() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        let mut report = create_test_report();
+        report.timestamp = 5000;
+        let err = verifier.verify(&report, 1000).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TeeError::AttestationInFuture {
+                    timestamp: 5000,
+                    current: 1000
+                }
+            ),
+            "expected AttestationInFuture, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_attestation_stale() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        // Attestation at t=1000, current=2000 → 1000s old, max=60s → stale
+        let err = verifier.verify(&create_test_report(), 2000).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TeeError::AttestationStale {
+                    age_secs: 1000,
+                    max_secs: 60
+                }
+            ),
+            "expected AttestationStale, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_measurement_not_approved() {
+        let verifier = TeeVerifier::new(); // no measurements added
+        let err = verifier.verify(&create_test_report(), 1010).unwrap_err();
+        assert!(
+            matches!(err, TeeError::MeasurementNotApproved),
+            "expected MeasurementNotApproved, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_missing_root_cert() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        // Do NOT set root cert, but use SevSnp type
+        let mut report = create_test_report();
+        report.tee_type = TeeType::SevSnp;
+        let err = verifier.verify(&report, 1010).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TeeError::MissingRootCert {
+                    tee_type: TeeType::SevSnp
+                }
+            ),
+            "expected MissingRootCert, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_cert_verification_unimplemented() {
+        let mut verifier = TeeVerifier::new();
+        verifier.add_approved_measurement(vec![1u8; 48]);
+        verifier.set_root_cert(TeeType::SevSnp, vec![0xAA; 64]);
+        let mut report = create_test_report();
+        report.tee_type = TeeType::SevSnp;
+        let err = verifier.verify(&report, 1010).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                TeeError::CertVerificationUnimplemented {
+                    tee_type: TeeType::SevSnp
+                }
+            ),
+            "expected CertVerificationUnimplemented, got: {err}"
         );
     }
 }

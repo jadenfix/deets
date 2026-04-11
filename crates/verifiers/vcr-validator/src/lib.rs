@@ -19,10 +19,59 @@
 use aether_crypto_kzg::{KzgCommitment, KzgProof, KzgVerifier};
 use aether_crypto_primitives::ed25519;
 use aether_types::H256;
-use aether_verifiers_tee::{AttestationReport, TeeVerifier};
-use anyhow::{bail, Context, Result};
+use aether_verifiers_tee::{AttestationReport, TeeError, TeeVerifier};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+/// Typed errors from VCR (Verifiable Compute Receipt) validation.
+///
+/// Callers can match on specific variants to distinguish TEE failures,
+/// KZG proof failures, Sybil attacks, and quorum failures without parsing
+/// error strings.
+#[derive(Debug, Error)]
+pub enum VcrError {
+    #[error("worker ID must be a 32-byte ed25519 public key (received {received} bytes)")]
+    InvalidWorkerIdLength { received: usize },
+
+    #[error("invalid tee_attestation payload (expected JSON AttestationReport): {0}")]
+    InvalidAttestationEncoding(#[from] serde_json::Error),
+
+    #[error("TEE attestation verification failed: {0}")]
+    TeeAttestation(#[from] TeeError),
+
+    #[error("trace_point must be 32 bytes (received {received})")]
+    InvalidTracePoint { received: usize },
+
+    #[error("KZG trace proof verification failed: {0}")]
+    KzgProofError(String),
+
+    #[error("KZG trace proof verification returned false")]
+    KzgProofInvalid,
+
+    #[error("empty worker signature")]
+    EmptySignature,
+
+    #[error("worker signature verification failed: {0}")]
+    SignatureVerification(String),
+
+    #[error("insufficient quorum: {received} < {required}")]
+    InsufficientQuorum { received: usize, required: usize },
+
+    #[error("mismatched job IDs in quorum")]
+    JobIdMismatch,
+
+    #[error("duplicate worker ID in quorum — possible Sybil attack")]
+    DuplicateWorkerId,
+
+    #[error("no consensus: {majority} / {total} agree on majority output")]
+    NoConsensus { majority: usize, total: usize },
+
+    #[error("insufficient verified quorum: {verified} < {required}")]
+    InsufficientVerifiedQuorum { verified: usize, required: usize },
+}
+
+pub type Result<T> = std::result::Result<T, VcrError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiableComputeReceipt {
@@ -97,7 +146,9 @@ impl VcrValidator {
     pub fn verify(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
         // 1. Verify basic fields
         if vcr.worker_id.len() != 32 {
-            bail!("worker ID must be a 32-byte ed25519 public key");
+            return Err(VcrError::InvalidWorkerIdLength {
+                received: vcr.worker_id.len(),
+            });
         }
 
         // 2. Verify TEE attestation
@@ -119,14 +170,17 @@ impl VcrValidator {
     /// cannot poison a valid quorum. Workers must be unique (Sybil protection).
     pub fn verify_quorum(&self, vcrs: &[VerifiableComputeReceipt]) -> Result<()> {
         if vcrs.len() < self.quorum_size {
-            bail!("insufficient quorum: {} < {}", vcrs.len(), self.quorum_size);
+            return Err(VcrError::InsufficientQuorum {
+                received: vcrs.len(),
+                required: self.quorum_size,
+            });
         }
 
         // All VCRs should have same job_id
         let job_id = vcrs[0].job_id;
         for vcr in vcrs {
             if vcr.job_id != job_id {
-                bail!("mismatched job IDs in quorum");
+                return Err(VcrError::JobIdMismatch);
             }
         }
 
@@ -134,7 +188,7 @@ impl VcrValidator {
         let mut seen_workers = std::collections::HashSet::new();
         for vcr in vcrs {
             if !seen_workers.insert(&vcr.worker_id) {
-                bail!("duplicate worker ID in quorum — possible Sybil attack");
+                return Err(VcrError::DuplicateWorkerId);
             }
         }
 
@@ -148,11 +202,10 @@ impl VcrValidator {
 
         // Check 2/3 consensus on the majority output
         if majority_count * 3 < vcrs.len() * 2 {
-            bail!(
-                "no consensus: {} / {} agree on majority output",
-                majority_count,
-                vcrs.len()
-            );
+            return Err(VcrError::NoConsensus {
+                majority: majority_count,
+                total: vcrs.len(),
+            });
         }
 
         // Only verify VCRs that agree with the majority — dissenters are
@@ -168,11 +221,10 @@ impl VcrValidator {
 
         // Ensure enough verified VCRs meet the quorum threshold
         if verified_count < self.quorum_size {
-            bail!(
-                "insufficient verified quorum: {} < {}",
-                verified_count,
-                self.quorum_size
-            );
+            return Err(VcrError::InsufficientVerifiedQuorum {
+                verified: verified_count,
+                required: self.quorum_size,
+            });
         }
 
         Ok(())
@@ -180,11 +232,11 @@ impl VcrValidator {
 
     fn verify_attestation(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
         let report: AttestationReport = serde_json::from_slice(&vcr.tee_attestation)
-            .context("invalid tee_attestation payload (expected JSON AttestationReport)")?;
+            .map_err(VcrError::InvalidAttestationEncoding)?;
         let now = current_timestamp();
         self.tee_verifier
             .verify(&report, now)
-            .context("TEE attestation verification failed")
+            .map_err(VcrError::TeeAttestation)
     }
 
     fn verify_trace_opening(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
@@ -196,27 +248,31 @@ impl VcrValidator {
             evaluation: vcr.trace_evaluation.clone(),
         };
 
-        let point: [u8; 32] = vcr
-            .trace_point
-            .as_slice()
-            .try_into()
-            .context("trace_point must be 32 bytes")?;
+        let point: [u8; 32] =
+            vcr.trace_point
+                .as_slice()
+                .try_into()
+                .map_err(|_| VcrError::InvalidTracePoint {
+                    received: vcr.trace_point.len(),
+                })?;
         let valid = self
             .kzg_verifier
             .verify(&commitment, &proof, &point)
-            .context("KZG trace proof verification failed")?;
-        anyhow::ensure!(valid, "KZG trace proof verification returned false");
+            .map_err(|e| VcrError::KzgProofError(e.to_string()))?;
+        if !valid {
+            return Err(VcrError::KzgProofInvalid);
+        }
         Ok(())
     }
 
     fn verify_signature(&self, vcr: &VerifiableComputeReceipt) -> Result<()> {
         if vcr.signature.is_empty() {
-            bail!("empty signature");
+            return Err(VcrError::EmptySignature);
         }
 
-        let message = vcr.signing_message()?;
+        let message = vcr.signing_message();
         ed25519::verify(&vcr.worker_id, &message, &vcr.signature)
-            .map_err(|e| anyhow::anyhow!("signature verification failed: {e}"))
+            .map_err(|e| VcrError::SignatureVerification(e.to_string()))
     }
 
     pub fn set_quorum_size(&mut self, size: usize) {
@@ -231,7 +287,7 @@ impl VcrValidator {
 impl VerifiableComputeReceipt {
     /// Compute the deterministic signing message using direct hash construction.
     /// This avoids bincode's non-canonical serialization which could differ across versions.
-    fn signing_message(&self) -> Result<Vec<u8>> {
+    fn signing_message(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"VCR-v1"); // Version domain separator
         hasher.update(self.job_id.as_bytes());
@@ -245,7 +301,7 @@ impl VerifiableComputeReceipt {
         hasher.update(&self.trace_point);
         hasher.update(&self.tee_attestation);
         hasher.update(self.timestamp.to_le_bytes());
-        Ok(hasher.finalize().to_vec())
+        hasher.finalize().to_vec()
     }
 }
 
@@ -304,7 +360,7 @@ mod tests {
             signature: Vec::new(),
         };
 
-        let msg = vcr.signing_message().unwrap();
+        let msg = vcr.signing_message();
         vcr.signature = worker.sign(&msg);
         vcr
     }
@@ -447,6 +503,92 @@ mod tests {
 
         assert!(validator.verify(&vcr).is_err());
     }
+
+    // ── Typed-error variant tests ─────────────────────────────────────────
+    // These verify that the correct VcrError variant is returned rather than
+    // relying on string matching, which would be fragile across refactors.
+
+    #[test]
+    fn typed_err_invalid_worker_id_length() {
+        let validator = VcrValidator::new_for_test();
+        let worker = Keypair::generate();
+        let mut vcr = create_test_vcr(&worker, 5);
+        vcr.worker_id = vec![0u8; 16]; // wrong length
+
+        let err = validator.verify(&vcr).unwrap_err();
+        assert!(
+            matches!(err, VcrError::InvalidWorkerIdLength { received: 16 }),
+            "expected InvalidWorkerIdLength, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_insufficient_quorum() {
+        let validator = VcrValidator::new_for_test(); // quorum_size = 3
+        let vcrs = vec![create_test_vcr(&Keypair::generate(), 5)]; // only 1
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VcrError::InsufficientQuorum {
+                    received: 1,
+                    required: 3
+                }
+            ),
+            "expected InsufficientQuorum, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_duplicate_worker() {
+        let validator = VcrValidator::new_for_test();
+        let worker = Keypair::generate();
+        let vcrs = vec![
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+            create_test_vcr(&worker, 5),
+        ];
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            matches!(err, VcrError::DuplicateWorkerId),
+            "expected DuplicateWorkerId, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_no_consensus() {
+        let validator = VcrValidator::new_for_test(); // quorum_size = 3
+        let vcrs = vec![
+            create_test_vcr(&Keypair::generate(), 1),
+            create_test_vcr(&Keypair::generate(), 2),
+            create_test_vcr(&Keypair::generate(), 3),
+        ];
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            matches!(err, VcrError::NoConsensus { .. }),
+            "expected NoConsensus, got: {err}"
+        );
+    }
+
+    #[test]
+    fn typed_err_job_id_mismatch() {
+        let validator = VcrValidator::new_for_test();
+        let mut vcrs = vec![
+            create_test_vcr(&Keypair::generate(), 5),
+            create_test_vcr(&Keypair::generate(), 5),
+            create_test_vcr(&Keypair::generate(), 5),
+        ];
+        vcrs[1].job_id = H256::from_slice(&[0xFF; 32]).unwrap();
+
+        let err = validator.verify_quorum(&vcrs).unwrap_err();
+        assert!(
+            matches!(err, VcrError::JobIdMismatch),
+            "expected JobIdMismatch, got: {err}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -491,7 +633,7 @@ mod proptests {
             signature: Vec::new(),
         };
 
-        let msg = vcr.signing_message().unwrap();
+        let msg = vcr.signing_message();
         vcr.signature = worker.sign(&msg);
         vcr
     }
@@ -574,8 +716,8 @@ mod proptests {
         fn signing_message_is_deterministic(output in 1u8..=255u8) {
             let worker = Keypair::generate();
             let vcr = make_vcr(&worker, output);
-            let msg1 = vcr.signing_message().unwrap();
-            let msg2 = vcr.signing_message().unwrap();
+            let msg1 = vcr.signing_message();
+            let msg2 = vcr.signing_message();
             prop_assert_eq!(msg1, msg2);
         }
 
@@ -587,9 +729,9 @@ mod proptests {
         ) {
             let worker = Keypair::generate();
             let mut vcr = make_vcr(&worker, output1);
-            let msg1 = vcr.signing_message().unwrap();
+            let msg1 = vcr.signing_message();
             vcr.output_hash = H256::from_slice(&[output2; 32]).unwrap();
-            let msg2 = vcr.signing_message().unwrap();
+            let msg2 = vcr.signing_message();
             prop_assert_ne!(msg1, msg2);
         }
 
@@ -618,7 +760,7 @@ mod proptests {
             let mut vcr = make_vcr(&worker, output);
             vcr.trace_commitment = Vec::new();
             // Must re-sign after mutation so rejection is from KZG, not signature
-            let msg = vcr.signing_message().unwrap();
+            let msg = vcr.signing_message();
             vcr.signature = worker.sign(&msg);
             prop_assert!(validator.verify(&vcr).is_err());
         }
