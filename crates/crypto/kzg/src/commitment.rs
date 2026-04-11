@@ -43,6 +43,7 @@ pub struct TrustedSetup {
 impl TrustedSetup {
     /// Generate a TESTING-ONLY trusted setup from a secret scalar.
     /// In production, use a proper Powers of Tau ceremony.
+    #[must_use]
     pub fn generate_insecure(max_degree: usize, secret_tau: &[u8; 32]) -> Self {
         let tau = scalar_from_bytes(secret_tau);
 
@@ -80,6 +81,7 @@ pub struct KzgVerifier {
 impl KzgVerifier {
     /// Create a verifier with an insecure setup (for testing).
     #[cfg(any(test, feature = "test-utils"))]
+    #[must_use]
     pub fn new_insecure_test(max_degree: usize) -> Self {
         let tau_bytes = Sha256::digest(b"aether-kzg-test-setup-DO-NOT-USE-IN-PRODUCTION");
         let mut tau = [0u8; 32];
@@ -90,6 +92,7 @@ impl KzgVerifier {
     }
 
     /// Create a verifier with a specific trusted setup.
+    #[must_use]
     pub fn with_setup(setup: TrustedSetup) -> Self {
         KzgVerifier { setup }
     }
@@ -150,7 +153,7 @@ impl KzgVerifier {
     ///
     /// Checks the pairing equation:
     /// `e(C - [y]_1, [1]_2) == e(π, [τ]_2 - [z]_2)`
-    #[must_use = "verification result must be checked — silently dropping it bypasses proof verification"]
+    #[must_use = "discarding a KZG verification result is a security bug"]
     pub fn verify(
         &self,
         commitment: &KzgCommitment,
@@ -222,6 +225,8 @@ impl KzgVerifier {
         Ok(true)
     }
 
+    #[inline]
+    #[must_use]
     pub fn max_degree(&self) -> usize {
         self.setup.max_degree
     }

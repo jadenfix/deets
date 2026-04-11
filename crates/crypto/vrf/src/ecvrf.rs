@@ -40,6 +40,7 @@ impl Drop for VrfKeypair {
 
 impl VrfKeypair {
     /// Generate a new VRF keypair from random bytes.
+    #[must_use]
     pub fn generate() -> Self {
         use rand::RngCore;
         let mut rng = rand::thread_rng();
@@ -50,11 +51,14 @@ impl VrfKeypair {
 
     /// Export the secret key bytes (for key persistence).
     /// WARNING: Handle with care — this is the raw secret key.
+    #[inline]
+    #[must_use]
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.secret.to_bytes()
     }
 
     /// Create keypair from raw 32-byte secret.
+    #[must_use = "constructing a VrfKeypair without binding it is a no-op"]
     pub fn from_secret(secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
             bail!("secret key must be 32 bytes");
@@ -86,6 +90,8 @@ impl VrfKeypair {
     }
 
     /// Get compressed public key bytes.
+    #[inline]
+    #[must_use]
     pub fn public_key(&self) -> &[u8; 32] {
         &self.public_bytes
     }
@@ -100,6 +106,7 @@ impl VrfKeypair {
     /// 5. s = k + c * secret (mod L)
     /// 6. proof = Gamma || c || s
     /// 7. output = proof_to_hash(Gamma)
+    #[must_use]
     pub fn prove(&self, alpha: &[u8]) -> VrfProof {
         // Step 1: Hash to curve using Elligator2
         let h = encode_to_curve_try_and_increment(&self.public_bytes, alpha);
@@ -149,6 +156,7 @@ impl VrfKeypair {
 /// 4. V = s*H - c*Gamma
 /// 5. c' = challenge_generation(Y, H, Gamma, U, V)
 /// 6. Accept iff c == c'
+#[must_use = "discarding a VRF verification result is a security bug"]
 pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Result<bool> {
     if proof.proof.len() != 80 {
         return Ok(false);
@@ -307,6 +315,7 @@ fn proof_to_hash(gamma: &EdwardsPoint) -> [u8; 32] {
     note = "Use check_leader_eligibility_integer for deterministic consensus; f64 loses precision"
 )]
 /// Convert VRF output to a value in [0, 1) for threshold comparison.
+#[must_use]
 pub fn output_to_value(output: &[u8; 32]) -> f64 {
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&output[..8]);
@@ -324,6 +333,7 @@ pub fn output_to_value(output: &[u8; 32]) -> f64 {
 /// threshold = tau * stake_i / total_stake
 /// eligible if output_value < threshold
 #[allow(deprecated)]
+#[must_use]
 pub fn check_leader_eligibility(
     vrf_output: &[u8; 32],
     stake: u128,
@@ -392,6 +402,7 @@ fn mul_u256_by_u128(val: (u128, u128), scalar: u128) -> (u128, u128) {
 /// Rearranged: vrf_value * total_stake * tau_denominator < tau_numerator * stake * 2^64
 ///
 /// Uses 256-bit arithmetic to avoid overflow at high stake values.
+#[must_use]
 pub fn check_leader_eligibility_integer(
     vrf_output: &[u8; 32],
     stake: u128,

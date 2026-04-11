@@ -5,6 +5,11 @@ from .types import (
     ClientConfig,
     JobRequest,
     JobSubmission,
+    NodeHealth,
+    NodeSyncStatus,
+    RpcBlock,
+    RpcBlockHeader,
+    RpcReceipt,
     SubmitResponse,
 )
 
@@ -16,5 +21,10 @@ __all__ = [
     "ClientConfig",
     "JobRequest",
     "JobSubmission",
+    "NodeHealth",
+    "NodeSyncStatus",
+    "RpcBlock",
+    "RpcBlockHeader",
+    "RpcReceipt",
     "SubmitResponse",
 ]

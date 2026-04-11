@@ -12,8 +12,8 @@ use crate::state::Ledger;
 use aether_crypto_primitives::Keypair;
 use aether_state_storage::Storage;
 use aether_types::{
-    Address, PublicKey, Signature, Transaction, TransactionStatus, TransferPayload,
-    TRANSFER_PROGRAM_ID,
+    Address, PublicKey, Signature, Transaction, TransactionStatus, TransferPayload, UtxoId,
+    UtxoOutput, H256, TRANSFER_PROGRAM_ID,
 };
 use proptest::prelude::*;
 use std::collections::HashSet;
@@ -575,6 +575,281 @@ proptest! {
         prop_assert_eq!(
             committed_root_a, committed_root_b,
             "post-commit root must match direct-apply root"
+        );
+    }
+}
+
+// ============================================================================
+// UTxO Property Tests
+// ============================================================================
+// The eUTxO++ model is core to Aether's state machine.  These proptests cover
+// the UTxO execution path which previously had zero proptest coverage.
+// ============================================================================
+
+/// Build a "fake" UtxoId for seeding (deterministic from a counter byte).
+fn fake_utxo_id(discriminant: u8) -> UtxoId {
+    UtxoId {
+        tx_hash: H256::from_slice(&[discriminant; 32]).unwrap(),
+        output_index: 0,
+    }
+}
+
+/// Build a correctly-signed UTxO transaction.
+/// `inputs` are UTxO IDs to spend.  `outputs` are (amount, pubkey) pairs for new UTxOs.
+/// `fee` comes from the surplus (inputs - sum(outputs)).
+fn make_utxo_tx(
+    kp: &Keypair,
+    sender: Address,
+    inputs: Vec<UtxoId>,
+    outputs: Vec<(u128, PublicKey)>,
+    fee: u128,
+    nonce: u64,
+) -> Transaction {
+    let mut tx = Transaction {
+        nonce,
+        chain_id: 1,
+        sender,
+        sender_pubkey: PublicKey::from_bytes(kp.public_key()),
+        inputs,
+        outputs: outputs
+            .into_iter()
+            .map(|(amount, owner)| UtxoOutput {
+                amount,
+                owner,
+                script_hash: None,
+            })
+            .collect(),
+        reads: HashSet::new(),
+        writes: HashSet::new(),
+        program_id: None,
+        data: vec![],
+        gas_limit: 21_000,
+        fee,
+        signature: Signature::from_bytes(vec![]),
+    };
+    let hash = tx.hash();
+    tx.signature = Signature::from_bytes(kp.sign(hash.as_bytes()));
+    tx
+}
+
+proptest! {
+    /// A UTxO spend where inputs > outputs + fee always succeeds.
+    #[test]
+    fn prop_utxo_valid_spend_succeeds(
+        input_amount in 200u128..=10_000u128,
+        output_amount in 50u128..=100u128,
+        fee in 0u128..=50u128,
+    ) {
+        // Ensure inputs cover outputs + fee (add surplus to input amount).
+        let total_input = output_amount + fee + 10; // always surplus ≥ 10
+        prop_assume!(total_input <= input_amount);
+
+        let owner_kp = Keypair::generate();
+        let owner = Address::from_slice(&owner_kp.to_address()).unwrap();
+        let recipient_kp = Keypair::generate();
+        let utxo_id = fake_utxo_id(0x01);
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&owner, 0).unwrap(); // create account (nonce = 0)
+        ledger.seed_utxo(&utxo_id, input_amount, owner).unwrap();
+
+        let tx = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![utxo_id],
+            vec![(output_amount, PublicKey::from_bytes(recipient_kp.public_key()))],
+            fee,
+            0,
+        );
+        let receipt = ledger.apply_transaction(&tx).unwrap();
+        prop_assert!(
+            matches!(receipt.status, TransactionStatus::Success),
+            "valid UTxO spend must succeed, got {:?}", receipt.status
+        );
+    }
+
+    /// A spend where outputs + fee exceeds input amount is always rejected.
+    #[test]
+    fn prop_utxo_insufficient_input_rejected(
+        input_amount in 100u128..=1_000u128,
+        overspend in 1u128..=500u128,
+    ) {
+        let owner_kp = Keypair::generate();
+        let owner = Address::from_slice(&owner_kp.to_address()).unwrap();
+        let recipient_kp = Keypair::generate();
+        let utxo_id = fake_utxo_id(0x02);
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&owner, 0).unwrap();
+        ledger.seed_utxo(&utxo_id, input_amount, owner).unwrap();
+
+        // output alone exceeds input — surplus is negative
+        let output_amount = input_amount + overspend;
+        let tx = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![utxo_id],
+            vec![(output_amount, PublicKey::from_bytes(recipient_kp.public_key()))],
+            0,
+            0,
+        );
+        if let Ok(receipt) = ledger.apply_transaction(&tx) {
+            prop_assert!(
+                matches!(receipt.status, TransactionStatus::Failed { .. }),
+                "over-spend must produce a Failed receipt"
+            );
+        }
+        // Returning Err is also fine — the ledger must never silently commit an over-spend.
+    }
+
+    /// Spending a UTxO that does not exist in the ledger is always rejected.
+    #[test]
+    fn prop_utxo_unknown_input_rejected(discriminant in 0u8..=254u8) {
+        let owner_kp = Keypair::generate();
+        let owner = Address::from_slice(&owner_kp.to_address()).unwrap();
+        let recipient_kp = Keypair::generate();
+
+        // Use discriminant+1 as the seeded UTxO, but spend discriminant — always unknown.
+        let seeded_id = fake_utxo_id(discriminant.saturating_add(1));
+        let unknown_id = fake_utxo_id(discriminant);
+        prop_assume!(seeded_id != unknown_id); // skip when saturating_add wraps to same value
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&owner, 0).unwrap();
+        ledger.seed_utxo(&seeded_id, 1_000, owner).unwrap();
+
+        let tx = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![unknown_id],
+            vec![(500, PublicKey::from_bytes(recipient_kp.public_key()))],
+            0,
+            0,
+        );
+        let result = ledger.apply_transaction(&tx);
+        prop_assert!(
+            result.is_err(),
+            "spending unknown UTxO must return Err, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    /// Spending a UTxO owned by a different address is always rejected.
+    #[test]
+    fn prop_utxo_wrong_owner_rejected(amount in 200u128..=5_000u128) {
+        let true_owner_kp = Keypair::generate();
+        let true_owner = Address::from_slice(&true_owner_kp.to_address()).unwrap();
+        let attacker_kp = Keypair::generate();
+        let attacker = Address::from_slice(&attacker_kp.to_address()).unwrap();
+        let recipient_kp = Keypair::generate();
+        let utxo_id = fake_utxo_id(0x10);
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&attacker, 0).unwrap();
+        // Seed UTxO owned by true_owner, but attacker will try to spend it.
+        ledger.seed_utxo(&utxo_id, amount, true_owner).unwrap();
+
+        let tx = make_utxo_tx(
+            &attacker_kp,
+            attacker,
+            vec![utxo_id],
+            vec![(amount - 10, PublicKey::from_bytes(recipient_kp.public_key()))],
+            0,
+            0,
+        );
+        let result = ledger.apply_transaction(&tx);
+        prop_assert!(
+            result.is_err(),
+            "wrong-owner spend must be rejected with Err, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    /// Duplicate UTxO input within a single transaction is always rejected.
+    #[test]
+    fn prop_utxo_duplicate_input_rejected(amount in 200u128..=5_000u128) {
+        let owner_kp = Keypair::generate();
+        let owner = Address::from_slice(&owner_kp.to_address()).unwrap();
+        let recipient_kp = Keypair::generate();
+        let utxo_id = fake_utxo_id(0x20);
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&owner, 0).unwrap();
+        ledger.seed_utxo(&utxo_id, amount, owner).unwrap();
+
+        // Pass the same UTxO ID twice as inputs — a classic double-spend within one tx.
+        let tx = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![utxo_id.clone(), utxo_id],
+            vec![(amount, PublicKey::from_bytes(recipient_kp.public_key()))],
+            0,
+            0,
+        );
+        let result = ledger.apply_transaction(&tx);
+        prop_assert!(
+            result.is_err(),
+            "duplicate UTxO input must be rejected, got Ok({:?})",
+            result.ok()
+        );
+    }
+
+    /// A UTxO created as an output of one transaction can be spent by the next.
+    /// This tests the full spend-chain: tx0 creates UTxO → tx1 spends it.
+    #[test]
+    fn prop_utxo_change_output_is_spendable(
+        total in 500u128..=10_000u128,
+        send in 100u128..=400u128,
+        fee in 0u128..=50u128,
+    ) {
+        // change = total - send - fee; require change > 0
+        prop_assume!(total > send + fee);
+        let change = total - send - fee;
+
+        let owner_kp = Keypair::generate();
+        let owner = Address::from_slice(&owner_kp.to_address()).unwrap();
+        let owner_pk = PublicKey::from_bytes(owner_kp.public_key());
+        let recipient_kp = Keypair::generate();
+        let seed_utxo_id = fake_utxo_id(0x30);
+
+        let (_dir, mut ledger) = open_ledger();
+        ledger.seed_account(&owner, 0).unwrap();
+        ledger.seed_utxo(&seed_utxo_id, total, owner).unwrap();
+
+        // tx0: spend seed UTxO → send to recipient + change back to owner
+        let tx0 = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![seed_utxo_id],
+            vec![
+                (send, PublicKey::from_bytes(recipient_kp.public_key())),
+                (change, owner_pk.clone()),
+            ],
+            fee,
+            0,
+        );
+        let r0 = ledger.apply_transaction(&tx0).unwrap();
+        prop_assert!(
+            matches!(r0.status, TransactionStatus::Success),
+            "tx0 must succeed, got {:?}", r0.status
+        );
+
+        // The change UTxO was created at output_index=1 of tx0.
+        let change_utxo_id = UtxoId { tx_hash: tx0.hash(), output_index: 1 };
+
+        // tx1: spend the change UTxO
+        let tx1 = make_utxo_tx(
+            &owner_kp,
+            owner,
+            vec![change_utxo_id],
+            vec![(change.saturating_sub(5), PublicKey::from_bytes(recipient_kp.public_key()))],
+            0,
+            1, // nonce incremented
+        );
+        let r1 = ledger.apply_transaction(&tx1).unwrap();
+        prop_assert!(
+            matches!(r1.status, TransactionStatus::Success),
+            "change UTxO must be spendable in the next tx, got {:?}", r1.status
         );
     }
 }

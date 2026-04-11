@@ -24,6 +24,7 @@ impl KesSignature {
     /// 1. Verify the Ed25519 signature against the leaf public key
     /// 2. Verify the Merkle authentication path from leaf to root
     /// 3. Compare the reconstructed root to the verification key's root
+    #[must_use = "discarding a KES verification result is a security bug"]
     pub fn verify(&self, vk: &KesVerificationKey, message: &[u8]) -> bool {
         if self.period >= vk.max_periods {
             return false;
@@ -68,14 +69,20 @@ pub struct KesVerificationKey {
 }
 
 impl KesVerificationKey {
+    #[inline]
+    #[must_use]
     pub fn new(root: [u8; 32], max_periods: u32) -> Self {
         KesVerificationKey { root, max_periods }
     }
 
+    #[inline]
+    #[must_use]
     pub fn root(&self) -> [u8; 32] {
         self.root
     }
 
+    #[inline]
+    #[must_use]
     pub fn max_periods(&self) -> u32 {
         self.max_periods
     }
