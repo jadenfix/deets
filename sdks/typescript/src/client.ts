@@ -103,7 +103,9 @@ export class AetherClient {
    * Returns sync status, peer count, and latest/finalized slot numbers.
    */
   async getHealth(): Promise<NodeHealth> {
-    const response = await fetch(`${this.endpoint}/health`);
+    const response = await fetch(`${this.endpoint}/health`, {
+      signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+    });
     if (!response.ok) {
       throw new Error(`health check failed with status ${response.status}`);
     }
@@ -127,6 +129,7 @@ export class AetherClient {
       headers: {
         "content-type": "application/json",
       },
+      signal: AbortSignal.timeout(this.config.requestTimeoutMs),
       body: JSON.stringify({
         jsonrpc: "2.0",
         method,
