@@ -196,3 +196,152 @@ mod trait_tests {
             .unwrap());
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::mock::*;
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_public_key() -> impl Strategy<Value = [u8; 32]> {
+        prop::array::uniform32(any::<u8>())
+    }
+
+    proptest! {
+        #[test]
+        fn mock_signer_deterministic_for_arbitrary_inputs(
+            pk in arb_public_key(),
+            alpha in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let signer = MockVrfSigner::new(pk);
+            let p1 = signer.prove(&alpha);
+            let p2 = signer.prove(&alpha);
+            prop_assert_eq!(p1.output, p2.output);
+            prop_assert_eq!(p1.proof, p2.proof);
+        }
+
+        #[test]
+        fn mock_signer_public_key_roundtrip(pk in arb_public_key()) {
+            let signer = MockVrfSigner::new(pk);
+            prop_assert_eq!(signer.public_key_bytes(), pk);
+        }
+
+        #[test]
+        fn mock_signer_different_keys_produce_different_outputs(
+            idx_a in 0u8..128,
+            idx_b in 128u8..=255,
+            alpha in prop::collection::vec(any::<u8>(), 1..64),
+        ) {
+            let a = MockVrfSigner::from_index(idx_a);
+            let b = MockVrfSigner::from_index(idx_b);
+            let pa = a.prove(&alpha);
+            let pb = b.prove(&alpha);
+            prop_assert_ne!(pa.output, pb.output);
+        }
+
+        #[test]
+        fn mock_signer_proof_is_80_bytes(
+            pk in arb_public_key(),
+            alpha in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let signer = MockVrfSigner::new(pk);
+            let proof = signer.prove(&alpha);
+            prop_assert_eq!(proof.proof.len(), 80);
+        }
+
+        #[test]
+        fn ecvrf_verifier_rejects_wrong_key(
+            alpha in prop::collection::vec(any::<u8>(), 1..128),
+        ) {
+            let real_keypair = VrfKeypair::generate();
+            let wrong_keypair = VrfKeypair::generate();
+            let proof = real_keypair.prove(&alpha);
+            let verifier = EcVrfVerifier;
+            let result = verifier.verify(wrong_keypair.public_key(), &alpha, &proof);
+            if let Ok(valid) = result {
+                prop_assert!(!valid);
+            }
+        }
+
+        #[test]
+        fn ecvrf_verifier_rejects_wrong_alpha(
+            alpha in prop::collection::vec(any::<u8>(), 1..64),
+            extra_byte in any::<u8>(),
+        ) {
+            let keypair = VrfKeypair::generate();
+            let proof = keypair.prove(&alpha);
+            let mut wrong_alpha = alpha.clone();
+            wrong_alpha.push(extra_byte);
+            let verifier = EcVrfVerifier;
+            let result = verifier.verify(keypair.public_key(), &wrong_alpha, &proof);
+            if let Ok(valid) = result {
+                prop_assert!(!valid);
+            }
+        }
+
+        #[test]
+        fn ecvrf_sign_then_verify_roundtrip(
+            alpha in prop::collection::vec(any::<u8>(), 0..256),
+        ) {
+            let keypair = VrfKeypair::generate();
+            let signer: &dyn VrfSigner = &keypair;
+            let verifier: &dyn VrfVerifier = &EcVrfVerifier;
+            let proof = signer.prove(&alpha);
+            let valid = verifier.verify(&signer.public_key_bytes(), &alpha, &proof).unwrap();
+            prop_assert!(valid);
+        }
+
+        #[test]
+        fn boxed_signer_matches_direct_signer(
+            alpha in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let pk = [42u8; 32];
+            let direct = MockVrfSigner::new(pk);
+            let boxed: Box<dyn VrfSigner> = Box::new(MockVrfSigner::new(pk));
+
+            let p_direct = direct.prove(&alpha);
+            let p_boxed = boxed.prove(&alpha);
+
+            prop_assert_eq!(p_direct.output, p_boxed.output);
+            prop_assert_eq!(p_direct.proof, p_boxed.proof);
+            prop_assert_eq!(direct.public_key_bytes(), boxed.public_key_bytes());
+        }
+
+        #[test]
+        fn boxed_verifier_matches_direct_verifier(
+            alpha in prop::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let keypair = VrfKeypair::generate();
+            let proof = keypair.prove(&alpha);
+
+            let direct = EcVrfVerifier;
+            let boxed: Box<dyn VrfVerifier> = Box::new(EcVrfVerifier);
+
+            let r_direct = direct.verify(keypair.public_key(), &alpha, &proof).unwrap();
+            let r_boxed = boxed.verify(keypair.public_key(), &alpha, &proof).unwrap();
+            prop_assert_eq!(r_direct, r_boxed);
+        }
+
+        #[test]
+        fn mock_verifier_accepts_garbage_proofs(
+            pk in arb_public_key(),
+            alpha in prop::collection::vec(any::<u8>(), 0..64),
+            garbage_proof in prop::collection::vec(any::<u8>(), 0..100),
+            garbage_output in arb_public_key(),
+        ) {
+            let verifier = MockVrfVerifier;
+            let proof = VrfProof { proof: garbage_proof, output: garbage_output };
+            prop_assert!(verifier.verify(&pk, &alpha, &proof).unwrap());
+        }
+
+        #[test]
+        fn reject_all_verifier_rejects_valid_proofs(
+            alpha in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let keypair = VrfKeypair::generate();
+            let proof = keypair.prove(&alpha);
+            let verifier = RejectAllVrfVerifier;
+            prop_assert!(!verifier.verify(keypair.public_key(), &alpha, &proof).unwrap());
+        }
+    }
+}
