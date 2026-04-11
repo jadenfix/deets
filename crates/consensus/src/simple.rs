@@ -154,6 +154,14 @@ impl ConsensusEngine for SimpleConsensus {
     fn total_stake(&self) -> u128 {
         SimpleConsensus::total_stake(self)
     }
+
+    fn validator_addresses_and_stakes(&self) -> Vec<(aether_types::Address, u128)> {
+        self.validators
+            .iter()
+            .filter(|v| v.stake > 0)
+            .map(|v| (v.pubkey.to_address(), v.stake))
+            .collect()
+    }
 }
 
 #[cfg(test)]

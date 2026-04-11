@@ -869,6 +869,14 @@ impl ConsensusEngine for HybridConsensus {
             0
         }
     }
+
+    fn validator_addresses_and_stakes(&self) -> Vec<(Address, u128)> {
+        self.validators
+            .iter()
+            .filter(|(_, v)| v.stake > 0)
+            .map(|(addr, v)| (*addr, v.stake))
+            .collect()
+    }
 }
 
 #[cfg(test)]

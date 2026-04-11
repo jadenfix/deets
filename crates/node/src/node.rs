@@ -660,19 +660,24 @@ impl Node {
         // validators credited and others not.
         let mut epoch_batch = StorageBatch::new();
 
-        // Credit emission proportionally to each validator based on stake.
-        if let Some(ref keypair) = self.validator_key {
-            let my_pubkey = PublicKey::from_bytes(keypair.public_key());
-            let my_addr = my_pubkey.to_address();
-            let my_stake = self.consensus.validator_stake(&my_addr);
-            if my_stake > 0 {
-                let my_share = mul_div(emission, my_stake, total_stake);
-                if my_share > 0 {
-                    self.ledger
-                        .credit_account_to_batch(&mut epoch_batch, &my_addr, my_share)?;
-                }
+        // Credit emission proportionally to ALL validators based on stake.
+        // Every node must credit the same set of validators so state roots
+        // stay consistent across the network. The previous code only credited
+        // the local validator, causing state divergence at epoch boundaries.
+        let mut validators_credited = 0u64;
+        for (addr, stake) in self.consensus.validator_addresses_and_stakes() {
+            let share = mul_div(emission, stake, total_stake);
+            if share > 0 {
+                self.ledger
+                    .credit_account_to_batch(&mut epoch_batch, &addr, share)?;
+                validators_credited += 1;
             }
         }
+        tracing::info!(
+            validators_credited,
+            emission,
+            "Credited epoch emission to validators"
+        );
 
         // Complete unbonding: return tokens to delegators whose unbonding period
         // has elapsed. complete_unbonding() returns (address, amount) pairs.
@@ -2692,6 +2697,69 @@ mod tests {
 
         // Unbonding queue should be fully drained.
         assert!(node.staking_state().unbonding.is_empty());
+    }
+
+    #[test]
+    fn epoch_emission_credits_all_validators_not_just_local() {
+        let temp_dir = TempDir::new().unwrap();
+        let local_key = Keypair::generate();
+        let remote_key = Keypair::generate();
+
+        let local_vi = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(local_key.public_key()),
+            stake: 3_000,
+            commission: 0,
+            active: true,
+        };
+        let remote_vi = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(remote_key.public_key()),
+            stake: 1_000,
+            commission: 0,
+            active: true,
+        };
+
+        let local_addr = local_vi.pubkey.to_address();
+        let remote_addr = remote_vi.pubkey.to_address();
+
+        let validators = vec![local_vi, remote_vi];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(local_key),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Seed both validator accounts so credit_account_to_batch works.
+        node.ledger.credit_account(&local_addr, 0).ok();
+        node.ledger.credit_account(&remote_addr, 0).ok();
+
+        node.process_epoch_transition(1).unwrap();
+
+        // Both validators must receive emission proportional to stake.
+        let local_acct = node.ledger.get_account(&local_addr).unwrap().unwrap();
+        let remote_acct = node.ledger.get_account(&remote_addr).unwrap().unwrap();
+
+        // Local has 3x the stake of remote, so should get 3x the emission.
+        // The exact emission amount depends on the EmissionSchedule config,
+        // but the ratio must hold.
+        if local_acct.balance > 0 {
+            assert!(
+                remote_acct.balance > 0,
+                "remote validator must also receive emission, got 0"
+            );
+            // Check approximate 3:1 ratio (allow rounding within 1 unit)
+            let ratio_diff =
+                (local_acct.balance as i128 - (remote_acct.balance as i128 * 3)).unsigned_abs();
+            assert!(
+                ratio_diff <= 3,
+                "emission ratio should be ~3:1, got local={} remote={}",
+                local_acct.balance,
+                remote_acct.balance
+            );
+        }
     }
 
     /// Helper: build a minimal vote for a given public key, slot, and block hash byte.
