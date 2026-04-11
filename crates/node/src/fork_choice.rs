@@ -58,6 +58,15 @@ impl ForkChoice {
         let is_fork = !candidates.is_empty();
         candidates.push(block_hash);
 
+        if is_fork {
+            tracing::warn!(
+                slot,
+                block = ?block_hash,
+                candidates = candidates.len(),
+                "fork detected — competing block at same slot"
+            );
+        }
+
         // Deterministic tiebreak: prefer lower hash (compare raw bytes)
         match self.canonical.entry(slot) {
             std::collections::hash_map::Entry::Vacant(e) => {
@@ -95,6 +104,7 @@ impl ForkChoice {
             return false; // Reject unknown block hash
         }
 
+        tracing::debug!(slot, block = ?block_hash, "fork choice finalized");
         self.finalized.insert(slot, block_hash);
         self.canonical.insert(slot, block_hash);
         true
