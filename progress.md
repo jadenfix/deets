@@ -27,6 +27,16 @@
 
 **Audit summary**: Performed comprehensive audit of Tier 1 (signatures, double-spend, nonce, gas limits), Tier 2 (HotStuff liveness, slashing, fork choice, finality, epochs), and Tier 4 (storage atomicity, block persistence, pruning, snapshots). All Tier 1 and 2 items are solid. The staking persistence gap was the only critical finding.
 
+## Agent 4 — Cycle 43 (2026-04-09)
+
+- **test(ledger): proptest coverage for UTxO transactions** — PR #354
+  - The eUTxO++ execution path had zero proptest coverage; all 8 existing proptests only exercised the transfer-program (account-balance) path
+  - Added `Ledger::seed_utxo` (#[cfg(test)]) helper + 6 property tests:
+    valid spend succeeds, over-spend fails, unknown UTxO → Err, wrong-owner → Err,
+    duplicate input → Err, two-step spend chain (change output is spendable)
+  - Branch: `fix/agent4-ledger-utxo-proptests` | 56 tests pass, workspace clippy clean
+  - Follow-up needed: multi-input UTxO proptests (2+ inputs in one tx) still uncovered
+
 ## Agent 1 — Cycle 43 (2026-04-02)
 
 - **fix(node): add missing committed_at_slot insert in produce_block** — PR #341
