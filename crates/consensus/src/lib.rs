@@ -13,97 +13,98 @@ pub use aether_crypto_vrf::{VrfSigner, VrfVerifier};
 use aether_types::{Block, PublicKey, Slot, Vote, H256};
 use anyhow::Result;
 
-/// Unified interface for all consensus engines
-pub trait ConsensusEngine: Send + Sync {
-    /// Get current slot number
-    fn current_slot(&self) -> Slot;
+/// Finality gadget interface — separated from consensus so alternative
+/// finality mechanisms can be tested or composed independently.
+pub trait Finality {
+    fn check_finality(&mut self, slot: Slot) -> bool;
+    fn finalized_slot(&self) -> Slot;
+    fn record_block(&mut self, _block_hash: H256, _parent_hash: H256, _slot: Slot) {}
+}
 
-    /// Advance to next slot
+/// Unified interface for all consensus engines.
+/// Extends `Finality` so callers can access finality methods through `dyn ConsensusEngine`.
+pub trait ConsensusEngine: Finality + Send + Sync {
+    fn current_slot(&self) -> Slot;
     fn advance_slot(&mut self);
 
-    /// Fast-forward to a specific slot (e.g. after restart recovery).
-    /// Only advances if `slot` is ahead of the current slot.
     fn skip_to_slot(&mut self, slot: Slot) {
         while self.current_slot() < slot {
             self.advance_slot();
         }
     }
 
-    /// Check if validator is leader for given slot
     fn is_leader(&self, slot: Slot, validator_pubkey: &PublicKey) -> bool;
-
-    /// Validate a proposed block
     fn validate_block(&self, block: &Block) -> Result<()>;
-
-    /// Add a vote for a block
     fn add_vote(&mut self, vote: Vote) -> Result<()>;
-
-    /// Check if a slot has reached finality
-    fn check_finality(&mut self, slot: Slot) -> bool;
-
-    /// Get highest finalized slot
-    fn finalized_slot(&self) -> Slot;
-
-    /// Get total stake in network
     fn total_stake(&self) -> u128;
 
-    /// Get VRF proof for leader eligibility (if supported)
     fn get_leader_proof(&self, _slot: Slot) -> Option<VrfProof> {
         None
     }
 
-    /// Record a block's parent relationship (for 2-chain finality).
-    fn record_block(&mut self, _block_hash: H256, _parent_hash: H256, _slot: Slot) {
-        // Default no-op for engines that don't need parent tracking
-    }
-
-    /// Update epoch randomness from a finalized block's VRF output.
-    /// Returns true if this was the first update this epoch.
     fn update_epoch_randomness(&mut self, _vrf_output: &[u8; 32]) -> bool {
         false
     }
 
-    /// Get individual validator's registered stake by address.
     fn validator_stake(&self, _address: &aether_types::Address) -> u128 {
         0
     }
 
-    /// Check if the current round has timed out (pacemaker).
     fn is_timed_out(&self) -> bool {
         false
     }
 
-    /// Handle a timeout — advance phase/slot to prevent deadlock.
     fn on_timeout(&mut self) {}
 
-    /// Advance the pacemaker to at least `round`.
-    ///
-    /// Called when a validator receives a TimeoutCertificate or a message
-    /// from a future round (e.g. during sync), so it can catch up without
-    /// stepping through each intermediate round one-by-one.
-    /// No-op if `round` ≤ current pacemaker round.
     fn advance_pacemaker_to_round(&mut self, _round: u64) {}
 
-    /// Look up a validator's registered BLS public key by their Ed25519 address.
     fn get_bls_pubkey(&self, _address: &aether_types::Address) -> Option<Vec<u8>> {
         None
     }
 
-    /// Register a BLS public key for a validator.
-    /// Required for vote signature verification in BFT consensus.
     fn register_bls_pubkey(
         &mut self,
         _address: aether_types::Address,
         _bls_pubkey: Vec<u8>,
         _pop_signature: &[u8],
     ) -> Result<()> {
-        Ok(()) // Default no-op for engines that don't use BLS
+        Ok(())
     }
 
-    /// Slash a validator by reducing their stake. Returns the amount slashed.
-    /// Used by the node to enforce detected double-signing or other offenses.
     fn slash_validator(&mut self, _address: &aether_types::Address, _slash_bps: u128) -> u128 {
-        0 // Default no-op for engines that don't track stake mutably
+        0
+    }
+}
+
+/// Trivial finality for testing: every slot is immediately final.
+pub struct InstantFinality {
+    finalized: Slot,
+}
+
+impl InstantFinality {
+    pub fn new() -> Self {
+        Self { finalized: 0 }
+    }
+}
+
+impl Default for InstantFinality {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Finality for InstantFinality {
+    fn check_finality(&mut self, slot: Slot) -> bool {
+        if slot > self.finalized {
+            self.finalized = slot;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finalized_slot(&self) -> Slot {
+        self.finalized
     }
 }
 
@@ -146,3 +147,39 @@ pub use vrf_pos::VrfPosConsensus;
 
 #[cfg(test)]
 mod proptest_tests;
+
+#[cfg(test)]
+mod finality_tests {
+    use super::*;
+
+    #[test]
+    fn instant_finality_monotonically_advances() {
+        let mut f = InstantFinality::new();
+        assert_eq!(f.finalized_slot(), 0);
+
+        assert!(f.check_finality(1));
+        assert_eq!(f.finalized_slot(), 1);
+
+        assert!(f.check_finality(5));
+        assert_eq!(f.finalized_slot(), 5);
+
+        // Slot <= finalized is not re-reported
+        assert!(!f.check_finality(3));
+        assert!(!f.check_finality(5));
+        assert_eq!(f.finalized_slot(), 5);
+    }
+
+    #[test]
+    fn instant_finality_default() {
+        let f = InstantFinality::default();
+        assert_eq!(f.finalized_slot(), 0);
+    }
+
+    #[test]
+    fn instant_finality_record_block_is_noop() {
+        let mut f = InstantFinality::new();
+        // Should not panic — default no-op
+        f.record_block(H256::zero(), H256::zero(), 1);
+        assert_eq!(f.finalized_slot(), 0);
+    }
+}

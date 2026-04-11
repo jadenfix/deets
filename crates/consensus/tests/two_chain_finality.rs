@@ -7,6 +7,7 @@
 //! setting finalized_slot, ensuring the finality logic is wired correctly.
 
 use aether_consensus::hotstuff::*;
+use aether_consensus::Finality;
 use aether_crypto_bls::BlsKeypair;
 use aether_types::{Address, Block, PublicKey, ValidatorInfo, VrfProof, H256};
 

@@ -770,10 +770,6 @@ impl HotStuffConsensus {
         self.current_slot
     }
 
-    pub fn finalized_slot(&self) -> Slot {
-        self.finalized_slot
-    }
-
     pub fn committed_slot(&self) -> Slot {
         self.committed_slot
     }
@@ -806,6 +802,21 @@ impl HotStuffConsensus {
         let known_hashes: HashSet<H256> = self.block_slots.keys().copied().collect();
         self.block_parents
             .retain(|hash, _| known_hashes.contains(hash));
+    }
+}
+
+impl crate::Finality for HotStuffConsensus {
+    fn check_finality(&mut self, slot: Slot) -> bool {
+        slot <= self.finalized_slot && slot > 0
+    }
+
+    fn finalized_slot(&self) -> Slot {
+        self.finalized_slot
+    }
+
+    fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
+        self.block_parents.insert(block_hash, parent_hash);
+        self.block_slots.insert(block_hash, slot);
     }
 }
 

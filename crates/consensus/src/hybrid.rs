@@ -359,12 +359,6 @@ impl HybridConsensus {
         Ok(())
     }
 
-    /// Record a block's parent relationship (for 2-chain finality).
-    pub fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
-        self.block_parents.insert(block_hash, parent_hash);
-        self.block_slots.insert(block_hash, slot);
-    }
-
     /// Update epoch randomness using a real VRF output from the first finalized block.
     /// Returns true if this was the first update this epoch (idempotent guard).
     pub fn update_epoch_randomness(&mut self, block_vrf_output: &[u8; 32]) -> bool {
@@ -689,6 +683,26 @@ impl HybridConsensus {
     }
 }
 
+impl crate::Finality for HybridConsensus {
+    fn check_finality(&mut self, slot: Slot) -> bool {
+        if slot <= self.finalized_slot && slot > self.last_reported_finalized {
+            self.last_reported_finalized = slot;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn finalized_slot(&self) -> Slot {
+        self.finalized_slot
+    }
+
+    fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
+        self.block_parents.insert(block_hash, parent_hash);
+        self.block_slots.insert(block_hash, slot);
+    }
+}
+
 impl ConsensusEngine for HybridConsensus {
     fn current_slot(&self) -> Slot {
         self.current_slot
@@ -799,33 +813,12 @@ impl ConsensusEngine for HybridConsensus {
         Ok(())
     }
 
-    fn check_finality(&mut self, slot: Slot) -> bool {
-        // Return true for each slot in (last_reported, finalized_slot] so the
-        // caller (node.rs) can process every newly-finalized slot individually
-        // (e.g. epoch randomness updates keyed on specific slot numbers).
-        if slot <= self.finalized_slot && slot > self.last_reported_finalized {
-            self.last_reported_finalized = slot;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn finalized_slot(&self) -> Slot {
-        self.finalized_slot
-    }
-
     fn total_stake(&self) -> u128 {
         self.total_stake
     }
 
     fn get_leader_proof(&self, slot: Slot) -> Option<VrfProof> {
         self.check_my_eligibility(slot)
-    }
-
-    fn record_block(&mut self, block_hash: H256, parent_hash: H256, slot: Slot) {
-        self.block_parents.insert(block_hash, parent_hash);
-        self.block_slots.insert(block_hash, slot);
     }
 
     fn update_epoch_randomness(&mut self, vrf_output: &[u8; 32]) -> bool {
@@ -881,6 +874,7 @@ impl ConsensusEngine for HybridConsensus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Finality;
     use aether_crypto_primitives::Keypair;
     use aether_types::BlockHeader;
 

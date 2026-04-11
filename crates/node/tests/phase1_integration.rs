@@ -4,7 +4,7 @@
 // Proves the full VRF + HotStuff + BLS pipeline works end-to-end
 // ============================================================================
 
-use aether_consensus::{ConsensusEngine, HybridConsensus};
+use aether_consensus::{ConsensusEngine, Finality, HybridConsensus};
 use aether_node::{create_hybrid_consensus, validator_info_from_keypair, ValidatorKeypair};
 use aether_types::{Block, Slot, ValidatorInfo, H256};
 use std::sync::{Arc, Mutex};
