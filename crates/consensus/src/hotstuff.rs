@@ -130,6 +130,7 @@ pub struct HotStuffConsensus {
 
     committed_slot: Slot,
     finalized_slot: Slot,
+    last_reported_finalized: Slot,
 
     my_keypair: Option<BlsKeypair>,
     my_address: Option<Address>,
@@ -168,6 +169,7 @@ impl HotStuffConsensus {
             locked_slot: 0,
             committed_slot: 0,
             finalized_slot: 0,
+            last_reported_finalized: 0,
             my_keypair,
             my_address,
             bls_pubkeys: HashMap::new(),
@@ -807,7 +809,12 @@ impl HotStuffConsensus {
 
 impl crate::Finality for HotStuffConsensus {
     fn check_finality(&mut self, slot: Slot) -> bool {
-        slot <= self.finalized_slot && slot > 0
+        if slot <= self.finalized_slot && slot > self.last_reported_finalized {
+            self.last_reported_finalized = slot;
+            true
+        } else {
+            false
+        }
     }
 
     fn finalized_slot(&self) -> Slot {
@@ -1795,6 +1802,48 @@ mod tests {
         assert!(
             result.is_err(),
             "TC with signature for wrong round must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_check_finality_reports_each_slot_at_most_once() {
+        use crate::Finality;
+
+        let validators = create_test_validators(4);
+        let mut hs = HotStuffConsensus::new(validators, None, None);
+
+        // Simulate finalization of slot 3
+        hs.finalized_slot = 3;
+
+        // First report: slots 1, 2, 3 should all return true
+        assert!(hs.check_finality(1));
+        assert!(hs.check_finality(2));
+        assert!(hs.check_finality(3));
+
+        // Second call for the same slots must return false (report-once)
+        assert!(
+            !hs.check_finality(1),
+            "slot 1 already reported — must not re-fire"
+        );
+        assert!(
+            !hs.check_finality(2),
+            "slot 2 already reported — must not re-fire"
+        );
+        assert!(
+            !hs.check_finality(3),
+            "slot 3 already reported — must not re-fire"
+        );
+
+        // Slot 0 is never finalized
+        assert!(!hs.check_finality(0));
+
+        // Advance finality — slot 5 becomes newly finalized
+        hs.finalized_slot = 5;
+        assert!(hs.check_finality(4));
+        assert!(hs.check_finality(5));
+        assert!(
+            !hs.check_finality(4),
+            "slot 4 already reported after second batch"
         );
     }
 }
