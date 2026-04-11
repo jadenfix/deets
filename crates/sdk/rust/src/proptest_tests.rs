@@ -40,6 +40,7 @@ mod proptests {
         (1u128..10_000_000u128, 1u64..10_000_000u64).prop_map(|(fee, gas)| ClientConfig {
             default_fee: fee,
             default_gas_limit: gas,
+            ..ClientConfig::default()
         })
     }
 
@@ -267,7 +268,7 @@ mod proptests {
             nonce in any::<u64>(),
         ) {
             // Use a fee well above the devnet minimum (~1,011,500 for default gas).
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let tx = TransferBuilder::new(&cfg)
                 .to(recipient)
@@ -284,7 +285,7 @@ mod proptests {
             nonce in any::<u64>(),
             chain_id in 1u64..1000u64,
         ) {
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let tx = TransferBuilder::new(&cfg)
                 .to(recipient)
@@ -301,7 +302,7 @@ mod proptests {
             amount in 1u128..1_000_000u128,
             nonce in any::<u64>(),
         ) {
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let tx = TransferBuilder::new(&cfg)
                 .to(recipient)
@@ -321,7 +322,7 @@ mod proptests {
             nonce in any::<u64>(),
         ) {
             use aether_types::PublicKey;
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let expected_address = PublicKey::from_bytes(keypair.public_key()).to_address();
             let tx = TransferBuilder::new(&cfg)
@@ -341,7 +342,7 @@ mod proptests {
             // fee must exceed devnet minimum: a=10000 + b*~400bytes + c*500000 ≈ 1,012,000
             custom_fee in 2_000_000u128..10_000_000u128,
         ) {
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let tx = TransferBuilder::new(&cfg)
                 .to(recipient)
@@ -361,7 +362,7 @@ mod proptests {
             // With fee=5_000_000 and gas up to 100_000: min = 10000+2000+200000 = 212000 < 5M. OK.
             custom_gas in 1u64..100_000u64,
         ) {
-            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000 };
+            let cfg = ClientConfig { default_fee: 5_000_000, default_gas_limit: 500_000, ..ClientConfig::default() };
             let keypair = Keypair::generate();
             let tx = TransferBuilder::new(&cfg)
                 .to(recipient)
