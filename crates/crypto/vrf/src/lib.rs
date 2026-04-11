@@ -53,10 +53,14 @@ pub mod mock {
     }
 
     impl MockVrfSigner {
+        #[inline]
+        #[must_use]
         pub fn new(public_key: [u8; 32]) -> Self {
             Self { public_key }
         }
 
+        #[inline]
+        #[must_use]
         pub fn from_index(index: u8) -> Self {
             let mut pk = [0u8; 32];
             pk[0] = index;

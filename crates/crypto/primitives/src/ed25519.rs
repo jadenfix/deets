@@ -16,12 +16,14 @@ pub struct Keypair {
 }
 
 impl Keypair {
+    #[must_use]
     pub fn generate() -> Self {
         let mut rng = rand::thread_rng();
         let signing_key = SigningKey::generate(&mut rng);
         Keypair { signing_key }
     }
 
+    #[must_use = "constructing a Keypair without binding it is a no-op"]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Ed25519Error> {
         if bytes.len() != 32 {
             return Err(Ed25519Error::SecretKey);
@@ -32,19 +34,25 @@ impl Keypair {
         Ok(Keypair { signing_key })
     }
 
+    #[inline]
+    #[must_use]
     pub fn public_key(&self) -> Vec<u8> {
         self.signing_key.verifying_key().to_bytes().to_vec()
     }
 
+    #[inline]
+    #[must_use]
     pub fn secret_key(&self) -> Vec<u8> {
         self.signing_key.to_bytes().to_vec()
     }
 
+    #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
         self.signing_key.sign(message).to_bytes().to_vec()
     }
 }
 
+#[must_use = "discarding a signature verification result is a security bug"]
 pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), Ed25519Error> {
     if public_key.len() != 32 {
         return Err(Ed25519Error::PublicKey);
@@ -76,6 +84,7 @@ pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(),
 /// Currently implements parallel CPU verification. Future enhancements:
 /// - GPU batch verification via CUDA/OpenCL for 300k+/s throughput
 /// - SIMD optimizations for vectorized operations
+#[must_use = "discarding a batch verification result is a security bug"]
 pub fn verify_batch(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (public_key, message, signature) tuples
 ) -> Result<Vec<bool>, Ed25519Error> {
