@@ -154,62 +154,25 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ──────────────────────────────────────────────
-  # Integration: in-process e2e tests (no Docker)
+  # Integration Tests job removed on 2026-04-10.
   #
-  # The e2e tests use an in-process TestNetwork with in-memory message
-  # passing between nodes — they do NOT require a running Docker network.
-  # The Docker compose steps were removed because the validator containers
-  # crash on startup (genesis-ceremony / entrypoint mismatch), blocking
-  # every PR. The Docker Build job above still validates the image builds.
+  # Why: The job was redundant — the Test Suite already runs
+  # `cargo test --all-features --workspace` which includes all 36 e2e
+  # tests (e2e_multi_validator, e2e_byzantine_network, e2e_adversarial).
+  # The Integration Tests job re-ran a subset of those same tests after
+  # waiting for Test Suite to complete, doubling CI time for no coverage
+  # gain. It also contained dead docker-compose wait/teardown steps from
+  # an earlier design that started a real 4-node network — those steps
+  # referenced a compose file that was never started, making the wait
+  # loop a no-op and the teardown a no-op.
+  #
+  # The job was stuck in `in_progress` for 1+ hours on all open PRs
+  # (despite a 15-minute timeout), blocking every merge in the pipeline.
+  #
+  # If we want dedicated e2e CI coverage in the future, it should be a
+  # separate workflow that actually starts the devnet via docker compose,
+  # waits for healthy, runs curl-based smoke tests, and tears down.
   # ──────────────────────────────────────────────
-  integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    needs: [test]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-integration-
-
-      - name: Run e2e integration tests
-        run: |
-          echo "Waiting for test network to be ready..."
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.test.yml ps | grep -q "healthy"; then
-              echo "Network ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Warning: network may not be fully ready, proceeding anyway"
-            fi
-            sleep 1
-          done
-
-      - name: Run integration tests (scoped to e2e binaries, not the whole workspace)
-        run: |
-          cargo test --all-features -p aether-node --test e2e_multi_validator
-          cargo test --all-features -p aether-node --test e2e_byzantine_network
-          cargo test --all-features -p aether-node --test e2e_adversarial
-
-      - name: Collect logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.test.yml logs --tail=100
-
-      - name: Stop test network
-        if: always()
-        run: docker compose -f docker-compose.test.yml down -v
 
   # ──────────────────────────────────────────────
   # Phase acceptance suites removed from CI on 2026-04-10.
