@@ -116,6 +116,14 @@ impl WasmVm {
         context: &ExecutionContext,
         input: &[u8],
     ) -> Result<ExecutionResult> {
+        if context.gas_limit > self.gas_limit {
+            bail!(
+                "context gas_limit {} exceeds VM cap {}",
+                context.gas_limit,
+                self.gas_limit
+            );
+        }
+
         // Validate WASM magic number
         if wasm_bytes.len() < 4 || &wasm_bytes[0..4] != b"\0asm" {
             bail!("invalid WASM magic number");
@@ -502,18 +510,9 @@ impl WasmVm {
         Ok(())
     }
 
-    /// Get remaining gas.
-    pub fn remaining_gas(&self) -> u64 {
+    /// Maximum gas any single execution may consume.
+    pub fn gas_limit(&self) -> u64 {
         self.gas_limit
-    }
-
-    pub fn gas_used(&self) -> u64 {
-        0 // Per-execution tracking; not stored on VM
-    }
-
-    /// Charge gas (for direct callers, not WASM).
-    pub fn charge_gas(&mut self, _amount: u64) -> Result<()> {
-        Ok(())
     }
 }
 
@@ -535,7 +534,7 @@ mod tests {
     #[test]
     fn test_vm_creation() {
         let vm = WasmVm::new(100_000).unwrap();
-        assert_eq!(vm.gas_limit, 100_000);
+        assert_eq!(vm.gas_limit(), 100_000);
     }
 
     #[test]
@@ -1265,5 +1264,47 @@ mod proptests {
             prop_assert_eq!(r1.gas_used, r2.gas_used);
             prop_assert_eq!(r1.return_data, r2.return_data);
         }
+    }
+
+    #[test]
+    fn context_gas_exceeding_vm_cap_is_rejected() {
+        let mut vm = WasmVm::new(1_000).unwrap();
+        let wasm = wat::parse_str(
+            r#"(module (func (export "execute") (param i32 i32) (result i32) i32.const 0))"#,
+        )
+        .unwrap();
+        let ctx = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_001,
+            block_number: 1,
+            timestamp: 1000,
+        };
+        let err = vm.execute(&wasm, &ctx, b"").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exceeds VM cap"),
+            "should reject context gas > VM cap, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn context_gas_at_vm_cap_is_accepted() {
+        let mut vm = WasmVm::new(1_000_000).unwrap();
+        let wasm = wat::parse_str(
+            r#"(module (func (export "execute") (param i32 i32) (result i32) i32.const 0))"#,
+        )
+        .unwrap();
+        let ctx = ExecutionContext {
+            contract_address: Address::from_slice(&[1u8; 20]).unwrap(),
+            caller: Address::from_slice(&[2u8; 20]).unwrap(),
+            value: 0,
+            gas_limit: 1_000_000,
+            block_number: 1,
+            timestamp: 1000,
+        };
+        let result = vm.execute(&wasm, &ctx, b"").unwrap();
+        assert!(result.success);
     }
 }
