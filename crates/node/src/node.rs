@@ -1146,6 +1146,36 @@ impl Node {
             }
         }
 
+        // Reject oversized blocks before expensive validation.
+        // bincode::serialized_size is O(n) but avoids full serialization allocation.
+        let block_size = bincode::serialized_size(&block).unwrap_or(u64::MAX);
+        if block_size > self.chain_config.chain.block_bytes_max {
+            bail!(
+                "block at slot {} exceeds size limit: {} bytes > {} max",
+                block.header.slot,
+                block_size,
+                self.chain_config.chain.block_bytes_max
+            );
+        }
+
+        // Reject blocks containing duplicate transaction hashes.
+        // A malicious proposer could include the same tx twice; while the
+        // second would fail during execution (nonce/UTXO), rejecting early
+        // avoids wasting execution resources and prevents state-root
+        // divergence between nodes that process duplicates differently.
+        if block.transactions.len() > 1 {
+            let mut seen_tx_hashes = HashSet::with_capacity(block.transactions.len());
+            for tx in &block.transactions {
+                if !seen_tx_hashes.insert(tx.hash()) {
+                    bail!(
+                        "block at slot {} contains duplicate transaction {}",
+                        block.header.slot,
+                        tx.hash()
+                    );
+                }
+            }
+        }
+
         // Validate block via consensus (VRF proof, locked block check)
         self.consensus.validate_block(&block)?;
 
@@ -3968,6 +3998,117 @@ mod tests {
         assert!(
             msg.contains("slot monotonicity violation"),
             "error must mention slot monotonicity, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn oversized_block_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let pubkey_bytes = keypair.public_key();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+
+        let mut config = ChainConfig::devnet();
+        // Set an artificially low block size limit so a block with transactions exceeds it.
+        config.chain.block_bytes_max = 100;
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(config),
+        )
+        .unwrap();
+
+        // Build a block whose serialized size exceeds the 100-byte limit.
+        let tx = Transaction {
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(pubkey_bytes),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            fee: 1,
+            nonce: 0,
+            data: vec![0u8; 200],
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            chain_id: 900,
+            gas_limit: 21000,
+        };
+        let block = Block::new(
+            1,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx],
+        );
+
+        let result = node.on_block_received(block);
+        assert!(result.is_err(), "oversized block must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("exceeds size limit"),
+            "error must mention size limit, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn block_with_duplicate_transactions_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let pubkey_bytes = keypair.public_key();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(pubkey_bytes),
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            fee: 1,
+            nonce: 0,
+            data: vec![],
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            chain_id: 900,
+            gas_limit: 21000,
+        };
+        // Include the same transaction twice.
+        let block = Block::new(
+            1,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx.clone(), tx],
+        );
+
+        let result = node.on_block_received(block);
+        assert!(
+            result.is_err(),
+            "block with duplicate transactions must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("duplicate transaction"),
+            "error must mention duplicate transaction, got: {msg}"
         );
     }
 
