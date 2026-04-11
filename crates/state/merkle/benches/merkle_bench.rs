@@ -113,6 +113,82 @@ fn bench_smt_incremental_update(c: &mut Criterion) {
     });
 }
 
+fn bench_smt_batch_prove(c: &mut Criterion) {
+    let mut group = c.benchmark_group("smt_batch_prove");
+    for (tree_size, proof_count) in [(100u16, 10u16), (1000, 50), (1000, 100)] {
+        let mut tree = SparseMerkleTree::new();
+        for i in 0..tree_size {
+            tree.update(make_addr(i), make_hash(i));
+        }
+        let keys: Vec<Address> = (0..proof_count).map(make_addr).collect();
+
+        group.bench_with_input(
+            criterion::BenchmarkId::new(format!("tree_{}", tree_size), proof_count),
+            &keys,
+            |b, keys| {
+                b.iter(|| {
+                    for key in keys {
+                        black_box(tree.prove(key));
+                    }
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_smt_batch_verify(c: &mut Criterion) {
+    let mut group = c.benchmark_group("smt_batch_verify");
+    for count in [10u16, 50, 100] {
+        let mut tree = SparseMerkleTree::new();
+        for i in 0..1000u16 {
+            tree.update(make_addr(i), make_hash(i));
+        }
+        let proofs: Vec<_> = (0..count).map(|i| tree.prove(&make_addr(i))).collect();
+
+        group.bench_with_input(
+            criterion::BenchmarkId::from_parameter(count),
+            &proofs,
+            |b, proofs| {
+                b.iter(|| {
+                    for proof in proofs {
+                        black_box(proof.verify());
+                    }
+                })
+            },
+        );
+    }
+    group.finish();
+}
+
+fn bench_smt_delete(c: &mut Criterion) {
+    let mut group = c.benchmark_group("smt_delete");
+    for tree_size in [100u16, 500, 1000] {
+        group.bench_with_input(
+            criterion::BenchmarkId::from_parameter(tree_size),
+            &tree_size,
+            |b, &tree_size| {
+                b.iter_with_setup(
+                    || {
+                        let mut tree = SparseMerkleTree::new();
+                        for i in 0..tree_size {
+                            tree.update(make_addr(i), make_hash(i));
+                        }
+                        tree
+                    },
+                    |mut tree| {
+                        for i in 0..tree_size / 2 {
+                            tree.delete(&make_addr(i));
+                        }
+                        black_box(tree.root());
+                    },
+                )
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_smt_insert_1,
@@ -122,5 +198,8 @@ criterion_group!(
     bench_smt_verify,
     bench_smt_root_after_updates,
     bench_smt_incremental_update,
+    bench_smt_batch_prove,
+    bench_smt_batch_verify,
+    bench_smt_delete,
 );
 criterion_main!(benches);
