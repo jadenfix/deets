@@ -302,6 +302,13 @@ impl HybridConsensus {
 
     /// Create a vote for a block (BLS signature)
     pub fn create_vote(&self, block_hash: H256, _phase: Phase) -> Result<Option<Vote>> {
+        let _span = tracing::debug_span!(
+            "create_vote",
+            slot = self.current_slot,
+            block = ?block_hash,
+        )
+        .entered();
+
         let bls_keypair = match &self.my_bls_keypair {
             Some(kp) => kp,
             None => return Ok(None), // Not a validator
@@ -386,6 +393,15 @@ impl HybridConsensus {
     /// 2. Stake verification — claimed stake must match validator registry
     /// 3. Unknown validator rejection
     pub fn process_vote(&mut self, vote: Vote) -> Result<Option<QuorumCertificate>> {
+        let _span = tracing::debug_span!(
+            "process_vote",
+            slot = vote.slot,
+            block = ?vote.block_hash,
+            voter = ?vote.validator.to_address(),
+            stake = vote.stake,
+        )
+        .entered();
+
         // Verify vote is for current slot
         if vote.slot != self.current_slot {
             bail!(
@@ -626,6 +642,13 @@ impl HybridConsensus {
 
     /// Aggregate BLS signatures from votes
     fn aggregate_votes(&self, votes: &[Vote]) -> Result<QuorumCertificate> {
+        let _span = tracing::debug_span!(
+            "aggregate_votes",
+            num_votes = votes.len(),
+            slot = votes.first().map(|v| v.slot).unwrap_or(0),
+        )
+        .entered();
+
         let signatures: Vec<Vec<u8>> = votes
             .iter()
             .map(|v| v.signature.as_bytes().to_vec())
@@ -686,6 +709,11 @@ impl HybridConsensus {
 impl crate::Finality for HybridConsensus {
     fn check_finality(&mut self, slot: Slot) -> bool {
         if slot <= self.finalized_slot && slot > self.last_reported_finalized {
+            tracing::info!(
+                slot,
+                finalized_slot = self.finalized_slot,
+                "finality confirmed"
+            );
             self.last_reported_finalized = slot;
             true
         } else {
@@ -726,6 +754,15 @@ impl ConsensusEngine for HybridConsensus {
 
         // Check for epoch transition
         if self.epoch_length > 0 && self.current_slot % self.epoch_length == 0 {
+            tracing::info!(
+                slot = self.current_slot,
+                new_epoch = self.current_epoch.saturating_add(1),
+                validators = self.validators.len(),
+                total_stake = self.total_stake,
+                vrf_updated = self.epoch_randomness_updated,
+                "epoch transition"
+            );
+
             // If no real VRF output arrived this epoch, apply deterministic fallback.
             if !self.epoch_randomness_updated {
                 let mut hasher = Sha256::new();
@@ -757,6 +794,14 @@ impl ConsensusEngine for HybridConsensus {
     }
 
     fn validate_block(&self, block: &Block) -> Result<()> {
+        let _span = tracing::debug_span!(
+            "validate_block",
+            slot = block.header.slot,
+            block = ?block.hash(),
+            proposer = ?block.header.proposer,
+        )
+        .entered();
+
         // Check slot is valid
         if block.header.slot > self.current_slot {
             bail!("block from future slot");
@@ -834,6 +879,13 @@ impl ConsensusEngine for HybridConsensus {
     }
 
     fn on_timeout(&mut self) {
+        tracing::warn!(
+            slot = self.current_slot,
+            round = self.pacemaker.current_round(),
+            phase = ?self.current_phase,
+            finalized = self.finalized_slot,
+            "consensus timeout — resetting phase"
+        );
         self.pacemaker.on_timeout();
         // On timeout, reset to Propose phase for the next slot.
         // Simply advancing one phase would leave the node in a stale phase

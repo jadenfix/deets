@@ -810,6 +810,11 @@ impl HotStuffConsensus {
 impl crate::Finality for HotStuffConsensus {
     fn check_finality(&mut self, slot: Slot) -> bool {
         if slot <= self.finalized_slot && slot > self.last_reported_finalized {
+            tracing::info!(
+                slot,
+                finalized_slot = self.finalized_slot,
+                "finality confirmed"
+            );
             self.last_reported_finalized = slot;
             true
         } else {
