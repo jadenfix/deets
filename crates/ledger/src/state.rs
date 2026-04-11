@@ -409,7 +409,9 @@ impl Ledger {
                 u128::from_le_bytes(arr)
             })
             .unwrap_or(0);
-        let new_total = current.saturating_add(amount);
+        let new_total = current
+            .checked_add(amount)
+            .ok_or_else(|| anyhow!("total_burned overflow"))?;
         self.storage
             .put(CF_METADATA, b"total_burned", &new_total.to_le_bytes())?;
         Ok(())
@@ -455,7 +457,9 @@ impl Ledger {
                     u128::from_le_bytes(arr)
                 })
                 .unwrap_or(0);
-            let new_total = current.saturating_add(burned);
+            let new_total = current
+                .checked_add(burned)
+                .ok_or_else(|| anyhow!("total_burned overflow in batch"))?;
             batch.put(
                 CF_METADATA,
                 b"total_burned".to_vec(),
@@ -475,7 +479,9 @@ impl Ledger {
                     u128::from_le_bytes(arr)
                 })
                 .unwrap_or(0);
-            let new_total = current.saturating_add(treasury_fee);
+            let new_total = current
+                .checked_add(treasury_fee)
+                .ok_or_else(|| anyhow!("total_treasury_fees overflow in batch"))?;
             batch.put(
                 CF_METADATA,
                 b"total_treasury_fees".to_vec(),
@@ -946,6 +952,23 @@ impl Ledger {
         batch.put(CF_ACCOUNTS, key, value);
         // Include state root in same atomic batch
         self.update_state_root_incremental(&account, None, Some(&mut batch))?;
+        self.storage.write_batch(batch)?;
+        Ok(())
+    }
+
+    /// Insert a UTxO directly into storage for testing.
+    /// Only available in test builds — production code creates UTxOs via transaction outputs.
+    #[cfg(test)]
+    pub fn seed_utxo(&mut self, utxo_id: &UtxoId, amount: u128, owner: Address) -> Result<()> {
+        let utxo = aether_types::Utxo {
+            amount,
+            owner,
+            script_hash: None,
+        };
+        let mut batch = StorageBatch::new();
+        let key = bincode::serialize(utxo_id)?;
+        let value = bincode::serialize(&utxo)?;
+        batch.put(CF_UTXOS, key, value);
         self.storage.write_batch(batch)?;
         Ok(())
     }

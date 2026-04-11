@@ -75,6 +75,8 @@ pub fn aggregate_public_keys(public_keys: &[Vec<u8>]) -> Result<Vec<u8>> {
 }
 
 /// Check if a signature is aggregated (has multiple signers)
+#[inline]
+#[must_use]
 pub fn is_aggregated(signature: &[u8]) -> bool {
     if signature.len() != 96 {
         return false;

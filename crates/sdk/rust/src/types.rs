@@ -3,6 +3,53 @@ use serde_json::Value;
 
 use aether_types::{Address, H256};
 
+/// Summary of a block as returned by `aeth_getBlockByHash` / `aeth_getBlockByNumber`.
+/// Fields mirror the server's JSON serialization of `aether_types::Block`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RpcBlock {
+    pub hash: H256,
+    pub parent_hash: H256,
+    pub slot: u64,
+    pub proposer: Address,
+    #[serde(default)]
+    pub transactions: Vec<Value>,
+}
+
+/// Transaction receipt as returned by `aeth_getTransactionReceipt`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RpcReceipt {
+    pub tx_hash: H256,
+    pub block_hash: H256,
+    pub slot: u64,
+    pub status: Value,
+    pub gas_used: u64,
+}
+
+/// Account state as returned by `aeth_getAccount`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RpcAccount {
+    pub address: Address,
+    pub balance: u128,
+    pub nonce: u64,
+    #[serde(default)]
+    pub stake: u128,
+}
+
+/// Node health response from `aeth_health`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NodeHealth {
+    /// `"ok"` when fully synced, `"syncing"` when catching up.
+    pub status: String,
+    pub version: String,
+    #[serde(rename = "latestSlot")]
+    pub latest_slot: u64,
+    #[serde(rename = "finalizedSlot")]
+    pub finalized_slot: u64,
+    #[serde(rename = "peerCount")]
+    pub peer_count: usize,
+    pub sync: Value,
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }

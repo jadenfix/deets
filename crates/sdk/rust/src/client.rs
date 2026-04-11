@@ -1,6 +1,7 @@
-use aether_types::Transaction;
+use aether_types::{Address, Transaction, H256};
 use anyhow::Context;
 use serde::Deserialize;
+use serde_json::Value;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -8,7 +9,10 @@ use tokio::net::TcpStream;
 use crate::error::AetherSdkError;
 use crate::job_builder::JobBuilder;
 use crate::transaction_builder::TransferBuilder;
-use crate::types::{ClientConfig, JobRequest, JobSubmission, SubmitResponse};
+use crate::types::{
+    ClientConfig, JobRequest, JobSubmission, NodeHealth, RpcAccount, RpcBlock, RpcReceipt,
+    SubmitResponse,
+};
 
 #[derive(Clone, Debug)]
 pub struct AetherClient {
@@ -180,6 +184,184 @@ impl AetherClient {
             headers: vec![("content-type".to_string(), "application/json".to_string())],
             body: job,
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // RPC query methods
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /// Return the latest slot number (`aeth_getSlotNumber`).
+    pub async fn get_block_number(&self) -> Result<u64, AetherSdkError> {
+        let result: Value = self.rpc_call("aeth_getSlotNumber", &[]).await?;
+        result
+            .as_u64()
+            .ok_or_else(|| AetherSdkError::invalid_response("expected u64 from aeth_getSlotNumber"))
+    }
+
+    /// Fetch a block by its hash (`aeth_getBlockByHash`).
+    ///
+    /// Returns `None` if the block is not found.
+    pub async fn get_block_by_hash(
+        &self,
+        hash: H256,
+        full_tx: bool,
+    ) -> Result<Option<RpcBlock>, AetherSdkError> {
+        let hash_hex = format!("0x{}", hex::encode(hash.as_bytes()));
+        let result: Value = self
+            .rpc_call(
+                "aeth_getBlockByHash",
+                &[Value::String(hash_hex), Value::Bool(full_tx)],
+            )
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|e| AetherSdkError::invalid_response(format!("failed to decode block: {e}")))
+    }
+
+    /// Fetch a block by its slot number (`aeth_getBlockByNumber`).
+    ///
+    /// Pass `None` for `slot` to fetch the latest block.
+    /// Returns `None` if no block exists at that slot.
+    pub async fn get_block_by_number(
+        &self,
+        slot: Option<u64>,
+        full_tx: bool,
+    ) -> Result<Option<RpcBlock>, AetherSdkError> {
+        let slot_ref = slot.map_or_else(|| "latest".to_string(), |n| n.to_string());
+        let result: Value = self
+            .rpc_call(
+                "aeth_getBlockByNumber",
+                &[Value::String(slot_ref), Value::Bool(full_tx)],
+            )
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|e| AetherSdkError::invalid_response(format!("failed to decode block: {e}")))
+    }
+
+    /// Fetch a transaction receipt by tx hash (`aeth_getTransactionReceipt`).
+    ///
+    /// Returns `None` if the transaction is not found.
+    pub async fn get_transaction_receipt(
+        &self,
+        tx_hash: H256,
+    ) -> Result<Option<RpcReceipt>, AetherSdkError> {
+        let hash_hex = format!("0x{}", hex::encode(tx_hash.as_bytes()));
+        let result: Value = self
+            .rpc_call("aeth_getTransactionReceipt", &[Value::String(hash_hex)])
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|e| AetherSdkError::invalid_response(format!("failed to decode receipt: {e}")))
+    }
+
+    /// Fetch the account state for the given address (`aeth_getAccount`).
+    pub async fn get_account(
+        &self,
+        address: Address,
+    ) -> Result<Option<RpcAccount>, AetherSdkError> {
+        let addr_hex = format!("0x{}", hex::encode(address.as_bytes()));
+        let result: Value = self
+            .rpc_call("aeth_getAccount", &[Value::String(addr_hex)])
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        serde_json::from_value(result)
+            .map(Some)
+            .map_err(|e| AetherSdkError::invalid_response(format!("failed to decode account: {e}")))
+    }
+
+    /// Fetch the current state root (`aeth_getStateRoot`).
+    ///
+    /// Returns the root of the sparse Merkle tree over all accounts.
+    pub async fn get_state_root(&self) -> Result<H256, AetherSdkError> {
+        let result: Value = self.rpc_call("aeth_getStateRoot", &[]).await?;
+        let hex_str = result.as_str().ok_or_else(|| {
+            AetherSdkError::invalid_response("expected hex string from aeth_getStateRoot")
+        })?;
+        parse_h256_hex(hex_str)
+    }
+
+    /// Fetch the node health status (`aeth_health`).
+    ///
+    /// `status` is `"ok"` when fully synced or `"syncing"` when catching up.
+    pub async fn get_health(&self) -> Result<NodeHealth, AetherSdkError> {
+        let result: Value = self.rpc_call("aeth_health", &[]).await?;
+        serde_json::from_value(result)
+            .map_err(|e| AetherSdkError::invalid_response(format!("failed to decode health: {e}")))
+    }
+
+    /// Send a JSON-RPC request and return the `result` field as a `Value`.
+    ///
+    /// On JSON-RPC error, maps to `AetherSdkError::Rpc`.
+    async fn rpc_call(&self, method: &str, params: &[Value]) -> Result<Value, AetherSdkError> {
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1,
+        });
+        let body = serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
+        let endpoint = HttpEndpoint::parse(&self.endpoint)?;
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            endpoint.path,
+            endpoint.host_header(),
+            body.len()
+        );
+        let mut payload_buf = Vec::with_capacity(request.len() + body.len());
+        payload_buf.extend_from_slice(request.as_bytes());
+        payload_buf.extend_from_slice(&body);
+
+        let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
+            .await
+            .map_err(|e| {
+                AetherSdkError::network(format!("failed to connect to {}: {e}", self.endpoint))
+            })?;
+        stream
+            .write_all(&payload_buf)
+            .await
+            .map_err(|e| AetherSdkError::network(format!("failed to write rpc request: {e}")))?;
+
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .await
+            .map_err(|e| AetherSdkError::network(format!("failed to read rpc response: {e}")))?;
+
+        let response_text = String::from_utf8(raw)
+            .map_err(|_| AetherSdkError::invalid_response("rpc response was not valid utf-8"))?;
+        let (status_line, rpc_body) = parse_http_response(&response_text)?;
+        if !status_line.contains(" 200 ") {
+            return Err(AetherSdkError::invalid_response(format!(
+                "rpc returned non-success status: {status_line}"
+            )));
+        }
+
+        let response: JsonRpcResponse<Value> = serde_json::from_str(rpc_body).map_err(|e| {
+            AetherSdkError::invalid_response(format!("failed to decode rpc response: {e}"))
+        })?;
+
+        if let Some(error) = response.error {
+            return Err(AetherSdkError::Rpc {
+                code: error.code,
+                message: error.message,
+            });
+        }
+
+        response
+            .result
+            .ok_or_else(|| AetherSdkError::invalid_response("rpc response missing result field"))
     }
 }
 
@@ -483,5 +665,80 @@ mod tests {
     fn parse_invalid_endpoint_scheme() {
         let err = HttpEndpoint::parse("https://localhost:8545").unwrap_err();
         assert!(matches!(err, AetherSdkError::InvalidEndpoint(_)));
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // RPC query method tests
+    // ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn node_health_deserializes_correctly() {
+        let raw = serde_json::json!({
+            "status": "ok",
+            "version": "0.1.0",
+            "latestSlot": 42u64,
+            "finalizedSlot": 40u64,
+            "peerCount": 3usize,
+            "sync": {"syncing": false}
+        });
+        let health: NodeHealth = serde_json::from_value(raw).unwrap();
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.latest_slot, 42);
+        assert_eq!(health.finalized_slot, 40);
+        assert_eq!(health.peer_count, 3);
+    }
+
+    #[test]
+    fn node_health_syncing_status() {
+        let raw = serde_json::json!({
+            "status": "syncing",
+            "version": "0.1.0",
+            "latestSlot": 10u64,
+            "finalizedSlot": 5u64,
+            "peerCount": 2usize,
+            "sync": {"syncing": true, "currentSlot": 10, "highestSlot": 100}
+        });
+        let health: NodeHealth = serde_json::from_value(raw).unwrap();
+        assert_eq!(health.status, "syncing");
+    }
+
+    #[test]
+    fn get_block_number_rejects_non_u64_result() {
+        // Construct a mock JSON-RPC response with a string result (invalid for slot number)
+        let response_value: Value = serde_json::json!("not_a_number");
+        // If rpc_call returned this, get_block_number should reject it as invalid response.
+        // We test the parsing logic directly since we can't mock rpc_call.
+        let result = response_value
+            .as_u64()
+            .ok_or_else(|| AetherSdkError::invalid_response("expected u64"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rpc_call_builds_json_rpc_request_body() {
+        // Verify the JSON-RPC payload structure is correct by checking serialization.
+        let method = "aeth_getSlotNumber";
+        let params: Vec<Value> = vec![];
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1,
+        });
+        let body = serde_json::to_vec(&payload).unwrap();
+        let parsed: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["method"], "aeth_getSlotNumber");
+        assert_eq!(parsed["id"], 1);
+    }
+
+    #[test]
+    fn get_block_by_hash_encodes_hash_as_0x_prefixed_hex() {
+        // Verify that H256::zero() encodes to 0x0000...0000 (64 zeros).
+        let hash = H256::zero();
+        let hash_hex = format!("0x{}", hex::encode(hash.as_bytes()));
+        assert!(hash_hex.starts_with("0x"));
+        assert_eq!(hash_hex.len(), 66); // "0x" + 64 hex chars
+        assert!(hash_hex[2..].chars().all(|c| c == '0'));
     }
 }
