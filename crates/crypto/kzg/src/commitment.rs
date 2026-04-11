@@ -101,6 +101,7 @@ impl KzgVerifier {
     ///
     /// Each coefficient is a 32-byte scalar (BLS12-381 field element).
     /// C = Σ_i coeff_i * [τ^i]_1
+    #[must_use = "commitment result must be checked for errors"]
     pub fn commit(&self, coefficients: &[ScalarBytes]) -> Result<KzgCommitment> {
         if coefficients.is_empty() {
             bail!("empty coefficients");
@@ -126,6 +127,7 @@ impl KzgVerifier {
     ///
     /// Computes the quotient polynomial Q(x) = (P(x) - y) / (x - z)
     /// and returns π = [Q(τ)]_1 along with y = P(z).
+    #[must_use = "proof result must be checked for errors"]
     pub fn create_proof(&self, coefficients: &[ScalarBytes], z: &ScalarBytes) -> Result<KzgProof> {
         if coefficients.is_empty() {
             bail!("empty coefficients");
@@ -202,6 +204,7 @@ impl KzgVerifier {
     }
 
     /// Batch verify multiple proofs using random linear combination.
+    #[must_use = "batch verification result must be checked"]
     pub fn batch_verify(
         &self,
         commitments: &[KzgCommitment],
@@ -238,7 +241,8 @@ pub type ScalarBytes = [u8; 32];
 
 fn scalar_from_bytes(bytes: &[u8; 32]) -> blst_fr {
     let mut scalar = blst_fr::default();
-    // blst expects little-endian scalar bytes
+    // SAFETY: blst_fr_from_uint64 reads exactly 4 u64s from the pointer;
+    // bytes_to_u64_array returns a stack-owned [u64; 4] whose .as_ptr() is valid for the call.
     unsafe {
         blst::blst_fr_from_uint64(&mut scalar, bytes_to_u64_array(bytes).as_ptr());
     }
@@ -247,6 +251,8 @@ fn scalar_from_bytes(bytes: &[u8; 32]) -> blst_fr {
 
 fn scalar_to_bytes(s: &blst_fr) -> Vec<u8> {
     let mut out = [0u64; 4];
+    // SAFETY: blst_uint64_from_fr writes exactly 4 u64s to the output pointer;
+    // `out` is a stack-owned [u64; 4] with sufficient alignment and size.
     unsafe {
         blst::blst_uint64_from_fr(out.as_mut_ptr(), s);
     }
@@ -265,6 +271,7 @@ fn scalar_one() -> blst_fr {
 
 fn scalar_mul(a: &blst_fr, b: &blst_fr) -> blst_fr {
     let mut result = blst_fr::default();
+    // SAFETY: all three arguments are valid blst_fr values; blst_fr_mul writes to `result`.
     unsafe {
         blst::blst_fr_mul(&mut result, a, b);
     }
@@ -273,6 +280,7 @@ fn scalar_mul(a: &blst_fr, b: &blst_fr) -> blst_fr {
 
 fn scalar_sub(a: &blst_fr, b: &blst_fr) -> blst_fr {
     let mut result = blst_fr::default();
+    // SAFETY: all three arguments are valid blst_fr values; blst_fr_sub writes to `result`.
     unsafe {
         blst::blst_fr_sub(&mut result, a, b);
     }
@@ -281,6 +289,7 @@ fn scalar_sub(a: &blst_fr, b: &blst_fr) -> blst_fr {
 
 fn scalar_add(a: &blst_fr, b: &blst_fr) -> blst_fr {
     let mut result = blst_fr::default();
+    // SAFETY: all three arguments are valid blst_fr values; blst_fr_add writes to `result`.
     unsafe {
         blst::blst_fr_add(&mut result, a, b);
     }
@@ -288,24 +297,31 @@ fn scalar_add(a: &blst_fr, b: &blst_fr) -> blst_fr {
 }
 
 fn g1_generator() -> blst_p1 {
+    // SAFETY: blst_p1_generator returns a pointer to a static constant; dereferencing
+    // and copying it is always valid (the pointee is 'static and correctly aligned).
     unsafe { *blst::blst_p1_generator() }
 }
 
 fn g2_generator() -> blst_p2 {
+    // SAFETY: blst_p2_generator returns a pointer to a static constant; dereferencing
+    // and copying it is always valid (the pointee is 'static and correctly aligned).
     unsafe { *blst::blst_p2_generator() }
 }
 
 fn g1_scalar_mul(point: &blst_p1, scalar: &blst_fr) -> blst_p1 {
     let mut result = blst_p1::default();
-    // Convert scalar to 256-bit representation
     let mut scalar_bytes = [0u8; 32];
     let mut limbs = [0u64; 4];
+    // SAFETY: blst_uint64_from_fr writes exactly 4 u64s to the output pointer;
+    // `limbs` is a stack-owned [u64; 4] with sufficient size and alignment.
     unsafe {
         blst::blst_uint64_from_fr(limbs.as_mut_ptr(), scalar);
     }
     for (i, limb) in limbs.iter().enumerate() {
         scalar_bytes[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_le_bytes());
     }
+    // SAFETY: blst_p1_mult reads `point` and 256 bits (32 bytes) from `scalar_bytes`;
+    // both are stack-owned with correct sizes. Writes result to `result`.
     unsafe {
         blst::blst_p1_mult(&mut result, point, scalar_bytes.as_ptr(), 256);
     }
@@ -316,12 +332,15 @@ fn g2_scalar_mul(point: &blst_p2, scalar: &blst_fr) -> blst_p2 {
     let mut result = blst_p2::default();
     let mut scalar_bytes = [0u8; 32];
     let mut limbs = [0u64; 4];
+    // SAFETY: blst_uint64_from_fr writes exactly 4 u64s; `limbs` has correct size/alignment.
     unsafe {
         blst::blst_uint64_from_fr(limbs.as_mut_ptr(), scalar);
     }
     for (i, limb) in limbs.iter().enumerate() {
         scalar_bytes[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_le_bytes());
     }
+    // SAFETY: blst_p2_mult reads `point` and 256 bits from `scalar_bytes`;
+    // both are valid and correctly sized. Writes result to `result`.
     unsafe {
         blst::blst_p2_mult(&mut result, point, scalar_bytes.as_ptr(), 256);
     }
@@ -330,6 +349,9 @@ fn g2_scalar_mul(point: &blst_p2, scalar: &blst_fr) -> blst_p2 {
 
 fn g1_add(a: &blst_p1, b: &blst_p1) -> blst_p1 {
     let mut result = blst_p1::default();
+    // SAFETY: blst_p1_to_affine converts a valid projective point to affine;
+    // blst_p1_add_or_double_affine adds two valid G1 points. All arguments are
+    // stack-owned with correct types.
     unsafe {
         let mut b_aff = blst_p1_affine::default();
         blst::blst_p1_to_affine(&mut b_aff, b);
@@ -340,6 +362,8 @@ fn g1_add(a: &blst_p1, b: &blst_p1) -> blst_p1 {
 
 fn g1_sub(a: &blst_p1, b: &blst_p1) -> blst_p1 {
     let mut neg_b = *b;
+    // SAFETY: blst_p1_cneg conditionally negates a valid G1 point in-place;
+    // `neg_b` is a stack-owned copy of `b`.
     unsafe {
         blst::blst_p1_cneg(&mut neg_b, true);
     }
@@ -348,10 +372,13 @@ fn g1_sub(a: &blst_p1, b: &blst_p1) -> blst_p1 {
 
 fn g2_sub(a: &blst_p2, b: &blst_p2) -> blst_p2 {
     let mut neg_b = *b;
+    // SAFETY: blst_p2_cneg conditionally negates a valid G2 point in-place.
     unsafe {
         blst::blst_p2_cneg(&mut neg_b, true);
     }
     let mut result = blst_p2::default();
+    // SAFETY: blst_p2_to_affine and blst_p2_add_or_double_affine operate on valid
+    // G2 points; all arguments are stack-owned with correct types.
     unsafe {
         let mut neg_b_aff = blst_p2_affine::default();
         blst::blst_p2_to_affine(&mut neg_b_aff, &neg_b);
@@ -362,6 +389,8 @@ fn g2_sub(a: &blst_p2, b: &blst_p2) -> blst_p2 {
 
 fn compress_g1(point: &blst_p1) -> Vec<u8> {
     let mut compressed = [0u8; 48];
+    // SAFETY: blst_p1_compress writes exactly 48 bytes to the output pointer;
+    // `compressed` is a stack-owned [u8; 48] with sufficient size.
     unsafe {
         blst::blst_p1_compress(compressed.as_mut_ptr(), point);
     }
@@ -373,11 +402,15 @@ fn decompress_g1(bytes: &[u8]) -> Result<blst_p1> {
         bail!("G1 point must be 48 bytes");
     }
     let mut affine = blst_p1_affine::default();
+    // SAFETY: blst_p1_uncompress reads exactly 48 bytes from the pointer (length
+    // validated above) and writes to `affine`. Returns an error code on invalid input.
     let err = unsafe { blst::blst_p1_uncompress(&mut affine, bytes.as_ptr()) };
     if err != blst::BLST_ERROR::BLST_SUCCESS {
         bail!("failed to decompress G1 point: {:?}", err);
     }
     let mut point = blst_p1::default();
+    // SAFETY: blst_p1_from_affine converts a validated affine point (uncompress
+    // succeeded above) to projective coordinates.
     unsafe {
         blst::blst_p1_from_affine(&mut point, &affine);
     }
@@ -468,16 +501,18 @@ fn compute_quotient(
 /// Implemented as: e(a1, a2) * e(-b1, b2) == 1
 fn pairing_check(a1: &blst_p1, a2: &blst_p2, b1: &blst_p1, b2: &blst_p2) -> bool {
     let mut neg_b1 = *b1;
+    // SAFETY: blst_p1_cneg conditionally negates a valid G1 point in-place.
     unsafe {
         blst::blst_p1_cneg(&mut neg_b1, true);
     }
 
-    // Convert to affine
     let mut a1_aff = blst_p1_affine::default();
     let mut a2_aff = blst_p2_affine::default();
     let mut neg_b1_aff = blst_p1_affine::default();
     let mut b2_aff = blst_p2_affine::default();
 
+    // SAFETY: blst_p{1,2}_to_affine convert valid projective points to affine;
+    // all arguments are stack-owned with correct types and sizes.
     unsafe {
         blst::blst_p1_to_affine(&mut a1_aff, a1);
         blst::blst_p2_to_affine(&mut a2_aff, a2);
@@ -485,25 +520,22 @@ fn pairing_check(a1: &blst_p1, a2: &blst_p2, b1: &blst_p1, b2: &blst_p2) -> bool
         blst::blst_p2_to_affine(&mut b2_aff, b2);
     }
 
-    // Compute product of pairings
     let mut pairing = blst::blst_fp12::default();
+    // SAFETY: blst_miller_loop, blst_fp12_mul, blst_final_exp, and blst_fp12_is_one
+    // operate on valid affine/fp12 values. All arguments are stack-owned. The pairing
+    // computation is deterministic and cannot produce UB for any valid curve points.
     unsafe {
-        // Miller loop for first pair
         let mut ml1 = blst::blst_fp12::default();
         blst::blst_miller_loop(&mut ml1, &a2_aff, &a1_aff);
 
-        // Miller loop for second pair
         let mut ml2 = blst::blst_fp12::default();
         blst::blst_miller_loop(&mut ml2, &b2_aff, &neg_b1_aff);
 
-        // Multiply
         blst::blst_fp12_mul(&mut pairing, &ml1, &ml2);
 
-        // Final exponentiation
         let mut result = blst::blst_fp12::default();
         blst::blst_final_exp(&mut result, &pairing);
 
-        // Check if result is 1 (identity)
         blst::blst_fp12_is_one(&result)
     }
 }
