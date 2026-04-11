@@ -15,6 +15,9 @@ pub const CF_METADATA: &str = "metadata";
 /// Key: 8-byte big-endian slot + serialized UtxoId. Value: serialized SpentUtxoRecord.
 /// Pruned at epoch boundaries based on retention_epochs.
 pub const CF_SPENT_UTXOS: &str = "spent_utxos";
+/// Persists the staking state (validators, delegations, unbonding queue) so that
+/// slashing effects survive node restarts. Single key: "staking_state".
+pub const CF_STAKING: &str = "staking";
 
 type DbIterator<'a> = Box<dyn Iterator<Item = (Box<[u8]>, Box<[u8]>)> + 'a>;
 
@@ -49,6 +52,7 @@ impl Storage {
             ColumnFamilyDescriptor::new(CF_RECEIPTS, Self::receipts_opts(&block_cache)),
             ColumnFamilyDescriptor::new(CF_METADATA, Self::metadata_opts(&block_cache)),
             ColumnFamilyDescriptor::new(CF_SPENT_UTXOS, Self::spent_utxos_opts(&block_cache)),
+            ColumnFamilyDescriptor::new(CF_STAKING, Self::metadata_opts(&block_cache)),
         ];
 
         let db = DB::open_cf_descriptors(&opts, path, cfs).context("failed to open database")?;

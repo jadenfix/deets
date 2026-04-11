@@ -9,6 +9,7 @@
 // ============================================================================
 
 use aether_crypto_vrf::VrfProof;
+pub use aether_crypto_vrf::{VrfSigner, VrfVerifier};
 use aether_types::{Block, PublicKey, Slot, Vote, H256};
 use anyhow::Result;
 

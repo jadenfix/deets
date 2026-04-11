@@ -8,10 +8,15 @@ use anyhow::{bail, Result};
 /// Maximum number of in-flight blocks to prevent memory exhaustion DoS.
 const MAX_PENDING_BLOCKS: usize = 64;
 
+/// Maximum aggregate bytes of pending shred payloads (128 MiB).
+/// Bounds total memory a malicious peer can force the receiver to hold.
+const MAX_PENDING_BYTES: usize = 128 * 1024 * 1024;
+
 pub struct TurbineReceiver {
     decoder: ReedSolomonDecoder,
     pending: HashMap<H256, Vec<Option<Vec<u8>>>>,
     pending_order: VecDeque<H256>,
+    pending_bytes: usize,
 }
 
 impl TurbineReceiver {
@@ -20,17 +25,33 @@ impl TurbineReceiver {
             decoder: ReedSolomonDecoder::new(data_shards, parity_shards)?,
             pending: HashMap::new(),
             pending_order: VecDeque::new(),
+            pending_bytes: 0,
         })
+    }
+
+    fn block_bytes(shards: &[Option<Vec<u8>>]) -> usize {
+        shards
+            .iter()
+            .map(|s| s.as_ref().map_or(0, |v| v.len()))
+            .sum()
     }
 
     fn evict_oldest_pending(&mut self) {
         if let Some(block_id) = self.pending_order.pop_front() {
-            self.pending.remove(&block_id);
+            if let Some(shards) = self.pending.remove(&block_id) {
+                self.pending_bytes = self
+                    .pending_bytes
+                    .saturating_sub(Self::block_bytes(&shards));
+            }
         }
     }
 
     fn remove_pending(&mut self, block_id: &H256) {
-        self.pending.remove(block_id);
+        if let Some(shards) = self.pending.remove(block_id) {
+            self.pending_bytes = self
+                .pending_bytes
+                .saturating_sub(Self::block_bytes(&shards));
+        }
         self.pending_order.retain(|queued| queued != block_id);
     }
 
@@ -46,10 +67,19 @@ impl TurbineReceiver {
             );
         }
 
+        let payload_len = shred.payload.len();
+
+        if self.pending_bytes.saturating_add(payload_len) > MAX_PENDING_BYTES {
+            bail!(
+                "pending data limit exceeded ({} + {} > {})",
+                self.pending_bytes,
+                payload_len,
+                MAX_PENDING_BYTES
+            );
+        }
+
         let is_new_block = !self.pending.contains_key(&shred.block_id);
 
-        // Keep the receiver bounded, but evict stale in-flight work instead of
-        // permanently rejecting honest new blocks once the map is full.
         if is_new_block && self.pending.len() >= MAX_PENDING_BLOCKS {
             self.evict_oldest_pending();
         }
@@ -63,7 +93,11 @@ impl TurbineReceiver {
             self.pending_order.push_back(shred.block_id);
         }
 
+        if let Some(old) = entry[shred_idx].take() {
+            self.pending_bytes = self.pending_bytes.saturating_sub(old.len());
+        }
         entry[shred_idx] = Some(shred.payload.clone());
+        self.pending_bytes = self.pending_bytes.saturating_add(payload_len);
 
         if entry.iter().filter(|chunk| chunk.is_some()).count() < data_shards {
             return Ok(None);
@@ -130,5 +164,63 @@ mod tests {
         let second = make_shred(newest_block, 1, &shards[1]);
         let recovered = receiver.ingest_shred(second).unwrap().unwrap();
         assert_eq!(recovered, b"hello ");
+    }
+
+    #[test]
+    fn rejects_shred_when_pending_bytes_exceeded() {
+        let mut receiver = TurbineReceiver::new(2, 1).unwrap();
+        // Fill pending_bytes to just under the limit
+        receiver.pending_bytes = MAX_PENDING_BYTES - 10;
+
+        let block_id = H256::zero();
+        let large_payload = vec![0xAA; 64];
+        let shred = make_shred(block_id, 0, &large_payload);
+        let err = receiver.ingest_shred(shred).unwrap_err();
+        assert!(
+            err.to_string().contains("pending data limit exceeded"),
+            "expected pending data limit error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn pending_bytes_tracks_eviction() {
+        let encoder = aether_da_erasure::ReedSolomonEncoder::new(2, 1).unwrap();
+        let shards = encoder.encode(b"hello ").unwrap();
+
+        let mut receiver = TurbineReceiver::new(2, 1).unwrap();
+        let block_id = H256::zero();
+        let s1 = make_shred(block_id, 0, &shards[0]);
+        receiver.ingest_shred(s1).unwrap();
+        assert!(receiver.pending_bytes > 0);
+
+        let bytes_before = receiver.pending_bytes;
+        receiver.evict_oldest_pending();
+        assert_eq!(
+            receiver.pending_bytes,
+            bytes_before.saturating_sub(shards[0].len())
+        );
+    }
+
+    #[test]
+    fn pending_bytes_freed_on_successful_decode() {
+        let encoder = aether_da_erasure::ReedSolomonEncoder::new(2, 1).unwrap();
+        let data = b"hello ";
+        let shards = encoder.encode(data).unwrap();
+
+        let mut receiver = TurbineReceiver::new(2, 1).unwrap();
+        let block_id = H256::zero();
+        receiver
+            .ingest_shred(make_shred(block_id, 0, &shards[0]))
+            .unwrap();
+        assert!(receiver.pending_bytes > 0);
+
+        receiver
+            .ingest_shred(make_shred(block_id, 1, &shards[1]))
+            .unwrap();
+        assert_eq!(
+            receiver.pending_bytes, 0,
+            "successful decode should free pending bytes"
+        );
     }
 }
