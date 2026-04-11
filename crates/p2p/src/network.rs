@@ -13,7 +13,7 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Topics for Aether network gossip.
@@ -68,11 +68,43 @@ struct AetherBehaviour {
 /// Ban duration for misbehaving peers (1 hour).
 const BAN_DURATION_SECS: u64 = 3600;
 
-/// Maximum number of entries in the banned_peers map. Prevents unbounded memory
-/// growth if an attacker rotates PeerIDs to trigger many distinct bans. When the
-/// cap is reached, expired entries are purged first; if still over limit, the
-/// oldest (soonest-to-expire) bans are evicted.
 const MAX_BANNED_PEERS: usize = 4096;
+
+const RATE_LIMIT_TOKENS: u32 = 100;
+const RATE_LIMIT_REFILL_INTERVAL: Duration = Duration::from_secs(1);
+const RATE_LIMIT_PENALTY: i32 = -20;
+const MAX_RATE_LIMITERS: usize = 1024;
+
+struct PeerRateLimiter {
+    tokens: u32,
+    last_refill: Instant,
+}
+
+impl PeerRateLimiter {
+    fn new() -> Self {
+        Self {
+            tokens: RATE_LIMIT_TOKENS,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn try_consume(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill);
+        if elapsed >= RATE_LIMIT_REFILL_INTERVAL {
+            let refills = (elapsed.as_millis() / RATE_LIMIT_REFILL_INTERVAL.as_millis()) as u32;
+            self.tokens =
+                RATE_LIMIT_TOKENS.min(self.tokens.saturating_add(refills * RATE_LIMIT_TOKENS));
+            self.last_refill = now;
+        }
+        if self.tokens > 0 {
+            self.tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 pub struct P2PNetwork {
     swarm: Swarm<AetherBehaviour>,
@@ -83,6 +115,7 @@ pub struct P2PNetwork {
     peers: HashMap<PeerId, PeerInfo>,
     /// Banned peers with expiry timestamps. Peers cannot reconnect until ban expires.
     banned_peers: HashMap<PeerId, u64>,
+    rate_limiters: HashMap<PeerId, PeerRateLimiter>,
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +196,7 @@ impl P2PNetwork {
             event_rx,
             peers: HashMap::new(),
             banned_peers: HashMap::new(),
+            rate_limiters: HashMap::new(),
         })
     }
 
@@ -304,6 +338,13 @@ impl P2PNetwork {
                         let _ = self.swarm.disconnect_peer_id(propagation_source);
                         continue;
                     }
+
+                    if !self.check_rate_limit(&propagation_source) {
+                        P2P_METRICS.messages_dropped_rate_limited.inc();
+                        self.update_peer_score(&propagation_source, RATE_LIMIT_PENALTY);
+                        continue;
+                    }
+
                     let topic = message.topic.to_string();
                     let data = message.data;
                     let size = data.len();
@@ -379,6 +420,7 @@ impl P2PNetwork {
                 }
                 SwarmEvent::ConnectionClosed { peer_id, .. } => {
                     self.peers.remove(&peer_id);
+                    self.rate_limiters.remove(&peer_id);
                     NET_METRICS.peers_connected.set(self.peers.len() as i64);
                     return Some(NetworkEvent::PeerDisconnected(peer_id));
                 }
@@ -402,12 +444,26 @@ impl P2PNetwork {
                 self.banned_peers.insert(*peer_id, ban_expiry);
                 let _ = self.swarm.disconnect_peer_id(*peer_id);
                 self.peers.remove(peer_id);
+                self.rate_limiters.remove(peer_id);
                 // Prevent unbounded growth of the ban list.
                 if self.banned_peers.len() > MAX_BANNED_PEERS {
                     self.prune_banned_peers();
                 }
             }
         }
+    }
+
+    fn check_rate_limit(&mut self, peer_id: &PeerId) -> bool {
+        if self.rate_limiters.len() >= MAX_RATE_LIMITERS
+            && !self.rate_limiters.contains_key(peer_id)
+        {
+            self.rate_limiters
+                .retain(|pid, _| self.peers.contains_key(pid));
+        }
+        self.rate_limiters
+            .entry(*peer_id)
+            .or_insert_with(PeerRateLimiter::new)
+            .try_consume()
     }
 
     /// Check if a peer is currently banned.
@@ -695,6 +751,112 @@ mod tests {
             assert_eq!(network.banned_peers.len(), MAX_BANNED_PEERS + 100);
             network.prune_banned_peers();
             assert_eq!(network.banned_peers.len(), MAX_BANNED_PEERS);
+        });
+    }
+
+    #[test]
+    fn test_rate_limiter_allows_up_to_limit() {
+        let mut limiter = PeerRateLimiter::new();
+        for _ in 0..RATE_LIMIT_TOKENS {
+            assert!(limiter.try_consume());
+        }
+        assert!(!limiter.try_consume());
+    }
+
+    #[test]
+    fn test_rate_limiter_refills_after_interval() {
+        let mut limiter = PeerRateLimiter::new();
+        for _ in 0..RATE_LIMIT_TOKENS {
+            limiter.try_consume();
+        }
+        assert!(!limiter.try_consume());
+        limiter.last_refill = Instant::now() - RATE_LIMIT_REFILL_INTERVAL;
+        assert!(limiter.try_consume());
+    }
+
+    #[test]
+    fn test_peer_rate_limit_check() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            for _ in 0..RATE_LIMIT_TOKENS {
+                assert!(network.check_rate_limit(&peer_id));
+            }
+            assert!(!network.check_rate_limit(&peer_id));
+            assert_eq!(network.rate_limiters.len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_rate_limiter_cleaned_on_disconnect() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            network.check_rate_limit(&peer_id);
+            assert!(network.rate_limiters.contains_key(&peer_id));
+
+            network.rate_limiters.remove(&peer_id);
+            assert!(!network.rate_limiters.contains_key(&peer_id));
+        });
+    }
+
+    #[test]
+    fn test_rate_limit_triggers_score_penalty() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let peer_id = PeerId::random();
+
+            network.peers.insert(
+                peer_id,
+                PeerInfo {
+                    id: peer_id.to_string(),
+                    address: String::new(),
+                    score: 0,
+                    connected_at: current_timestamp(),
+                },
+            );
+
+            for _ in 0..RATE_LIMIT_TOKENS {
+                network.check_rate_limit(&peer_id);
+            }
+            assert!(!network.check_rate_limit(&peer_id));
+            network.update_peer_score(&peer_id, RATE_LIMIT_PENALTY);
+
+            let score = network.peers.get(&peer_id).map(|p| p.score).unwrap_or(0);
+            assert_eq!(score, RATE_LIMIT_PENALTY);
+        });
+    }
+
+    #[test]
+    fn test_rate_limiter_map_bounded() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+
+            for _ in 0..MAX_RATE_LIMITERS {
+                let peer_id = PeerId::random();
+                network.peers.insert(
+                    peer_id,
+                    PeerInfo {
+                        id: peer_id.to_string(),
+                        address: String::new(),
+                        score: 0,
+                        connected_at: current_timestamp(),
+                    },
+                );
+                network.check_rate_limit(&peer_id);
+            }
+            assert_eq!(network.rate_limiters.len(), MAX_RATE_LIMITERS);
+
+            let extra_peer = PeerId::random();
+            network.check_rate_limit(&extra_peer);
+            // After pruning disconnected peers + adding new one, should be bounded
+            assert!(network.rate_limiters.len() <= MAX_RATE_LIMITERS + 1);
         });
     }
 
