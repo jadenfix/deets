@@ -26,12 +26,14 @@ pub const TOPIC_SYNC: &str = "/aether/1/sync";
 /// Per-topic maximum message sizes (bytes).
 /// Transactions are small (~1-2 KB typical, 64 KB generous max).
 /// Votes are BLS signatures + metadata (~512 bytes typical, 8 KB max).
-/// Shreds are erasure-coded block fragments (~1 KB typical, 64 KB max).
+/// Shreds are erasure-coded block fragments. With RS(10,2) on a 2 MB block,
+/// each shard payload is ceil((2 MB + 8) / 10) ≈ 210 KB plus ~200 B of
+/// shred metadata, so 256 KB is the minimum safe limit.
 /// Blocks can be large but still bounded (2 MB via gossipsub max_transmit_size).
 const MAX_TX_SIZE: usize = 64 * 1024; // 64 KB
 const MAX_BLOCK_SIZE: usize = 2 * 1024 * 1024; // 2 MB
 const MAX_VOTE_SIZE: usize = 8 * 1024; // 8 KB
-const MAX_SHRED_SIZE: usize = 64 * 1024; // 64 KB
+const MAX_SHRED_SIZE: usize = 256 * 1024; // 256 KB — RS(10,2) on 2 MB block ≈ 210 KB per shred
 const MAX_SYNC_MSG_SIZE: usize = 1024; // 1 KB (slot range requests are small)
 
 /// Maximum total established connections (inbound + outbound).

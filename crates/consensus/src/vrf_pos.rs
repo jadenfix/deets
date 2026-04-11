@@ -152,7 +152,6 @@ impl VrfPosConsensus {
             return Ok(false);
         }
 
-
         Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
