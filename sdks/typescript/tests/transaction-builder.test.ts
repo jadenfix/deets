@@ -263,3 +263,80 @@ test("getHealth throws on non-200 status", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("rpcCall passes AbortSignal to fetch", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  let receivedSignal: AbortSignal | undefined;
+  try {
+    globalThis.fetch = async (_input, init) => {
+      receivedSignal = init?.signal as AbortSignal | undefined;
+      const payload = JSON.parse(init?.body?.toString() ?? "{}");
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: 1 }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    };
+    await client.getSlotNumber();
+    assert.ok(receivedSignal !== undefined, "fetch must receive an AbortSignal");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("getHealth passes AbortSignal to fetch", async () => {
+  const client = new AetherClient("http://rpc.aether.local");
+  let receivedSignal: AbortSignal | undefined;
+  const fakeHealth = {
+    status: "ok",
+    version: "0.1.0",
+    latestSlot: 1,
+    finalizedSlot: 0,
+    peerCount: 1,
+    sync: { syncing: false },
+  };
+  try {
+    globalThis.fetch = async (_input, init) => {
+      receivedSignal = init?.signal as AbortSignal | undefined;
+      return new Response(JSON.stringify(fakeHealth), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    await client.getHealth();
+    assert.ok(receivedSignal !== undefined, "getHealth must pass AbortSignal");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rpcCall rejects when AbortSignal fires", async () => {
+  const { DEFAULT_CONFIG } = await import("../src/types.js");
+  const client = AetherClient.withConfig("http://rpc.aether.local", {
+    ...DEFAULT_CONFIG,
+    requestTimeoutMs: 1,
+  });
+  try {
+    globalThis.fetch = async (_input, init): Promise<Response> => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal as AbortSignal | undefined;
+        if (signal) {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }
+      });
+    };
+    await assert.rejects(() => client.getSlotNumber());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("withConfig overrides requestTimeoutMs", async () => {
+  const { DEFAULT_CONFIG } = await import("../src/types.js");
+  const client = AetherClient.withConfig("http://rpc.aether.local", {
+    ...DEFAULT_CONFIG,
+    requestTimeoutMs: 5_000,
+  });
+  assert.equal(client.getConfig().requestTimeoutMs, 5_000);
+});
+

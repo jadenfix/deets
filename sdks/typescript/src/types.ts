@@ -1,11 +1,14 @@
 export interface ClientConfig {
   defaultFee: bigint;
   defaultGasLimit: number;
+  /** Milliseconds before a request times out. Defaults to 30 000 ms. */
+  requestTimeoutMs: number;
 }
 
 export const DEFAULT_CONFIG: ClientConfig = {
   defaultFee: 2_000_000n,
   defaultGasLimit: 500_000,
+  requestTimeoutMs: 30_000,
 };
 
 export interface TransferRequestPayload {
