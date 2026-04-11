@@ -83,6 +83,10 @@ pub trait ConsensusEngine: Finality + Send + Sync {
     fn slash_validator(&mut self, _address: &aether_types::Address, _slash_bps: u128) -> u128 {
         0
     }
+
+    fn validator_addresses_and_stakes(&self) -> Vec<(aether_types::Address, u128)> {
+        Vec::new()
+    }
 }
 
 /// Trivial finality for testing: every slot is immediately final.
