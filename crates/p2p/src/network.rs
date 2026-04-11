@@ -249,12 +249,33 @@ impl P2PNetwork {
     }
 
     /// Publish data to a gossipsub topic.
+    ///
+    /// Validates outbound message size against per-topic limits before sending.
+    /// This prevents our node from broadcasting messages that peers will reject
+    /// and penalize us for.
     pub fn publish(&mut self, topic_str: &str, data: Vec<u8>) -> Result<()> {
         let topic = self
             .topics
             .get(topic_str)
             .ok_or_else(|| anyhow::anyhow!("not subscribed to topic: {}", topic_str))?;
         let size = data.len();
+
+        let max_size = max_size_for_topic(topic_str);
+        if size == 0 {
+            return Err(anyhow::anyhow!(
+                "refusing to publish empty message to {}",
+                topic_str
+            ));
+        }
+        if size > max_size {
+            return Err(anyhow::anyhow!(
+                "refusing to publish oversized message to {}: {} bytes > {} max",
+                topic_str,
+                size,
+                max_size
+            ));
+        }
+
         self.swarm
             .behaviour_mut()
             .gossipsub
@@ -359,17 +380,18 @@ impl P2PNetwork {
                     let size = data.len();
 
                     // Per-topic message size validation.
-                    // Oversized messages penalize the sender and are dropped.
+                    // Uses exact topic matching (not substring) to prevent
+                    // misclassification of similarly-named topics.
                     let (max_size, event_fn): (usize, fn(Vec<u8>) -> NetworkEvent) =
-                        if topic.contains("/tx") {
+                        if topic == TOPIC_TX {
                             (MAX_TX_SIZE, NetworkEvent::TransactionReceived)
-                        } else if topic.contains("/block") {
+                        } else if topic == TOPIC_BLOCK {
                             (MAX_BLOCK_SIZE, NetworkEvent::BlockReceived)
-                        } else if topic.contains("/vote") {
+                        } else if topic == TOPIC_VOTE {
                             (MAX_VOTE_SIZE, NetworkEvent::VoteReceived)
-                        } else if topic.contains("/shred") {
+                        } else if topic == TOPIC_SHRED {
                             (MAX_SHRED_SIZE, NetworkEvent::ShredReceived)
-                        } else if topic.contains("/sync") {
+                        } else if topic == TOPIC_SYNC {
                             (MAX_SYNC_MSG_SIZE, NetworkEvent::SyncRequestReceived)
                         } else {
                             continue;
@@ -377,7 +399,7 @@ impl P2PNetwork {
 
                     let label = topic_label(&topic);
 
-                    if size > max_size {
+                    if size == 0 || size > max_size {
                         tracing::warn!(
                             peer = %propagation_source,
                             topic = %topic,
@@ -507,6 +529,19 @@ impl P2PNetwork {
                 self.banned_peers.remove(&peer_id);
             }
         }
+    }
+}
+
+/// Map a topic string to its per-topic maximum message size.
+/// Returns the gossipsub global max (2 MB) for unknown topics as a safe fallback.
+fn max_size_for_topic(topic: &str) -> usize {
+    match topic {
+        TOPIC_TX => MAX_TX_SIZE,
+        TOPIC_BLOCK => MAX_BLOCK_SIZE,
+        TOPIC_VOTE => MAX_VOTE_SIZE,
+        TOPIC_SHRED => MAX_SHRED_SIZE,
+        TOPIC_SYNC => MAX_SYNC_MSG_SIZE,
+        _ => MAX_BLOCK_SIZE,
     }
 }
 
@@ -900,5 +935,106 @@ mod tests {
             assert!(network.is_banned(&peer_id));
             assert_eq!(network.banned_peers.len(), 1);
         });
+    }
+
+    #[test]
+    fn test_max_size_for_topic() {
+        assert_eq!(max_size_for_topic(TOPIC_TX), MAX_TX_SIZE);
+        assert_eq!(max_size_for_topic(TOPIC_BLOCK), MAX_BLOCK_SIZE);
+        assert_eq!(max_size_for_topic(TOPIC_VOTE), MAX_VOTE_SIZE);
+        assert_eq!(max_size_for_topic(TOPIC_SHRED), MAX_SHRED_SIZE);
+        assert_eq!(max_size_for_topic(TOPIC_SYNC), MAX_SYNC_MSG_SIZE);
+        // Unknown topics fall back to the global max (2 MB)
+        assert_eq!(max_size_for_topic("/aether/1/unknown"), MAX_BLOCK_SIZE);
+    }
+
+    #[test]
+    fn test_publish_rejects_empty_message() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            network.subscribe(TOPIC_TX).unwrap();
+
+            let result = network.publish(TOPIC_TX, vec![]);
+            assert!(result.is_err());
+            assert!(
+                result.unwrap_err().to_string().contains("empty"),
+                "error should mention empty message"
+            );
+        });
+    }
+
+    #[test]
+    fn test_publish_rejects_oversized_message() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            network.subscribe(TOPIC_TX).unwrap();
+            network.subscribe(TOPIC_VOTE).unwrap();
+
+            // TX at exactly the limit should succeed (publish itself may fail
+            // because we have no peers, but the size check should pass)
+            let at_limit = vec![0u8; MAX_TX_SIZE];
+            let result = network.publish(TOPIC_TX, at_limit);
+            // May fail with "InsufficientPeers" which is fine — the size check passed
+            let is_size_error = result
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("oversized"));
+            assert!(
+                !is_size_error,
+                "message at limit should not be rejected as oversized"
+            );
+
+            // TX over the limit must be rejected before hitting gossipsub
+            let oversized = vec![0u8; MAX_TX_SIZE + 1];
+            let result = network.publish(TOPIC_TX, oversized);
+            assert!(result.is_err());
+            assert!(
+                result.unwrap_err().to_string().contains("oversized"),
+                "error should mention oversized message"
+            );
+
+            // Vote over limit
+            let oversized_vote = vec![0u8; MAX_VOTE_SIZE + 1];
+            let result = network.publish(TOPIC_VOTE, oversized_vote);
+            assert!(result.is_err());
+            assert!(
+                result.unwrap_err().to_string().contains("oversized"),
+                "vote error should mention oversized"
+            );
+        });
+    }
+
+    #[test]
+    fn test_publish_rejects_unsubscribed_topic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut network = P2PNetwork::new_random().unwrap();
+            let result = network.publish(TOPIC_TX, vec![1, 2, 3]);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("not subscribed"));
+        });
+    }
+
+    #[test]
+    fn test_topic_matching_exact() {
+        // Verify that our topic constants don't accidentally match each other
+        // when using exact equality (the old `contains()` approach was fragile).
+        let topics = [TOPIC_TX, TOPIC_BLOCK, TOPIC_VOTE, TOPIC_SHRED, TOPIC_SYNC];
+        for (i, a) in topics.iter().enumerate() {
+            for (j, b) in topics.iter().enumerate() {
+                if i == j {
+                    assert_eq!(a, b);
+                } else {
+                    assert_ne!(a, b, "topics must be distinct");
+                }
+            }
+        }
+
+        // A topic with a similar name must NOT match
+        let fake_topic = "/aether/1/tx-extra";
+        assert_ne!(fake_topic, TOPIC_TX);
+        assert_eq!(max_size_for_topic(fake_topic), MAX_BLOCK_SIZE);
     }
 }
