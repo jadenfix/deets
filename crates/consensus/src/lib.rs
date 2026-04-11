@@ -15,7 +15,16 @@ use anyhow::Result;
 
 /// Finality gadget interface — separated from consensus so alternative
 /// finality mechanisms can be tested or composed independently.
+///
+/// # Contract
+///
+/// `check_finality(slot)` returns `true` **at most once** per slot.
+/// Callers rely on this for one-time side effects (epoch randomness
+/// rotation, finality metrics, fork-choice finalization). Implementations
+/// must track which slots have already been reported and never re-report.
 pub trait Finality {
+    /// Returns `true` if `slot` is newly finalized and has not been
+    /// reported before. Subsequent calls with the same slot return `false`.
     fn check_finality(&mut self, slot: Slot) -> bool;
     fn finalized_slot(&self) -> Slot;
     fn record_block(&mut self, _block_hash: H256, _parent_hash: H256, _slot: Slot) {}
