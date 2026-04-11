@@ -542,8 +542,10 @@ fn pairing_check(a1: &blst_p1, a2: &blst_p2, b1: &blst_p1, b2: &blst_p2) -> bool
 
 fn bytes_to_u64_array(bytes: &[u8; 32]) -> [u64; 4] {
     let mut result = [0u64; 4];
-    for i in 0..4 {
-        result[i] = u64::from_le_bytes(bytes[i * 8..(i + 1) * 8].try_into().unwrap());
+    for (i, chunk) in bytes.chunks_exact(8).enumerate() {
+        result[i] = u64::from_le_bytes(
+            <[u8; 8]>::try_from(chunk).expect("chunks_exact(8) guarantees 8-byte slices"),
+        );
     }
     result
 }

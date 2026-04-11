@@ -13,18 +13,20 @@ pub fn build_challenge(
     sample_layers: usize,
     sample_points: usize,
     seed: Option<u64>,
-) -> KzgChallenge {
-    assert!(total_layers > 0, "total layers must be positive");
-    assert!(layer_size > 0, "layer size must be positive");
-    assert!(sample_layers > 0, "must request at least one layer");
-    assert!(
+) -> anyhow::Result<KzgChallenge> {
+    anyhow::ensure!(total_layers > 0, "total layers must be positive");
+    anyhow::ensure!(layer_size > 0, "layer size must be positive");
+    anyhow::ensure!(sample_layers > 0, "must request at least one layer");
+    anyhow::ensure!(
         sample_points > 0,
         "must request at least one point per layer"
     );
 
-    let mut rng = seed
-        .map(StdRng::seed_from_u64)
-        .unwrap_or_else(|| StdRng::from_rng(rand::thread_rng()).expect("rng"));
+    let mut rng = match seed {
+        Some(s) => StdRng::seed_from_u64(s),
+        None => StdRng::from_rng(rand::thread_rng())
+            .map_err(|e| anyhow::anyhow!("RNG initialization failed: {e}"))?,
+    };
 
     let mut layers: Vec<u32> = (0..total_layers).collect();
     layers.sort();
@@ -42,12 +44,12 @@ pub fn build_challenge(
         point_indices.push(chosen);
     }
 
-    KzgChallenge {
+    Ok(KzgChallenge {
         vcr_id,
         layer_indices: selected_layers,
         point_indices,
         deadline_slot: 0,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -57,9 +59,33 @@ mod tests {
     #[test]
     fn deterministic_with_seed() {
         let seed = Some(42);
-        let challenge1 = build_challenge(H256::zero(), 8, 16, 3, 4, seed);
-        let challenge2 = build_challenge(H256::zero(), 8, 16, 3, 4, seed);
+        let challenge1 = build_challenge(H256::zero(), 8, 16, 3, 4, seed).unwrap();
+        let challenge2 = build_challenge(H256::zero(), 8, 16, 3, 4, seed).unwrap();
         assert_eq!(challenge1.layer_indices, challenge2.layer_indices);
         assert_eq!(challenge1.point_indices, challenge2.point_indices);
+    }
+
+    #[test]
+    fn zero_layers_returns_error() {
+        let result = build_challenge(H256::zero(), 0, 16, 3, 4, Some(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_layer_size_returns_error() {
+        let result = build_challenge(H256::zero(), 8, 0, 3, 4, Some(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_sample_layers_returns_error() {
+        let result = build_challenge(H256::zero(), 8, 16, 0, 4, Some(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn zero_sample_points_returns_error() {
+        let result = build_challenge(H256::zero(), 8, 16, 3, 0, Some(1));
+        assert!(result.is_err());
     }
 }

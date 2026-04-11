@@ -143,8 +143,10 @@ impl VcrValidator {
         for vcr in vcrs {
             *counts.entry(vcr.output_hash).or_insert(0) += 1;
         }
-        let (&majority_output, &majority_count) =
-            counts.iter().max_by_key(|(_, count)| *count).unwrap(); // safe: vcrs is non-empty
+        let (&majority_output, &majority_count) = counts
+            .iter()
+            .max_by_key(|(_, count)| *count)
+            .ok_or_else(|| anyhow::anyhow!("empty output set in quorum verification"))?;
 
         // Check 2/3 consensus on the majority output
         if majority_count * 3 < vcrs.len() * 2 {
