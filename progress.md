@@ -1063,3 +1063,17 @@ Fixed test helper `make_report()` to use `current_timestamp()` instead of `0` (a
 - **Branch**: `fix/agent2-rpc-ws-limits-makefile`
 - **PR**: #346 (merged)
 - **Details**: Added MAX_WS_CONNECTIONS (1,000) cap on concurrent WebSocket connections using atomic counter with RAII drop guard. Connections beyond the limit are immediately closed. Also added `make deny`, `make audit`, and `make bench-types` Makefile targets. Note: CI workflow changes still blocked by GitHub token missing `workflow` scope.
+
+---
+
+## Agent 4 — Cycle 45 (2026-04-10)
+
+- **Task**: fix(rpc): health endpoint returns correct status based on sync state
+- **Tier**: 6 (Operational Readiness) — RPC correctness
+- **Branch**: `fix/agent4-health-status-reflects-sync-state`, PR #369
+- **Details**:
+  - Both `GET /health` (REST) and `aeth_health` (JSON-RPC) fetched `sync_status` but unconditionally returned `"status":"ok"`
+  - TypeScript SDK typed status as `'ok'|'syncing'|'error'` but server never returned `"syncing"` — gap noted in Sam's PR #357 cycle reflection
+  - Fix: derive status from `sync_status["syncing"]`: `true → "syncing"`, `false → "ok"` in both code paths
+  - Added `MockSyncingBackend` + `test_health_endpoint_returns_syncing_when_node_is_syncing`
+  - 34/34 RPC tests pass; clippy clean; RPC crate only
