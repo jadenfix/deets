@@ -1,6 +1,31 @@
 # Aether Status Snapshot
 
-**Date**: March 31, 2026
+**Date**: April 9, 2026
+
+## Agent 2 — Cycle 44 (2026-04-09)
+
+- **Task**: fix(da,p2p): harden DA layer against DoS and fix gossip dedup eviction order
+- **Tier**: 3 (Networking & Resilience) + DA safety
+- **Branch**: `fix/agent2-da-networking-harden`, PR #353
+- **Details**:
+  - Erasure decoder: replaced `unwrap()` with proper error propagation, added safe `usize::try_from` + `checked_add` for integer overflow protection on adversarial length prefixes
+  - Turbine receiver: added `MAX_PENDING_BYTES` (128 MiB) cap on aggregate pending shred memory to prevent DoS via unbounded memory growth
+  - Gossip dedup cache: replaced `HashSet` random-order eviction with `HashSet` + `VecDeque` FIFO eviction to prevent message replay attacks
+  - Added 4 new regression tests across turbine receiver and gossip dedup
+  - Full workspace tests pass, clippy clean
+
+---
+
+**Previous date**: March 31, 2026
+
+## Agent 1 — Cycle 44 (2026-04-09)
+- **Task**: fix(node): persist staking state to RocksDB so slashes survive restarts
+- **Tier**: 4 (Storage & Persistence) + 2 (Consensus Hardening — slashing enforcement)
+- **Branch**: `fix/agent1-persist-staking-state`
+- **PR**: #352 (open — awaiting peer review)
+- **Details**: Critical security fix. `StakingState` was only held in memory and recreated empty on every node startup. A slashed validator could recover full stake simply by restarting — nullifying slashing enforcement. Added `CF_STAKING` column family, persist staking state atomically with block commits (slash evidence moved before the WriteBatch so it's included in the same atomic operation), persist during epoch transitions (unbonding completions), persist after vote-time double-sign detection, load from disk on startup. Added 2 regression tests verifying persistence across restart. All 115 node tests + full workspace green.
+
+**Audit summary**: Performed comprehensive audit of Tier 1 (signatures, double-spend, nonce, gas limits), Tier 2 (HotStuff liveness, slashing, fork choice, finality, epochs), and Tier 4 (storage atomicity, block persistence, pruning, snapshots). All Tier 1 and 2 items are solid. The staking persistence gap was the only critical finding.
 
 ## Agent 1 — Cycle 43 (2026-04-02)
 

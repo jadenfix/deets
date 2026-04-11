@@ -8,7 +8,7 @@ use aether_p2p::network::NetworkEvent;
 use aether_program_staking::StakingState;
 use aether_state_snapshots::generate_snapshot;
 use aether_state_storage::{
-    database::pruning, Storage, StorageBatch, CF_BLOCKS, CF_METADATA, CF_RECEIPTS,
+    database::pruning, Storage, StorageBatch, CF_BLOCKS, CF_METADATA, CF_RECEIPTS, CF_STAKING,
 };
 use aether_types::{
     Account, Address, Block, ChainConfig, PublicKey, Slot, Transaction, TransactionReceipt, Vote,
@@ -190,6 +190,22 @@ impl Node {
         let (blocks_by_slot, blocks_by_hash, latest_block_hash, latest_block_slot) =
             Self::load_blocks_from_storage(ledger.storage())?;
 
+        // Restore staking state (validators, delegations, slashes) from disk so
+        // slashing effects survive restarts.
+        let staking_state = match ledger.storage().get(CF_STAKING, b"staking_state") {
+            Ok(Some(bytes)) => {
+                let state: StakingState = bincode::deserialize(&bytes)
+                    .context("failed to deserialize persisted staking state")?;
+                tracing::info!(
+                    validators = state.validators.len(),
+                    total_staked = state.total_staked,
+                    "Restored staking state from disk"
+                );
+                state
+            }
+            _ => StakingState::new(),
+        };
+
         if !blocks_by_hash.is_empty() {
             tracing::info!(
                 block_count = blocks_by_hash.len(),
@@ -237,7 +253,7 @@ impl Node {
             blocks_by_slot,
             blocks_by_hash,
             receipts: HashMap::new(),
-            staking_state: StakingState::new(),
+            staking_state,
             broadcast_tx: None,
             outbound_buffer: VecDeque::new(),
             consecutive_timeouts: 0,
@@ -657,7 +673,11 @@ impl Node {
                 .credit_account_to_batch(&mut epoch_batch, addr, *amount)?;
         }
 
-        // Single atomic write for all epoch credits
+        // Persist staking state (unbonding queue was drained above) atomically
+        // with the epoch credits so a crash cannot lose unbonding completions.
+        self.persist_staking_state_to_batch(&mut epoch_batch)?;
+
+        // Single atomic write for all epoch credits + staking state
         self.ledger.write_batch(epoch_batch)?;
 
         for (addr, amount) in &completed {
@@ -1311,17 +1331,10 @@ impl Node {
             // Record spent UTXOs for light-client audit and epoch-based pruning.
             self.ledger
                 .record_spent_utxos(&mut batch, &overlay, block.header.slot);
-            self.ledger.write_batch(batch)?;
-            // Record that this block's state is now durably committed at this slot.
-            self.committed_at_slot.insert(block.header.slot, block_hash);
 
-            // Lock this slot against future fork-choice reorgs — state is now
-            // committed and we have no rollback mechanism.
-            self.fork_choice.mark_committed(block.header.slot);
-
-            // Apply slash evidence: verify cryptographic proof before reducing stake.
-            // Only applied for canonical blocks to prevent non-canonical forks from
-            // double-slashing.
+            // Apply slash evidence BEFORE the atomic write so slashing effects are
+            // persisted in the same WriteBatch. This prevents a crash between block
+            // commit and slash application from losing slash effects.
             for evidence in &block.slash_evidence {
                 let (v1, v2, etype) =
                     match (&evidence.vote1, &evidence.vote2, &evidence.evidence_type) {
@@ -1385,8 +1398,6 @@ impl Node {
 
                 let rate_bps = slash_verify::slash_rate_bps(&proof.proof_type);
 
-                // Also update consensus vote weight for block-included evidence,
-                // so slash is reflected immediately in the current epoch's voting.
                 self.consensus
                     .slash_validator(&evidence.validator, u128::from(rate_bps));
 
@@ -1410,6 +1421,18 @@ impl Node {
                     ),
                 }
             }
+
+            // Include staking state in the atomic batch so slash effects, validator
+            // registrations, and unbonding changes survive node restarts.
+            self.persist_staking_state_to_batch(&mut batch)?;
+
+            self.ledger.write_batch(batch)?;
+            // Record that this block's state is now durably committed at this slot.
+            self.committed_at_slot.insert(block.header.slot, block_hash);
+
+            // Lock this slot against future fork-choice reorgs — state is now
+            // committed and we have no rollback mechanism.
+            self.fork_choice.mark_committed(block.header.slot);
         } else {
             tracing::info!(
                 block_hash = %block_hash,
@@ -1593,13 +1616,21 @@ impl Node {
                     .staking_state
                     .slash(proof.validator, u128::from(rate_bps), vote.slot)
                 {
-                    Ok(staking_slashed) => tracing::warn!(
-                        validator = ?proof.validator,
-                        slot = vote.slot,
-                        consensus_rate_bps = 500,
-                        staking_slashed,
-                        "Double-sign detected — slashed consensus vote weight and staking bond"
-                    ),
+                    Ok(staking_slashed) => {
+                        tracing::warn!(
+                            validator = ?proof.validator,
+                            slot = vote.slot,
+                            consensus_rate_bps = 500,
+                            staking_slashed,
+                            "Double-sign detected — slashed consensus vote weight and staking bond"
+                        );
+                        if let Err(e) = self.persist_staking_state() {
+                            tracing::error!(
+                                err = %e,
+                                "Failed to persist staking state after vote-time slash"
+                            );
+                        }
+                    }
                     Err(e) => tracing::warn!(
                         validator = ?proof.validator,
                         slot = vote.slot,
@@ -1908,6 +1939,21 @@ impl Node {
     /// Read-only access to the in-memory staking state.
     pub fn staking_state(&self) -> &StakingState {
         &self.staking_state
+    }
+
+    /// Serialize current staking state into a batch for atomic persistence.
+    fn persist_staking_state_to_batch(&self, batch: &mut StorageBatch) -> Result<()> {
+        let bytes =
+            bincode::serialize(&self.staking_state).context("failed to serialize staking state")?;
+        batch.put(CF_STAKING, b"staking_state".to_vec(), bytes);
+        Ok(())
+    }
+
+    /// Persist staking state to disk immediately (standalone write).
+    fn persist_staking_state(&self) -> Result<()> {
+        let mut batch = StorageBatch::new();
+        self.persist_staking_state_to_batch(&mut batch)?;
+        self.ledger.write_batch(batch)
     }
 }
 
@@ -2663,6 +2709,135 @@ mod tests {
                 node.latest_block_slot().unwrap() >= latest_slot,
                 "recovered tip should be at or past slot {}",
                 latest_slot
+            );
+        }
+    }
+
+    #[test]
+    fn staking_state_persisted_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path();
+        let keypair = Keypair::generate();
+        let key_bytes = keypair.secret_key();
+        let pubkey = PublicKey::from_bytes(keypair.public_key());
+        let addr = pubkey.to_address();
+        let stake = 100_000_000u128;
+
+        // Phase 1: register a validator, persist staking state, then drop the node.
+        {
+            let validators = vec![validator_info_from_key(&keypair)];
+            let consensus = Box::new(SimpleConsensus::new(validators));
+            let mut node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            node.staking_state_mut()
+                .register_validator(addr, addr, stake, 0, addr)
+                .expect("register_validator should succeed");
+
+            // Explicitly persist so it's durable before the drop.
+            node.persist_staking_state().unwrap();
+        }
+
+        // Phase 2: reopen from the same DB — staking state must survive.
+        {
+            let keypair2 = Keypair::from_bytes(&key_bytes).unwrap();
+            let validators2 = vec![validator_info_from_key(&keypair2)];
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair2),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            let validator = node
+                .staking_state()
+                .get_validator(&addr)
+                .expect("validator must survive restart");
+            assert_eq!(
+                validator.staked_amount, stake,
+                "staked amount must survive restart"
+            );
+            assert_eq!(
+                node.staking_state().total_staked,
+                stake,
+                "total_staked must survive restart"
+            );
+        }
+    }
+
+    #[test]
+    fn slash_persisted_across_restart() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path();
+        let keypair = Keypair::generate();
+        let key_bytes = keypair.secret_key();
+        let pubkey = PublicKey::from_bytes(keypair.public_key());
+        let addr = pubkey.to_address();
+        let stake = 100_000_000u128;
+
+        // Phase 1: register validator, slash via vote-time detection, then drop.
+        let expected_stake;
+        {
+            let validators = vec![validator_info_from_key(&keypair)];
+            let consensus = Box::new(SimpleConsensus::new(validators));
+            let mut node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            node.staking_state_mut()
+                .register_validator(addr, addr, stake, 0, addr)
+                .expect("register_validator should succeed");
+
+            // Double-sign to trigger slash
+            let vote_a = make_vote(&pubkey, 0, 0xAA);
+            let vote_b = make_vote(&pubkey, 0, 0xBB);
+            node.on_vote_received(vote_a).unwrap();
+            node.on_vote_received(vote_b).unwrap();
+
+            expected_stake = node
+                .staking_state()
+                .get_validator(&addr)
+                .unwrap()
+                .staked_amount;
+            assert!(expected_stake < stake, "slash should have reduced stake");
+        }
+
+        // Phase 2: reopen — slashed state must survive.
+        {
+            let keypair2 = Keypair::from_bytes(&key_bytes).unwrap();
+            let validators2 = vec![validator_info_from_key(&keypair2)];
+            let consensus = Box::new(SimpleConsensus::new(validators2));
+            let node = Node::new(
+                db_path,
+                consensus,
+                Some(keypair2),
+                None,
+                Arc::new(ChainConfig::devnet()),
+            )
+            .unwrap();
+
+            let validator = node
+                .staking_state()
+                .get_validator(&addr)
+                .expect("validator must survive restart after slash");
+            assert_eq!(
+                validator.staked_amount, expected_stake,
+                "slashed stake must survive restart (expected {expected_stake}, got {})",
+                validator.staked_amount
             );
         }
     }
