@@ -86,6 +86,8 @@ const MAX_ORPHAN_BLOCKS: usize = 256;
 /// timestamps that could manipulate time-sensitive on-chain logic.
 const MAX_CLOCK_DRIFT_SECS: u64 = 15;
 
+const MAX_BLOCK_GAS_LIMIT: u64 = 10_000_000;
+
 /// Minimum interval between serving sync block-range responses.
 /// Prevents a peer from flooding sync requests and consuming all outbound bandwidth.
 const SYNC_RESPONSE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -805,7 +807,9 @@ impl Node {
                 .must_include_transactions(slot, self.fee_market.base_fee);
             let forced_count = forced.len();
             let remaining_capacity = 1000usize.saturating_sub(forced_count);
-            let regular = self.mempool.get_transactions(remaining_capacity, 5_000_000);
+            let regular = self
+                .mempool
+                .get_transactions(remaining_capacity, MAX_BLOCK_GAS_LIMIT);
             if forced_count > 0 {
                 tracing::info!(forced_count, "Forced inclusion txs");
                 let mut all = forced;
@@ -1235,6 +1239,21 @@ impl Node {
             if agg_vote.signers.is_empty() {
                 bail!("aggregated vote has no signers");
             }
+            // Reject duplicate signers: without this check an attacker controlling a
+            // single validator could list it N times, inflating voted_stake to N*stake
+            // and bypassing the 2/3 quorum requirement. The BLS aggregate would still
+            // verify because agg(sig, sig, ...) = N*sig verifies against N*pk.
+            {
+                let mut seen = HashSet::with_capacity(agg_vote.signers.len());
+                for signer in &agg_vote.signers {
+                    if !seen.insert(signer.to_address()) {
+                        bail!(
+                            "duplicate signer {:?} in aggregated vote",
+                            signer.to_address()
+                        );
+                    }
+                }
+            }
             // Reconstruct the vote message: block_hash || slot (same as vote_on_block)
             let mut vote_msg = Vec::new();
             vote_msg.extend_from_slice(agg_vote.block_hash.as_bytes());
@@ -1278,6 +1297,22 @@ impl Node {
                     total_stake
                 );
             }
+        }
+
+        // Enforce block gas limit: total gas across all transactions must not exceed
+        // the protocol limit. Without this, a malicious proposer could stuff arbitrarily
+        // large blocks, causing receivers to OOM during speculative execution.
+        let block_gas: u64 = block
+            .transactions
+            .iter()
+            .try_fold(0u64, |acc, tx| acc.checked_add(tx.gas_limit))
+            .ok_or_else(|| anyhow::anyhow!("block gas overflow"))?;
+        if block_gas > MAX_BLOCK_GAS_LIMIT {
+            bail!(
+                "block gas {} exceeds limit {}",
+                block_gas,
+                MAX_BLOCK_GAS_LIMIT
+            );
         }
 
         // Execute transactions SPECULATIVELY (not committed to disk yet)
@@ -4125,5 +4160,249 @@ mod tests {
             .iter()
             .fold(0u64, |acc, &g| acc.saturating_add(g));
         assert_eq!(total_gas, u64::MAX);
+    }
+
+    #[test]
+    fn block_exceeding_gas_limit_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: proposer,
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: MAX_BLOCK_GAS_LIMIT + 1,
+            fee: 0,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+        let mut block = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx],
+        );
+        block.header.transactions_root = compute_transactions_root(&block.transactions);
+
+        let result = node.on_block_received(block);
+        assert!(
+            result.is_err(),
+            "block exceeding gas limit must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("block gas") && msg.contains("exceeds limit"),
+            "error must mention gas limit, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn block_with_gas_overflow_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx1 = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: proposer,
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: u64::MAX,
+            fee: 0,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+        let tx2 = Transaction {
+            nonce: 1,
+            chain_id: 1,
+            sender: proposer,
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 1,
+            fee: 0,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+        let txs = vec![tx1, tx2];
+        let mut block = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            txs.clone(),
+        );
+        block.header.transactions_root = compute_transactions_root(&txs);
+
+        let result = node.on_block_received(block);
+        assert!(result.is_err(), "block with gas overflow must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("gas overflow") || msg.contains("exceeds limit"),
+            "error must mention gas overflow, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn block_within_gas_limit_is_accepted() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: proposer,
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21_000,
+            fee: 0,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+        let mut block = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx],
+        );
+        block.header.transactions_root = compute_transactions_root(&block.transactions);
+
+        // Should pass gas limit check (may fail later on state root, that's fine)
+        let result = node.on_block_received(block);
+        // If it fails, it should NOT be due to gas limit
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("block gas") && !msg.contains("gas overflow"),
+                "block within gas limit should not fail on gas check, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_signer_in_aggregated_vote_is_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let signer_pk = PublicKey::from_bytes(keypair.public_key());
+        let proposer = signer_pk.to_address();
+        let mut simple_consensus = SimpleConsensus::new(validators);
+        simple_consensus.advance_slot();
+        simple_consensus.advance_slot();
+        let consensus: Box<dyn aether_consensus::ConsensusEngine> = Box::new(simple_consensus);
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let parent = Block::new(
+            1,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        let parent_hash = parent.hash();
+        node.blocks_by_hash.insert(parent_hash, parent);
+
+        let agg_vote = aether_types::AggregatedVote {
+            slot: 1,
+            block_hash: parent_hash,
+            aggregated_signature: vec![0u8; 96],
+            signers: vec![signer_pk.clone(), signer_pk],
+            total_stake: 200_000_000,
+        };
+
+        let mut child = Block::new(
+            2,
+            parent_hash,
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        child.header.transactions_root = H256::zero();
+        child.aggregated_vote = Some(agg_vote);
+
+        let result = node.on_block_received(child);
+        assert!(
+            result.is_err(),
+            "block with duplicate signers must be rejected"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("duplicate signer"),
+            "error must mention duplicate signer, got: {msg}"
+        );
     }
 }
