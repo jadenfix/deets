@@ -5,6 +5,7 @@ import {
   DEFAULT_CONFIG,
   JobRequest,
   JobSubmission,
+  NodeHealth,
   RpcAccountState,
   RpcBlock,
   RpcReceipt,
@@ -86,6 +87,27 @@ export class AetherClient {
   ): Promise<RpcAccountState | null> {
     const params = blockRef ? [address, blockRef] : [address];
     return this.rpcCall<RpcAccountState | null>("aeth_getAccount", params);
+  }
+
+  async getBlockByHash(blockHash: string, fullTx = true): Promise<RpcBlock | null> {
+    return this.rpcCall<RpcBlock | null>("aeth_getBlockByHash", [blockHash, fullTx]);
+  }
+
+  async getStateRoot(blockRef?: string): Promise<string> {
+    const params = blockRef ? [blockRef] : [];
+    return this.rpcCall<string>("aeth_getStateRoot", params);
+  }
+
+  /**
+   * Fetch node health from the HTTP `/health` endpoint (not a JSON-RPC call).
+   * Returns sync status, peer count, and latest/finalized slot numbers.
+   */
+  async getHealth(): Promise<NodeHealth> {
+    const response = await fetch(`${this.endpoint}/health`);
+    if (!response.ok) {
+      throw new Error(`health check failed with status ${response.status}`);
+    }
+    return response.json() as Promise<NodeHealth>;
   }
 
   prepareJobSubmission(job: JobRequest): JobSubmission {

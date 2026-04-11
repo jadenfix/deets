@@ -75,15 +75,24 @@ impl ReedSolomonDecoder {
         if data.len() < 8 {
             bail!("decoded data too short: missing length prefix");
         }
-        let original_len = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
-        if original_len > data.len() - 8 {
+        let raw_len = u64::from_le_bytes(
+            data[..8]
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("length prefix conversion failed"))?,
+        );
+        let original_len = usize::try_from(raw_len)
+            .map_err(|_| anyhow::anyhow!("length prefix {} exceeds addressable range", raw_len))?;
+        let end = 8usize
+            .checked_add(original_len)
+            .ok_or_else(|| anyhow::anyhow!("length prefix overflow: 8 + {}", original_len))?;
+        if end > data.len() {
             bail!(
                 "length prefix {} exceeds decoded data size {}",
                 original_len,
                 data.len() - 8
             );
         }
-        Ok(data[8..8 + original_len].to_vec())
+        Ok(data[8..end].to_vec())
     }
 
     pub fn shard_config(&self) -> (usize, usize) {

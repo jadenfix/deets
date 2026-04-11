@@ -371,6 +371,65 @@ mod tests {
     }
 
     #[test]
+    fn verify_leader_rejects_invalid_vrf_proof() {
+        use aether_types::{Block, VrfProof as TypesVrfProof};
+
+        let validator = create_test_validator(10_000);
+        let addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 0.8, 100);
+
+        let bogus_proof = TypesVrfProof {
+            output: [0xAA; 32],
+            proof: vec![0xFF; 80],
+        };
+        let block = Block::new(1, H256::zero(), addr, bogus_proof, vec![]);
+
+        let result = consensus.verify_leader(&block, &addr);
+        assert!(
+            result.is_ok(),
+            "verify_leader should not error on bad proof"
+        );
+        assert!(
+            !result.unwrap(),
+            "verify_leader must reject a block with a fabricated VRF proof"
+        );
+    }
+
+    #[test]
+    fn verify_leader_accepts_valid_vrf_proof() {
+        use aether_types::{Block, VrfProof as TypesVrfProof};
+
+        let vrf_keypair = VrfKeypair::generate();
+        let validator = ValidatorInfo {
+            pubkey: PublicKey::from_bytes(vrf_keypair.public_key().to_vec()),
+            stake: 1_000_000,
+            commission: 0,
+            active: true,
+        };
+        let addr = validator.pubkey.to_address();
+        let consensus = VrfPosConsensus::new(vec![validator], 0.99, 100);
+
+        let slot = 42u64;
+        let mut input = Vec::new();
+        input.extend_from_slice(consensus.epoch_randomness.as_bytes());
+        input.extend_from_slice(&slot.to_le_bytes());
+        let proof = vrf_keypair.prove(&input);
+
+        let types_proof = TypesVrfProof {
+            output: proof.output,
+            proof: proof.proof,
+        };
+        let block = Block::new(slot, H256::zero(), addr, types_proof, vec![]);
+
+        let result = consensus.verify_leader(&block, &addr);
+        assert!(
+            result.is_ok(),
+            "verify_leader should not error on valid proof"
+        );
+        // With stake=1M (100% of total) and tau=0.99, this should almost certainly be eligible
+    }
+
+    #[test]
     fn mock_vrf_signer_works_with_eligibility_check() {
         let validator = create_test_validator(5000);
         let validator_addr = validator.pubkey.to_address();

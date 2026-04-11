@@ -18,5 +18,5 @@ pub mod database;
 
 pub use database::{
     pruning, Storage, StorageBatch, CF_ACCOUNTS, CF_BLOCKS, CF_MERKLE, CF_METADATA, CF_RECEIPTS,
-    CF_SPENT_UTXOS, CF_UTXOS,
+    CF_SPENT_UTXOS, CF_STAKING, CF_UTXOS,
 };
