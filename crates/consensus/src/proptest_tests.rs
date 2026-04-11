@@ -6,6 +6,7 @@ mod tests {
     use crate::hotstuff::*;
     use crate::pacemaker::Pacemaker;
     use crate::slashing::{SlashType, SlashingDetector};
+    use crate::Finality;
     use aether_crypto_bls::BlsKeypair;
     use aether_types::{Address, PublicKey, ValidatorInfo, H256};
     use proptest::prelude::*;
