@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Maximum number of peers tracked per topic (gossipsub D_hi).
@@ -27,8 +27,10 @@ pub struct GossipManager {
     /// Subscribed topics
     subscriptions: HashMap<String, TopicInfo>,
 
-    /// Seen messages (for deduplication)
-    seen_messages: HashSet<Vec<u8>>,
+    /// Seen message hashes for O(1) lookup.
+    seen_set: HashSet<Vec<u8>>,
+    /// Insertion-ordered queue of seen hashes so eviction removes the oldest.
+    seen_order: VecDeque<Vec<u8>>,
 
     /// Message cache (for history)
     message_cache: Vec<(Vec<u8>, Instant)>,
@@ -51,10 +53,11 @@ impl GossipManager {
     pub fn new() -> Self {
         GossipManager {
             subscriptions: HashMap::new(),
-            seen_messages: HashSet::new(),
+            seen_set: HashSet::new(),
+            seen_order: VecDeque::new(),
             message_cache: Vec::new(),
             cache_size: 1000,
-            cache_duration: Duration::from_secs(120), // 2 minutes
+            cache_duration: Duration::from_secs(120),
         }
     }
 
@@ -95,14 +98,13 @@ impl GossipManager {
             anyhow::bail!("not subscribed to topic: {}", topic);
         }
 
-        // Deduplicate
         let msg_hash = self.hash_message(&message);
-        if self.seen_messages.contains(&msg_hash) {
-            return Ok(()); // Already seen
+        if self.seen_set.contains(&msg_hash) {
+            return Ok(());
         }
 
-        // Mark as seen
-        self.seen_messages.insert(msg_hash.clone());
+        self.seen_set.insert(msg_hash.clone());
+        self.seen_order.push_back(msg_hash.clone());
 
         // Add to cache
         self.cache_message(msg_hash, message.clone());
@@ -122,13 +124,12 @@ impl GossipManager {
     pub fn handle_message(&mut self, topic: &str, message: Vec<u8>) -> Result<bool> {
         let msg_hash = self.hash_message(&message);
 
-        // Check if already seen (deduplication)
-        if self.seen_messages.contains(&msg_hash) {
-            return Ok(false); // Duplicate
+        if self.seen_set.contains(&msg_hash) {
+            return Ok(false);
         }
 
-        // Mark as seen
-        self.seen_messages.insert(msg_hash.clone());
+        self.seen_set.insert(msg_hash.clone());
+        self.seen_order.push_back(msg_hash.clone());
 
         // Add to cache
         self.cache_message(msg_hash, message.clone());
@@ -178,23 +179,19 @@ impl GossipManager {
         self.message_cache
             .retain(|(_, timestamp)| now.duration_since(*timestamp) < self.cache_duration);
 
-        // Evict oldest entries when seen_messages exceeds limit.
-        // Retain only the most recent half instead of clearing all, to prevent
-        // a cache-flush amplification attack where an adversary sends cache_size+1
-        // messages to wipe all dedup state.
-        if self.seen_messages.len() > self.cache_size {
+        if self.seen_set.len() > self.cache_size {
+            let to_remove = self.seen_set.len() / 2;
             tracing::warn!(
-                "gossip dedup cache overflow ({} > {}), evicting oldest half",
-                self.seen_messages.len(),
-                self.cache_size
+                total = self.seen_set.len(),
+                evicting = to_remove,
+                "gossip dedup cache overflow, evicting oldest entries",
             );
-            // HashSet doesn't preserve insertion order, so we can only drain randomly.
-            // Keep ~half the entries to maintain some dedup state.
-            let to_remove = self.seen_messages.len() / 2;
-            let remove_keys: Vec<Vec<u8>> =
-                self.seen_messages.iter().take(to_remove).cloned().collect();
-            for key in remove_keys {
-                self.seen_messages.remove(&key);
+            for _ in 0..to_remove {
+                if let Some(oldest) = self.seen_order.pop_front() {
+                    self.seen_set.remove(&oldest);
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -216,7 +213,7 @@ impl GossipManager {
     }
 
     pub fn seen_message_count(&self) -> usize {
-        self.seen_messages.len()
+        self.seen_set.len()
     }
 }
 
@@ -321,5 +318,31 @@ mod tests {
             gossip.add_peer_to_topic("tx", format!("peer-{}", i));
         }
         assert_eq!(gossip.get_topic_peers("tx").len(), MAX_PEERS_PER_TOPIC);
+    }
+
+    #[test]
+    fn test_dedup_eviction_removes_oldest_first() {
+        let mut gossip = GossipManager::new();
+        gossip.cache_size = 10;
+        gossip.subscribe("tx".to_string());
+
+        for i in 0..12u8 {
+            gossip.handle_message("tx", vec![i]).unwrap();
+        }
+        assert!(gossip.seen_message_count() > gossip.cache_size);
+
+        gossip.cleanup();
+
+        assert!(gossip.seen_message_count() <= gossip.cache_size);
+        let newest_hash = gossip.hash_message(&[11u8]);
+        assert!(
+            gossip.seen_set.contains(&newest_hash),
+            "newest message should survive eviction"
+        );
+        let oldest_hash = gossip.hash_message(&[0u8]);
+        assert!(
+            !gossip.seen_set.contains(&oldest_hash),
+            "oldest message should be evicted first"
+        );
     }
 }

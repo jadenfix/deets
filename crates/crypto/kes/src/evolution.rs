@@ -2,6 +2,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use crate::error::{KesError, Result};
@@ -299,7 +300,7 @@ pub(crate) fn verify_auth_path(
         idx /= 2;
     }
 
-    current_hash == *expected_root
+    bool::from(current_hash.ct_eq(expected_root))
 }
 
 #[cfg(test)]

@@ -516,5 +516,131 @@ mod proptests {
             prop_assert!(proof.verify());
             prop_assert_eq!(proof.value_hash, Some(v2));
         }
+
+        /// Tampered sibling at any depth causes verification failure.
+        #[test]
+        fn tampered_sibling_at_any_depth_fails(
+            addr in arb_address(),
+            val in arb_h256(),
+            tamper_idx in 0usize..160,
+            tamper_val in arb_h256(),
+        ) {
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr, val);
+            let mut proof = tree.prove(&addr);
+            prop_assume!(proof.siblings[tamper_idx] != tamper_val);
+            proof.siblings[tamper_idx] = tamper_val;
+            prop_assert!(!proof.verify(), "tampered sibling at depth {} must fail", tamper_idx);
+        }
+
+        /// A proof is bound to the tree state — inserting another key invalidates it.
+        #[test]
+        fn proof_bound_to_state(
+            addr_a in arb_address(),
+            val_a in arb_h256(),
+            addr_b in arb_address(),
+            val_b in arb_h256(),
+        ) {
+            prop_assume!(addr_a != addr_b);
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr_a, val_a);
+            let proof_before = tree.prove(&addr_a);
+            prop_assert!(proof_before.verify());
+
+            tree.update(addr_b, val_b);
+            // Old proof has stale root — must not verify against new tree state
+            prop_assert_ne!(proof_before.root, tree.root());
+            // But a fresh proof from the updated tree does verify
+            let proof_after = tree.prove(&addr_a);
+            prop_assert!(proof_after.verify());
+        }
+
+        /// A valid proof for key A must not verify if the key is swapped to B.
+        #[test]
+        fn proof_not_transferable_to_other_key(
+            addr_a in arb_address(),
+            addr_b in arb_address(),
+            val in arb_h256(),
+        ) {
+            prop_assume!(addr_a != addr_b);
+            let mut tree = SparseMerkleTree::new();
+            tree.update(addr_a, val);
+            let mut proof = tree.prove(&addr_a);
+            proof.key = addr_b;
+            prop_assert!(!proof.verify(), "proof must not transfer to a different key");
+        }
+
+        /// Different (key, value) pairs produce different leaf hashes (second preimage resistance).
+        #[test]
+        fn distinct_leaves_distinct_hashes(
+            k1 in arb_address(), v1 in arb_h256(),
+            k2 in arb_address(), v2 in arb_h256(),
+        ) {
+            use crate::proof::leaf_hash;
+            prop_assume!((k1, v1) != (k2, v2));
+            prop_assert_ne!(
+                leaf_hash(&k1, &v1),
+                leaf_hash(&k2, &v2),
+                "different (key, value) pairs should produce different leaf hashes"
+            );
+        }
+
+        /// Keys differing in exactly one bit both produce valid proofs.
+        #[test]
+        fn bit_adjacent_keys_both_provable(
+            base_addr in arb_address(),
+            val_a in arb_h256(),
+            val_b in arb_h256(),
+            flip_bit in 0usize..160,
+        ) {
+            let mut bytes = *base_addr.as_bytes();
+            let byte_idx = flip_bit / 8;
+            let bit_offset = 7 - (flip_bit % 8);
+            bytes[byte_idx] ^= 1 << bit_offset;
+            let neighbor = Address::from_slice(&bytes).unwrap();
+            prop_assume!(base_addr != neighbor);
+
+            let mut tree = SparseMerkleTree::new();
+            tree.update(base_addr, val_a);
+            tree.update(neighbor, val_b);
+
+            let proof_a = tree.prove(&base_addr);
+            let proof_b = tree.prove(&neighbor);
+            prop_assert!(proof_a.verify(), "proof for base key must verify");
+            prop_assert!(proof_b.verify(), "proof for bit-adjacent key must verify");
+        }
+
+        /// Deleting one key from a multi-key tree preserves proofs for remaining keys.
+        #[test]
+        fn delete_preserves_other_proofs(
+            entries in prop::collection::vec((arb_address(), arb_h256()), 3..15),
+            delete_idx in any::<prop::sample::Index>(),
+        ) {
+            let mut tree = SparseMerkleTree::new();
+            let mut unique_entries = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            for (addr, val) in &entries {
+                if seen.insert(*addr) {
+                    unique_entries.push((*addr, *val));
+                    tree.update(*addr, *val);
+                }
+            }
+            prop_assume!(unique_entries.len() >= 3);
+            let del_idx = delete_idx.index(unique_entries.len());
+            let del_addr = unique_entries[del_idx].0;
+            tree.delete(&del_addr);
+
+            for (i, (addr, _val)) in unique_entries.iter().enumerate() {
+                if i == del_idx {
+                    let proof = tree.prove(addr);
+                    prop_assert!(proof.verify());
+                    prop_assert_eq!(proof.value_hash, None, "deleted key must have exclusion proof");
+                } else {
+                    let proof = tree.prove(addr);
+                    prop_assert!(proof.verify(), "surviving key at index {} must still have valid proof", i);
+                    prop_assert!(proof.value_hash.is_some());
+                }
+            }
+        }
     }
 }

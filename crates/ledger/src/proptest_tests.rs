@@ -355,3 +355,226 @@ fn test_speculative_block_multi_sender_isolation() {
     let recip_acc = ledger.get_or_create_account(&recip).unwrap();
     assert_eq!(recip_acc.balance, 300, "recipient should have 100+200");
 }
+
+// ── speculative block isolation ────────────────────────────────────────────
+//
+// These proptests verify that failed transactions inside a speculative block
+// do not corrupt the overlay state visible to subsequent transactions.
+// This is the core isolation invariant: if tx[i] fails, tx[i+1] must see
+// the same overlay state as if tx[i] never existed.
+
+proptest! {
+    /// A failed transaction (bad nonce) in a speculative block must not
+    /// prevent a subsequent valid transaction from the same sender.
+    ///
+    /// Scenario: sender submits [tx_nonce=5 (wrong), tx_nonce=0 (correct)].
+    /// tx[0] must fail, tx[1] must succeed. If the overlay leaks the failed
+    /// tx's nonce increment, tx[1] would see nonce=1 and also fail.
+    #[test]
+    fn prop_failed_nonce_does_not_leak_in_overlay(
+        balance in 1_000u128..=100_000u128,
+        bad_nonce in 1u64..=100u64,
+    ) {
+        let sender_kp = Keypair::generate();
+        let recip_kp = Keypair::generate();
+        let sender = Address::from_slice(&sender_kp.to_address()).unwrap();
+        let recip = Address::from_slice(&recip_kp.to_address()).unwrap();
+
+        let (_dir, mut ledger) = open_ledger();
+        seed(&mut ledger, &sender, balance);
+
+        let bad_tx = make_transfer(&sender_kp, sender, recip, 10, 0, bad_nonce, 1);
+        let good_tx = make_transfer(&sender_kp, sender, recip, 10, 0, 0, 1);
+
+        let (receipts, _overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&[bad_tx, good_tx], Some(1))
+            .unwrap();
+
+        prop_assert_eq!(receipts.len(), 2);
+        prop_assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { reason } if reason.contains("nonce")),
+            "bad nonce tx should fail, got {:?}", receipts[0].status
+        );
+        prop_assert!(
+            matches!(receipts[1].status, TransactionStatus::Success),
+            "valid tx after failed tx should succeed, got {:?}", receipts[1].status
+        );
+    }
+
+    /// A failed transaction (insufficient balance) must not affect the
+    /// balance visible to subsequent transactions from a different sender.
+    #[test]
+    fn prop_failed_balance_does_not_corrupt_other_senders(
+        amount1 in 100u128..=10_000u128,
+        amount2 in 100u128..=10_000u128,
+    ) {
+        let kp1 = Keypair::generate();
+        let kp2 = Keypair::generate();
+        let recip_kp = Keypair::generate();
+        let addr1 = Address::from_slice(&kp1.to_address()).unwrap();
+        let addr2 = Address::from_slice(&kp2.to_address()).unwrap();
+        let recip = Address::from_slice(&recip_kp.to_address()).unwrap();
+
+        let (_dir, mut ledger) = open_ledger();
+        seed(&mut ledger, &addr1, 1); // too little — tx1 will fail
+        seed(&mut ledger, &addr2, amount2 + 1_000);
+
+        let tx1 = make_transfer(&kp1, addr1, recip, amount1, 0, 0, 1);
+        let tx2 = make_transfer(&kp2, addr2, recip, amount2, 0, 0, 1);
+
+        let (receipts, overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&[tx1, tx2], Some(1))
+            .unwrap();
+
+        prop_assert_eq!(receipts.len(), 2);
+        prop_assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { .. }),
+            "underfunded tx should fail, got {:?}", receipts[0].status
+        );
+        prop_assert!(
+            matches!(receipts[1].status, TransactionStatus::Success),
+            "funded tx should succeed regardless of prior failure, got {:?}", receipts[1].status
+        );
+
+        ledger.commit_overlay(overlay).unwrap();
+        let recip_acc = ledger.get_or_create_account(&recip).unwrap();
+        prop_assert_eq!(
+            recip_acc.balance, amount2,
+            "recipient should only receive amount2 from the successful tx"
+        );
+    }
+
+    /// Sequential valid transactions from the same sender in one speculative
+    /// block must each see the prior tx's nonce and balance updates.
+    #[test]
+    fn prop_sequential_same_sender_in_block(count in 2usize..=6) {
+        let sender_kp = Keypair::generate();
+        let recip_kp = Keypair::generate();
+        let sender = Address::from_slice(&sender_kp.to_address()).unwrap();
+        let recip = Address::from_slice(&recip_kp.to_address()).unwrap();
+
+        let per_tx = 100u128;
+        let (_dir, mut ledger) = open_ledger();
+        seed(&mut ledger, &sender, per_tx * (count as u128) + 10_000);
+
+        let txs: Vec<Transaction> = (0..count)
+            .map(|i| make_transfer(&sender_kp, sender, recip, per_tx, 0, i as u64, 1))
+            .collect();
+
+        let (receipts, overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&txs, Some(1))
+            .unwrap();
+
+        prop_assert_eq!(receipts.len(), count);
+        for (i, r) in receipts.iter().enumerate() {
+            prop_assert!(
+                matches!(r.status, TransactionStatus::Success),
+                "tx[{}] (nonce {}) should succeed, got {:?}", i, i, r.status
+            );
+        }
+
+        ledger.commit_overlay(overlay).unwrap();
+        let recip_acc = ledger.get_or_create_account(&recip).unwrap();
+        prop_assert_eq!(recip_acc.balance, per_tx * (count as u128));
+        let sender_acc = ledger.get_or_create_account(&sender).unwrap();
+        prop_assert_eq!(sender_acc.nonce, count as u64);
+    }
+
+    /// Interleaving valid and invalid txs from the same sender: valid txs
+    /// must execute correctly while invalid ones produce Failed receipts
+    /// without corrupting the nonce sequence.
+    #[test]
+    fn prop_interleaved_valid_invalid_same_sender(
+        balance in 500u128..=50_000u128,
+    ) {
+        let sender_kp = Keypair::generate();
+        let recip_kp = Keypair::generate();
+        let sender = Address::from_slice(&sender_kp.to_address()).unwrap();
+        let recip = Address::from_slice(&recip_kp.to_address()).unwrap();
+
+        let (_dir, mut ledger) = open_ledger();
+        seed(&mut ledger, &sender, balance);
+
+        // tx0: nonce=99 (WRONG) → fail, overlay untouched
+        // tx1: nonce=0  (correct) → succeed, nonce becomes 1
+        // tx2: nonce=0  (replay) → fail, nonce still 1
+        // tx3: nonce=1  (correct) → succeed, nonce becomes 2
+        let tx0 = make_transfer(&sender_kp, sender, recip, 10, 0, 99, 1);
+        let tx1 = make_transfer(&sender_kp, sender, recip, 10, 0, 0, 1);
+        let tx2 = make_transfer(&sender_kp, sender, recip, 10, 0, 0, 1);
+        let tx3 = make_transfer(&sender_kp, sender, recip, 10, 0, 1, 1);
+
+        let (receipts, overlay) = ledger
+            .apply_block_speculatively_with_chain_id(&[tx0, tx1, tx2, tx3], Some(1))
+            .unwrap();
+
+        prop_assert_eq!(receipts.len(), 4);
+        prop_assert!(
+            matches!(&receipts[0].status, TransactionStatus::Failed { .. }),
+            "tx0 (bad nonce) should fail: {:?}", receipts[0].status
+        );
+        prop_assert!(
+            matches!(receipts[1].status, TransactionStatus::Success),
+            "tx1 (nonce=0) should succeed: {:?}", receipts[1].status
+        );
+        prop_assert!(
+            matches!(&receipts[2].status, TransactionStatus::Failed { .. }),
+            "tx2 (replay nonce=0) should fail: {:?}", receipts[2].status
+        );
+        prop_assert!(
+            matches!(receipts[3].status, TransactionStatus::Success),
+            "tx3 (nonce=1) should succeed: {:?}", receipts[3].status
+        );
+
+        ledger.commit_overlay(overlay).unwrap();
+        let sender_acc = ledger.get_or_create_account(&sender).unwrap();
+        prop_assert_eq!(sender_acc.nonce, 2, "only 2 successful txs → nonce = 2");
+        let recip_acc = ledger.get_or_create_account(&recip).unwrap();
+        prop_assert_eq!(recip_acc.balance, 20, "only 2 successful 10-unit transfers");
+    }
+
+    /// Speculative execution and commit must produce the same state root as
+    /// applying the same transactions individually via apply_transaction.
+    #[test]
+    fn prop_speculative_matches_committed_state(
+        amount in 100u128..=5_000u128,
+        fee in 0u128..=100u128,
+    ) {
+        let kp = Keypair::generate();
+        let recip_kp = Keypair::generate();
+        let sender = Address::from_slice(&kp.to_address()).unwrap();
+        let recip = Address::from_slice(&recip_kp.to_address()).unwrap();
+
+        let initial = amount + fee + 10_000;
+
+        // Path A: speculative then commit
+        let (dir_a, mut ledger_a) = open_ledger();
+        seed(&mut ledger_a, &sender, initial);
+        let tx = make_transfer(&kp, sender, recip, amount, fee, 0, 1);
+        let (receipts, overlay) = ledger_a
+            .apply_block_speculatively_with_chain_id(std::slice::from_ref(&tx), Some(1))
+            .unwrap();
+        prop_assert!(matches!(receipts[0].status, TransactionStatus::Success));
+        let spec_root = overlay.state_root;
+        ledger_a.commit_overlay(overlay).unwrap();
+        let committed_root_a = ledger_a.state_root();
+        drop(ledger_a);
+        drop(dir_a);
+
+        // Path B: direct apply_transaction
+        let (_dir_b, mut ledger_b) = open_ledger();
+        seed(&mut ledger_b, &sender, initial);
+        let receipt = ledger_b.apply_transaction(&tx).unwrap();
+        prop_assert!(matches!(receipt.status, TransactionStatus::Success));
+        let committed_root_b = ledger_b.state_root();
+
+        prop_assert_eq!(
+            spec_root, committed_root_b,
+            "speculative root must match direct-apply root"
+        );
+        prop_assert_eq!(
+            committed_root_a, committed_root_b,
+            "post-commit root must match direct-apply root"
+        );
+    }
+}
