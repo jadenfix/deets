@@ -10,6 +10,7 @@ pub struct ConsensusMetrics {
     pub consensus_rounds: IntCounter,
     pub transactions_processed: IntCounter,
     pub block_production_ms: Histogram,
+    pub equivocations_detected: IntCounter,
 }
 
 impl ConsensusMetrics {
@@ -56,6 +57,11 @@ impl ConsensusMetrics {
                 vec![1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0]
             )
             .expect("register block_production_ms"),
+            equivocations_detected: register_int_counter!(
+                "aether_consensus_equivocations_detected_total",
+                "Proposer equivocations detected (same proposer, same slot, different blocks)"
+            )
+            .expect("register equivocations_detected"),
         }
     }
 }

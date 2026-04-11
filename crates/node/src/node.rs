@@ -86,6 +86,12 @@ const MAX_ORPHAN_BLOCKS: usize = 256;
 /// timestamps that could manipulate time-sensitive on-chain logic.
 const MAX_CLOCK_DRIFT_SECS: u64 = 15;
 
+/// Hard cap on transactions per block, matching the production cap in `produce_block`.
+const MAX_TRANSACTIONS_PER_BLOCK: usize = 1000;
+
+/// Hard cap on cumulative gas across all transactions in a single block.
+const MAX_BLOCK_GAS_LIMIT: u64 = 10_000_000;
+
 /// Minimum interval between serving sync block-range responses.
 /// Prevents a peer from flooding sync requests and consuming all outbound bandwidth.
 const SYNC_RESPONSE_COOLDOWN: Duration = Duration::from_secs(2);
@@ -1085,6 +1091,58 @@ impl Node {
                 block.header.version,
                 aether_types::PROTOCOL_VERSION
             );
+        }
+
+        // Reject blocks that exceed the per-block transaction cap.
+        if block.transactions.len() > MAX_TRANSACTIONS_PER_BLOCK {
+            bail!(
+                "block contains {} transactions, exceeding max {}",
+                block.transactions.len(),
+                MAX_TRANSACTIONS_PER_BLOCK
+            );
+        }
+
+        // Reject blocks whose cumulative gas exceeds the block gas limit.
+        let total_gas: u64 = block
+            .transactions
+            .iter()
+            .fold(0u64, |acc, tx| acc.saturating_add(tx.gas_limit));
+        if total_gas > MAX_BLOCK_GAS_LIMIT {
+            bail!(
+                "block gas {} exceeds block gas limit {}",
+                total_gas,
+                MAX_BLOCK_GAS_LIMIT
+            );
+        }
+
+        // Reject blocks that contain duplicate transaction hashes.
+        {
+            let mut seen_tx_hashes = HashSet::with_capacity(block.transactions.len());
+            for tx in &block.transactions {
+                if !seen_tx_hashes.insert(tx.hash()) {
+                    bail!("block contains duplicate transaction {}", tx.hash());
+                }
+            }
+        }
+
+        // Detect proposer equivocation: a different block already exists at this
+        // slot from the same proposer. Log for slashing evidence but do NOT reject —
+        // fork choice must evaluate both blocks to select the canonical chain.
+        if let Some(&existing_hash) = self.blocks_by_slot.get(&block.header.slot) {
+            if existing_hash != block_hash {
+                if let Some(existing_block) = self.blocks_by_hash.get(&existing_hash) {
+                    if existing_block.header.proposer == block.header.proposer {
+                        tracing::warn!(
+                            slot = block.header.slot,
+                            proposer = ?block.header.proposer,
+                            existing = ?existing_hash,
+                            new = ?block_hash,
+                            "Proposer equivocation detected — same proposer, same slot, different blocks"
+                        );
+                        CONSENSUS_METRICS.equivocations_detected.inc();
+                    }
+                }
+            }
         }
 
         // Buffer as orphan if parent is unknown (skip for genesis-like blocks).
@@ -3984,5 +4042,209 @@ mod tests {
             .iter()
             .fold(0u64, |acc, &g| acc.saturating_add(g));
         assert_eq!(total_gas, u64::MAX);
+    }
+
+    #[test]
+    fn block_exceeding_max_transactions_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let txs: Vec<Transaction> = (0..MAX_TRANSACTIONS_PER_BLOCK + 1)
+            .map(|i| Transaction {
+                nonce: i as u64,
+                chain_id: 1,
+                sender: Address::from_slice(&[1u8; 20]).unwrap(),
+                sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+                inputs: vec![],
+                outputs: vec![],
+                reads: std::collections::HashSet::new(),
+                writes: std::collections::HashSet::new(),
+                program_id: None,
+                data: i.to_le_bytes().to_vec(),
+                gas_limit: 1,
+                fee: 0,
+                signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+            })
+            .collect();
+
+        let block = Block::new(
+            0,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            txs,
+        );
+
+        let err = node.on_block_received(block).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeding max"),
+            "expected max-tx rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn block_exceeding_gas_limit_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: MAX_BLOCK_GAS_LIMIT + 1,
+            fee: 0,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+
+        let block = Block::new(
+            0,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx],
+        );
+
+        let err = node.on_block_received(block).unwrap_err();
+        assert!(
+            err.to_string().contains("block gas"),
+            "expected gas limit rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn block_with_duplicate_transactions_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        let tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender: Address::from_slice(&[1u8; 20]).unwrap(),
+            sender_pubkey: PublicKey::from_bytes(vec![1u8; 32]),
+            inputs: vec![],
+            outputs: vec![],
+            reads: std::collections::HashSet::new(),
+            writes: std::collections::HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 21000,
+            fee: 1000,
+            signature: aether_types::Signature::from_bytes(vec![0u8; 64]),
+        };
+
+        let block = Block::new(
+            0,
+            H256::zero(),
+            Address::from_slice(&[1u8; 20]).unwrap(),
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![tx.clone(), tx],
+        );
+
+        let err = node.on_block_received(block).unwrap_err();
+        assert!(
+            err.to_string().contains("duplicate transaction"),
+            "expected duplicate tx rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn proposer_equivocation_detected() {
+        let temp_dir = TempDir::new().unwrap();
+        let keypair = Keypair::generate();
+        let proposer = PublicKey::from_bytes(keypair.public_key()).to_address();
+        let validators = vec![validator_info_from_key(&keypair)];
+        let consensus = Box::new(SimpleConsensus::new(validators));
+        let mut node = Node::new(
+            temp_dir.path(),
+            consensus,
+            Some(keypair),
+            None,
+            Arc::new(ChainConfig::devnet()),
+        )
+        .unwrap();
+
+        // Manually insert a block at slot 0 from the same proposer
+        let block1 = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [0u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        let hash1 = block1.hash();
+        node.blocks_by_hash.insert(hash1, block1);
+        node.blocks_by_slot.insert(0, hash1);
+
+        // Now create a different block at the same slot from the same proposer
+        // (different data so different hash)
+        let mut block2 = Block::new(
+            0,
+            H256::zero(),
+            proposer,
+            aether_types::VrfProof {
+                output: [1u8; 32],
+                proof: vec![],
+            },
+            vec![],
+        );
+        block2.header.timestamp = 12345;
+
+        let before = CONSENSUS_METRICS.equivocations_detected.get();
+        // Block proceeds through validation (fork choice handles it) but
+        // the equivocation counter must increment.
+        let _ = node.on_block_received(block2);
+        assert!(
+            CONSENSUS_METRICS.equivocations_detected.get() > before,
+            "equivocation counter must increment when same proposer sends two blocks at same slot"
+        );
     }
 }
