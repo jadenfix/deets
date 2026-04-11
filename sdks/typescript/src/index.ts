@@ -6,6 +6,7 @@ export type {
   ClientConfig,
   JobRequest,
   JobSubmission,
+  NodeHealth,
   SubmitResponse,
   RpcAccountState,
   RpcBlock,

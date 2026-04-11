@@ -6,7 +6,9 @@
 
 use crate::{ConsensusEngine, Pacemaker};
 use aether_crypto_bls::{aggregate_public_keys, aggregate_signatures, BlsKeypair};
-use aether_crypto_vrf::{check_leader_eligibility_integer, verify_proof, VrfKeypair, VrfProof};
+use aether_crypto_vrf::{
+    check_leader_eligibility_integer, EcVrfVerifier, VrfKeypair, VrfProof, VrfSigner, VrfVerifier,
+};
 use aether_types::{Address, Block, PublicKey, Slot, ValidatorInfo, Vote, H256};
 use anyhow::{bail, Result};
 use sha2::{Digest, Sha256};
@@ -107,7 +109,8 @@ pub struct HybridConsensus {
     tau: f64, // Leader rate (0 < tau <= 1) — kept for API compatibility
     tau_numerator: u128, // Integer numerator for deterministic eligibility check
     tau_denominator: u128, // Integer denominator for deterministic eligibility check
-    my_vrf_keypair: Option<VrfKeypair>,
+    my_vrf_keypair: Option<Box<dyn VrfSigner>>,
+    vrf_verifier: Box<dyn VrfVerifier>,
     my_bls_keypair: Option<BlsKeypair>,
     my_address: Option<Address>,
 
@@ -150,6 +153,26 @@ impl HybridConsensus {
         my_bls_keypair: Option<BlsKeypair>,
         my_address: Option<Address>,
     ) -> Self {
+        Self::with_vrf(
+            validators,
+            tau,
+            epoch_length,
+            my_vrf_keypair.map(|k| Box::new(k) as Box<dyn VrfSigner>),
+            Box::new(EcVrfVerifier),
+            my_bls_keypair,
+            my_address,
+        )
+    }
+
+    pub fn with_vrf(
+        validators: Vec<ValidatorInfo>,
+        tau: f64,
+        epoch_length: u64,
+        my_vrf_keypair: Option<Box<dyn VrfSigner>>,
+        vrf_verifier: Box<dyn VrfVerifier>,
+        my_bls_keypair: Option<BlsKeypair>,
+        my_address: Option<Address>,
+    ) -> Self {
         // Guard against division-by-zero in advance_slot epoch boundary check.
         let epoch_length = epoch_length.max(1);
         let total_stake: u128 = validators
@@ -184,6 +207,7 @@ impl HybridConsensus {
             tau_numerator,
             tau_denominator,
             my_vrf_keypair,
+            vrf_verifier,
             my_bls_keypair,
             my_address,
             current_phase: Phase::Propose,
@@ -215,8 +239,7 @@ impl HybridConsensus {
         input.extend_from_slice(self.epoch_randomness.as_bytes());
         input.extend_from_slice(&slot.to_le_bytes());
 
-        // Generate VRF proof
-        let proof = vrf_keypair.prove(&input);
+        let proof = VrfSigner::prove(vrf_keypair.as_ref(), &input);
 
         // Check eligibility threshold against epoch-frozen stake
         if check_leader_eligibility_integer(
@@ -264,11 +287,10 @@ impl HybridConsensus {
             )
         })?;
 
-        if !verify_proof(&vrf_pubkey, &input, &vrf_proof)? {
+        if !self.vrf_verifier.verify(&vrf_pubkey, &input, &vrf_proof)? {
             return Ok(false);
         }
 
-        // Check eligibility threshold against epoch-frozen stake
         Ok(check_leader_eligibility_integer(
             &vrf_proof.output,
             validator.stake,
@@ -2066,5 +2088,120 @@ mod tests {
         assert_eq!(consensus.current_epoch, 1);
         consensus.advance_slot();
         assert_eq!(consensus.current_epoch, 2);
+    }
+
+    /// Byzantine fault tolerance: consensus continues to finalize blocks even when
+    /// one of four validators attempts equivocation (double-voting).
+    ///
+    /// Setup: 4 validators, each 1000 stake → total = 4000.
+    /// Quorum threshold: 2/3 of 4000 = 2667 stake.
+    ///
+    /// The Byzantine validator (v1) casts a legitimate vote for block_a, then
+    /// attempts to equivocate by voting for block_evil. The second vote is
+    /// rejected. The three honest validators (v2, v3, v4) plus v1's first valid
+    /// vote together provide 3000 stake, which exceeds the quorum threshold.
+    /// The 2-chain finality rule then finalizes block_a.
+    #[test]
+    fn test_consensus_tolerates_one_byzantine_equivocator() {
+        let (v1, bls1) = create_test_validator_with_bls(1000); // will equivocate
+        let (v2, bls2) = create_test_validator_with_bls(1000);
+        let (v3, bls3) = create_test_validator_with_bls(1000);
+        let (v4, bls4) = create_test_validator_with_bls(1000);
+
+        let mut consensus = HybridConsensus::new(
+            vec![v1.clone(), v2.clone(), v3.clone(), v4.clone()],
+            0.8,
+            100,
+            None,
+            None,
+            None,
+        );
+        // Total stake = 4000, quorum needs > 2/3 * 4000 = 2667
+        assert_eq!(consensus.total_stake(), 4000);
+
+        let block_a = H256::from_slice(&[0xAA; 32]).unwrap();
+        let block_evil = H256::from_slice(&[0xEE; 32]).unwrap();
+        let parent_a = H256::zero();
+
+        consensus.current_slot = 1;
+        consensus.current_phase = Phase::Propose;
+        consensus.block_parents.insert(block_a, parent_a);
+        consensus.block_slots.insert(block_a, 1);
+
+        // v1 casts a legitimate first vote for block_a (accepted)
+        let vote_v1_a = make_signed_vote(&mut consensus, &v1, &bls1, block_a, 1);
+        assert!(
+            consensus.process_vote(vote_v1_a).is_ok(),
+            "v1's first vote (block_a) must be accepted"
+        );
+
+        // v1 tries to equivocate: vote for block_evil at the same slot
+        let vote_v1_evil = make_signed_vote(&mut consensus, &v1, &bls1, block_evil, 1);
+        let equivocation_result = consensus.process_vote(vote_v1_evil);
+        assert!(
+            equivocation_result.is_err(),
+            "Byzantine double-vote must be rejected as equivocation"
+        );
+        assert!(
+            equivocation_result
+                .unwrap_err()
+                .to_string()
+                .contains("equivocation"),
+            "Rejection reason must identify equivocation"
+        );
+
+        // Honest validators cast votes for block_a.
+        // After v2: stake = v1(1000) + v2(1000) = 2000 — still below 2667.
+        let vote_v2 = make_signed_vote(&mut consensus, &v2, &bls2, block_a, 1);
+        assert!(
+            consensus.process_vote(vote_v2).unwrap().is_none(),
+            "No QC yet: 2000 stake < 2667 quorum threshold"
+        );
+
+        // After v3: stake = 1000 + 1000 + 1000 = 3000 > 2667 → QC forms.
+        let vote_v3 = make_signed_vote(&mut consensus, &v3, &bls3, block_a, 1);
+        let qc1 = consensus
+            .process_vote(vote_v3)
+            .expect("v3 vote must not error");
+        assert!(
+            qc1.is_some(),
+            "QC must form: v1+v2+v3 = 3000 stake > 2667 threshold (Byzantine tolerance holds)"
+        );
+
+        // One QC is not enough for 2-chain finality
+        assert_eq!(
+            consensus.finalized_slot, 0,
+            "2-chain rule: no finality after one QC"
+        );
+
+        // Advance to slot 2 and form a child QC to trigger finality of slot 1.
+        consensus.advance_slot();
+        assert_eq!(consensus.current_slot, 2);
+
+        let block_b = H256::from_slice(&[0xBB; 32]).unwrap();
+        consensus.block_parents.insert(block_b, block_a);
+        consensus.block_slots.insert(block_b, 2);
+
+        // Two honest validators suffice for quorum at slot 2 (v3+v4 = 2000, need 2667).
+        // Use three to be safe.
+        let vote2_v2 = make_signed_vote(&mut consensus, &v2, &bls2, block_b, 2);
+        let vote2_v3 = make_signed_vote(&mut consensus, &v3, &bls3, block_b, 2);
+        let vote2_v4 = make_signed_vote(&mut consensus, &v4, &bls4, block_b, 2);
+
+        assert!(consensus.process_vote(vote2_v2).unwrap().is_none());
+        assert!(consensus.process_vote(vote2_v3).unwrap().is_none()); // v2+v3 = 2000, no QC yet
+        let qc2 = consensus
+            .process_vote(vote2_v4)
+            .expect("v4 vote at slot 2 must not error");
+        assert!(
+            qc2.is_some(),
+            "QC must form at slot 2: v2+v3+v4 = 3000 stake > 2667"
+        );
+
+        // 2-chain finality: block_a (slot 1) has QC, block_b (slot 2) has QC as child → finalize.
+        assert_eq!(
+            consensus.finalized_slot, 1,
+            "block_a at slot 1 must be finalized via 2-chain rule despite the Byzantine equivocator"
+        );
     }
 }
