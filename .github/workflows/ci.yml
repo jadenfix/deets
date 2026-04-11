@@ -173,43 +173,20 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Restore cargo cache (read-only)
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-integration-
-
-      - name: Run e2e integration tests
-        run: |
-          echo "Waiting for test network to be ready..."
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.test.yml ps | grep -q "healthy"; then
-              echo "Network ready after ${i}s"
-              break
-            fi
-            if [ "$i" -eq 30 ]; then
-              echo "Warning: network may not be fully ready, proceeding anyway"
-            fi
-            sleep 1
-          done
 
       - name: Run integration tests (scoped to e2e binaries, not the whole workspace)
         run: |
           cargo test --all-features -p aether-node --test e2e_multi_validator
           cargo test --all-features -p aether-node --test e2e_byzantine_network
           cargo test --all-features -p aether-node --test e2e_adversarial
-
-      - name: Collect logs on failure
-        if: failure()
-        run: docker compose -f docker-compose.test.yml logs --tail=100
-
-      - name: Stop test network
-        if: always()
-        run: docker compose -f docker-compose.test.yml down -v
 
   # ──────────────────────────────────────────────
   # Phase acceptance suites removed from CI on 2026-04-10.
