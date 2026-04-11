@@ -50,10 +50,20 @@ pub struct NodeHealth {
     pub sync: Value,
 }
 
+fn default_timeout_secs() -> u64 {
+    30
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientConfig {
     pub default_fee: u128,
     pub default_gas_limit: u64,
+    /// Timeout in seconds for each RPC request (TCP connect + read).
+    ///
+    /// Defaults to 30 seconds. Set to a lower value for latency-sensitive
+    /// contexts (e.g. health checks) or a higher value for slow networks.
+    #[serde(default = "default_timeout_secs")]
+    pub request_timeout_secs: u64,
 }
 
 impl Default for ClientConfig {
@@ -61,6 +71,7 @@ impl Default for ClientConfig {
         ClientConfig {
             default_fee: 2_000_000,
             default_gas_limit: 500_000,
+            request_timeout_secs: default_timeout_secs(),
         }
     }
 }

@@ -49,6 +49,14 @@ pub enum AetherSdkError {
         /// Hash returned by the node.
         got: String,
     },
+
+    /// The RPC request exceeded the configured timeout.
+    ///
+    /// This covers both the TCP connect phase and the response-read phase.
+    /// Increase [`ClientConfig::request_timeout_secs`] if this is a
+    /// recurring issue on high-latency networks.
+    #[error("request timed out: {0}")]
+    Timeout(String),
 }
 
 impl AetherSdkError {

@@ -2,6 +2,7 @@ use aether_types::{Address, Transaction, H256};
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -72,39 +73,14 @@ impl AetherClient {
         let payload = SubmitRpcRequest::new(tx).map_err(AetherSdkError::serialization)?;
         let endpoint = HttpEndpoint::parse(&self.endpoint)?;
         let body = serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
-        let request = format!(
+        let headers = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             endpoint.path,
             endpoint.host_header(),
             body.len()
         );
 
-        // Combine headers and body into a single write to avoid partial-read
-        // issues with simple HTTP servers that do a single recv() call.
-        let mut payload_buf = Vec::with_capacity(request.len() + body.len());
-        payload_buf.extend_from_slice(request.as_bytes());
-        payload_buf.extend_from_slice(&body);
-
-        let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
-            .await
-            .map_err(|e| {
-                AetherSdkError::network(format!(
-                    "failed to submit transaction to {}: {e}",
-                    self.endpoint
-                ))
-            })?;
-        stream
-            .write_all(&payload_buf)
-            .await
-            .map_err(|e| AetherSdkError::network(format!("failed to write rpc request: {e}")))?;
-
-        let mut raw = Vec::new();
-        stream
-            .read_to_end(&mut raw)
-            .await
-            .map_err(|e| AetherSdkError::network(format!("failed to read rpc response: {e}")))?;
-        let response_text = String::from_utf8(raw)
-            .map_err(|_| AetherSdkError::invalid_response("rpc response was not valid utf-8"))?;
+        let response_text = self.rpc_request(&endpoint, &headers, &body).await?;
         let (status_line, rpc_body) = parse_http_response(&response_text)?;
         if !status_line.contains(" 200 ") {
             return Err(AetherSdkError::invalid_response(format!(
@@ -139,6 +115,74 @@ impl AetherClient {
             tx_hash: returned_hash,
             accepted: true,
         })
+    }
+
+    /// Send a raw HTTP/1.1 JSON-RPC request and return the response body.
+    ///
+    /// All three I/O phases — TCP connect, write, and response read — are
+    /// wrapped in `tokio::time::timeout` using
+    /// [`ClientConfig::request_timeout_secs`].  A stalled or
+    /// silently-dropped connection cannot therefore block a tokio task
+    /// indefinitely in any phase.
+    ///
+    /// This is the single place where all network I/O happens in the SDK.
+    /// Every public method that needs to talk to the RPC endpoint should go
+    /// through here so timeout enforcement is consistent.
+    async fn rpc_request(
+        &self,
+        endpoint: &HttpEndpoint,
+        headers: &str,
+        body: &[u8],
+    ) -> Result<String, AetherSdkError> {
+        let timeout_dur = Duration::from_secs(self.config.request_timeout_secs);
+
+        // Concatenate headers + body in one buffer to avoid partial-read
+        // issues on simple HTTP servers that do a single recv() call.
+        let mut payload = Vec::with_capacity(headers.len() + body.len());
+        payload.extend_from_slice(headers.as_bytes());
+        payload.extend_from_slice(body);
+
+        // Phase 1: TCP connect (timeout-guarded).
+        let mut stream = tokio::time::timeout(
+            timeout_dur,
+            TcpStream::connect((endpoint.host.as_str(), endpoint.port)),
+        )
+        .await
+        .map_err(|_| {
+            AetherSdkError::Timeout(format!(
+                "timed out connecting to {} after {}s",
+                self.endpoint, self.config.request_timeout_secs
+            ))
+        })?
+        .map_err(|e| {
+            AetherSdkError::network(format!("failed to connect to {}: {e}", self.endpoint))
+        })?;
+
+        // Phase 2: write request (timeout-guarded).
+        tokio::time::timeout(timeout_dur, stream.write_all(&payload))
+            .await
+            .map_err(|_| {
+                AetherSdkError::Timeout(format!(
+                    "timed out writing rpc request to {} after {}s",
+                    self.endpoint, self.config.request_timeout_secs
+                ))
+            })?
+            .map_err(|e| AetherSdkError::network(format!("failed to write rpc request: {e}")))?;
+
+        // Phase 3: read response (timeout-guarded).
+        let mut raw = Vec::new();
+        tokio::time::timeout(timeout_dur, stream.read_to_end(&mut raw))
+            .await
+            .map_err(|_| {
+                AetherSdkError::Timeout(format!(
+                    "timed out reading rpc response from {} after {}s",
+                    self.endpoint, self.config.request_timeout_secs
+                ))
+            })?
+            .map_err(|e| AetherSdkError::network(format!("failed to read rpc response: {e}")))?;
+
+        String::from_utf8(raw)
+            .map_err(|_| AetherSdkError::invalid_response("rpc response was not valid utf-8"))
     }
 
     /// Prepare a job submission payload without sending it.
@@ -268,6 +312,10 @@ impl AetherClient {
 
     /// Send a JSON-RPC request and return the `result` field as a `Value`.
     ///
+    /// All I/O is routed through [`rpc_request`] so every method
+    /// automatically inherits the connect + write + read timeout enforced
+    /// there.  A stalled server cannot block any query method indefinitely.
+    ///
     /// On JSON-RPC error, maps to `AetherSdkError::Rpc`.
     async fn rpc_call(&self, method: &str, params: &[Value]) -> Result<Value, AetherSdkError> {
         let payload = serde_json::json!({
@@ -278,34 +326,14 @@ impl AetherClient {
         });
         let body = serde_json::to_vec(&payload).map_err(AetherSdkError::serialization)?;
         let endpoint = HttpEndpoint::parse(&self.endpoint)?;
-        let request = format!(
+        let headers = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             endpoint.path,
             endpoint.host_header(),
             body.len()
         );
-        let mut payload_buf = Vec::with_capacity(request.len() + body.len());
-        payload_buf.extend_from_slice(request.as_bytes());
-        payload_buf.extend_from_slice(&body);
 
-        let mut stream = TcpStream::connect((endpoint.host.as_str(), endpoint.port))
-            .await
-            .map_err(|e| {
-                AetherSdkError::network(format!("failed to connect to {}: {e}", self.endpoint))
-            })?;
-        stream
-            .write_all(&payload_buf)
-            .await
-            .map_err(|e| AetherSdkError::network(format!("failed to write rpc request: {e}")))?;
-
-        let mut raw = Vec::new();
-        stream
-            .read_to_end(&mut raw)
-            .await
-            .map_err(|e| AetherSdkError::network(format!("failed to read rpc response: {e}")))?;
-
-        let response_text = String::from_utf8(raw)
-            .map_err(|_| AetherSdkError::invalid_response("rpc response was not valid utf-8"))?;
+        let response_text = self.rpc_request(&endpoint, &headers, &body).await?;
         let (status_line, rpc_body) = parse_http_response(&response_text)?;
         if !status_line.contains(" 200 ") {
             return Err(AetherSdkError::invalid_response(format!(
@@ -494,7 +522,102 @@ mod tests {
             matches!(err, AetherSdkError::Network(_)),
             "expected Network error, got: {err}"
         );
-        assert!(err.to_string().contains("failed to submit transaction"));
+        assert!(
+            err.to_string().contains("failed to connect to"),
+            "expected connection error, got: {err}"
+        );
+    }
+
+    /// Verify that submit() returns Timeout when the server accepts the TCP
+    /// connection but never sends a response.  Without timeout enforcement this
+    /// test would hang forever; with it the error surfaces within ~1 second.
+    #[tokio::test]
+    async fn submit_times_out_when_server_hangs() {
+        use tokio::net::TcpListener;
+
+        // Bind to an ephemeral port on loopback.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Accept the TCP handshake but never write a response — simulates a
+        // stalled node that accepted the connection then stopped responding.
+        tokio::spawn(async move {
+            if let Ok((_stream, _addr)) = listener.accept().await {
+                // Hold the stream open for longer than the client timeout.
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let config = ClientConfig {
+            request_timeout_secs: 1, // short timeout so the test finishes quickly
+            ..ClientConfig::default()
+        };
+        let client = AetherClient::with_config(format!("http://127.0.0.1:{port}"), config);
+
+        let keypair = Keypair::generate();
+        let sender_pubkey = PublicKey::from_bytes(keypair.public_key());
+        let sender = sender_pubkey.to_address();
+        let mut tx = Transaction {
+            nonce: 0,
+            chain_id: 1,
+            sender,
+            sender_pubkey,
+            inputs: vec![],
+            outputs: vec![],
+            reads: HashSet::new(),
+            writes: HashSet::new(),
+            program_id: None,
+            data: vec![],
+            gas_limit: 500_000,
+            fee: 2_000_000,
+            signature: Signature::from_bytes(vec![]),
+        };
+        let hash = tx.hash();
+        tx.signature = Signature::from_bytes(keypair.sign(hash.as_bytes()));
+
+        let err = client.submit(tx).await.unwrap_err();
+        assert!(
+            matches!(err, AetherSdkError::Timeout(_)),
+            "expected Timeout error when server never responds, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "timeout message must contain 'timed out', got: {err}"
+        );
+    }
+
+    /// Verify that query methods (rpc_call path) time out when the server
+    /// accepts the TCP connection but never sends a response.  Prior to this
+    /// fix, rpc_call did raw TcpStream I/O with no timeout, so all 7 query
+    /// methods could block indefinitely.
+    #[tokio::test]
+    async fn query_method_times_out_when_server_hangs() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            if let Ok((_stream, _addr)) = listener.accept().await {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        });
+
+        let config = ClientConfig {
+            request_timeout_secs: 1,
+            ..ClientConfig::default()
+        };
+        let client = AetherClient::with_config(format!("http://127.0.0.1:{port}"), config);
+
+        let err = client.get_block_number().await.unwrap_err();
+        assert!(
+            matches!(err, AetherSdkError::Timeout(_)),
+            "expected Timeout error from query method when server hangs, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "timeout message must contain 'timed out', got: {err}"
+        );
     }
 
     #[test]
