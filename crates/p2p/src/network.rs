@@ -267,12 +267,19 @@ impl P2PNetwork {
 
     /// Broadcast a transaction.
     pub fn broadcast_transaction(&mut self, tx: &Transaction) -> Result<()> {
+        let _span = tracing::debug_span!("broadcast_tx", fee = tx.fee).entered();
         let data = bincode::serialize(tx)?;
         self.publish(TOPIC_TX, data)
     }
 
     /// Broadcast a block.
     pub fn broadcast_block(&mut self, block: &Block) -> Result<()> {
+        let _span = tracing::debug_span!(
+            "broadcast_block",
+            slot = block.header.slot,
+            tx_count = block.transactions.len(),
+        )
+        .entered();
         let data = bincode::serialize(block)?;
         self.publish(TOPIC_BLOCK, data)
     }
