@@ -137,4 +137,55 @@ proptest! {
         let s2 = kp.sign(&msg);
         prop_assert_eq!(s1, s2, "BLS signing must be deterministic");
     }
+
+    /// Random garbage as pubkey+sig must not panic — only return Err or Ok(false).
+    #[test]
+    fn garbage_verify_no_panic(
+        pk in proptest::collection::vec(any::<u8>(), 0..128),
+        msg in proptest::collection::vec(any::<u8>(), 0..64),
+        sig in proptest::collection::vec(any::<u8>(), 0..256),
+    ) {
+        let _ = verify(&pk, &msg, &sig);
+    }
+
+    /// Random garbage as aggregated pubkey+sig must not panic.
+    #[test]
+    fn garbage_verify_aggregated_no_panic(
+        pk in proptest::collection::vec(any::<u8>(), 0..128),
+        msg in proptest::collection::vec(any::<u8>(), 0..64),
+        sig in proptest::collection::vec(any::<u8>(), 0..256),
+    ) {
+        let _ = verify_aggregated(&pk, &msg, &sig);
+    }
+
+    /// Random garbage as PoP must not panic.
+    #[test]
+    fn garbage_pop_no_panic(
+        pk in proptest::collection::vec(any::<u8>(), 0..128),
+        pop in proptest::collection::vec(any::<u8>(), 0..256),
+    ) {
+        let _ = verify_pop(&pk, &pop);
+    }
+
+    /// Random garbage bytes for aggregation must not panic.
+    #[test]
+    fn garbage_aggregate_sigs_no_panic(
+        data in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 0..128),
+            0..5
+        ),
+    ) {
+        let _ = aggregate_signatures(&data);
+    }
+
+    /// Random garbage bytes for pubkey aggregation must not panic.
+    #[test]
+    fn garbage_aggregate_pks_no_panic(
+        data in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 0..64),
+            0..5
+        ),
+    ) {
+        let _ = aggregate_public_keys(&data);
+    }
 }

@@ -464,6 +464,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "criterion",
  "proptest",
  "serde",
  "serde_json",
