@@ -130,6 +130,7 @@ pub fn verify_aggregated(
 /// many aggregated signatures to verify (e.g., from different blocks).
 ///
 /// Uses batch pairing techniques to amortize the cost.
+#[must_use = "verification results must not be silently discarded"]
 pub fn batch_verify_aggregated(
     verifications: &[(Vec<u8>, Vec<u8>, Vec<u8>)], // (pubkey, message, signature)
 ) -> Result<Vec<bool>> {

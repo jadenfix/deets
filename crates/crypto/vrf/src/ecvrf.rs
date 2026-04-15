@@ -195,11 +195,12 @@ pub fn verify_proof(public_key: &[u8; 32], alpha: &[u8], proof: &VrfProof) -> Re
     // Step 5: c' = challenge_generation(Y, H, Gamma, U, V)
     let c_prime = challenge_generation(&y, &h, &gamma, &u, &v);
 
-    // Step 6: verify c == c' (constant-time to prevent timing side-channels)
+    // Step 6: constant-time verify c == c'
     let c_bytes = scalar_to_16_bytes(&c);
     let c_prime_bytes = scalar_to_16_bytes(&c_prime);
     let challenge_ok = c_bytes.ct_eq(&c_prime_bytes);
 
+    // Constant-time verify output matches proof_to_hash(Gamma)
     let expected_output = proof_to_hash(&gamma);
     let output_ok = expected_output.ct_eq(&proof.output);
 
